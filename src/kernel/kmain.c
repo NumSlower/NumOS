@@ -1,8 +1,12 @@
 #include "kernel.h"
 #include "vga.h"
 #include "keyboard.h"
+#include "gdt.h"
 
 void kernel_init(void) {
+    // Initialize GDT first
+    gdt_init();
+    
     // Initialize VGA text mode
     vga_init();
     
@@ -12,6 +16,8 @@ void kernel_init(void) {
     // Display welcome message
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("Welcome to NumOS\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("GDT initialized successfully!\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("Type 'help' for available commands.\n");
     vga_putchar('\n');

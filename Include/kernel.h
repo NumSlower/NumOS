@@ -8,6 +8,9 @@
 void kernel_main(void);
 void kernel_init(void);
 
+/* GDT functions */
+void gdt_init(void);
+
 /* Memory management */
 void *memset(void *dest, int val, size_t len);
 void *memcpy(void *dest, const void *src, size_t len);
