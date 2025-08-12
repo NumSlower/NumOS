@@ -1,6 +1,4 @@
-; NumOS Boot Code
-; 32-bit to 64-bit transition and initial setup
-
+; NumOS Boot Code with Debug Output
 bits 32
 
 global _start
@@ -9,29 +7,38 @@ extern long_mode_start
 section .boot
 
 _start:
-    mov word [0xb8000], 0x0f41 ; Debug: Print 'A'
+    ; Debug: Print 'S' for Start
+    mov word [0xb8000], 0x0f53
+    
     ; Set up stack
     mov esp, stack_top
     
     ; Store multiboot info
     mov edi, ebx
     
-    ; Check multiboot
+    ; Debug: Print 'M' for Multiboot check
+    mov word [0xb8002], 0x0f4d
     call check_multiboot
     
-    ; Check CPUID
+    ; Debug: Print 'C' for CPUID check
+    mov word [0xb8004], 0x0f43
     call check_cpuid
     
-    ; Check long mode
+    ; Debug: Print 'L' for Long mode check
+    mov word [0xb8006], 0x0f4c
     call check_long_mode
     
-    ; Set up paging
+    ; Debug: Print 'P' for Paging setup
+    mov word [0xb8008], 0x0f50
     call set_up_page_tables
     call enable_paging
     
-    ; Load GDT
+    ; Debug: Print 'G' for GDT load
+    mov word [0xb800a], 0x0f47
     lgdt [gdt64.pointer]
-    mov word [0xb8000], 0x0f41 ; Debug: Print 'A'
+    
+    ; Debug: Print 'J' for Jump
+    mov word [0xb800c], 0x0f4a
     
     ; Jump to long mode
     jmp gdt64.code:long_mode_start
