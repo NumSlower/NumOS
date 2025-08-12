@@ -26,8 +26,4 @@ void hang(void);
 void process_command(const char *command);
 void print_prompt(void);
 
-void timer_wait(uint64_t ticks);
-
-extern char _kernel_end;
-
-#endif // KERNEL_H
+#endif /* KERNEL_H */
