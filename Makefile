@@ -3,7 +3,7 @@
 
 # Compiler and tools
 AS = nasm
-CC = gcc
+CC = x86_64-elf-gcc
 LD = ld
 GRUB_MKRESCUE = grub-mkrescue
 
