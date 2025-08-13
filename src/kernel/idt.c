@@ -1,8 +1,10 @@
 #include "idt.h"
 #include "kernel.h"
+#include "keyboard.h"
 #include "vga.h"
 #include "pic.h"
 #include "gdt.h"
+#include "paging.h"
 
 /* IDT entries - we'll use 256 entries (0-255) */
 #define IDT_ENTRIES 256
@@ -86,6 +88,14 @@ void exception_handler(uint32_t exception_num, uint64_t error_code) {
     /* Disable interrupts */
     __asm__ volatile("cli");
     
+    /* Special handling for page fault */
+    if (exception_num == EXCEPTION_PAGE_FAULT) {
+        uint64_t fault_addr;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
+        page_fault_handler(error_code, fault_addr);
+        return;
+    }
+    
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_RED));
     vga_writestring("\n\nEXCEPTION: ");
     
@@ -129,9 +139,6 @@ void exception_handler(uint32_t exception_num, uint64_t error_code) {
         case EXCEPTION_GENERAL_PROTECTION:
             vga_writestring("General Protection Fault");
             break;
-        case EXCEPTION_PAGE_FAULT:
-            vga_writestring("Page Fault");
-            break;
         case EXCEPTION_X87_FPU:
             vga_writestring("x87 FPU Error");
             break;
@@ -149,46 +156,17 @@ void exception_handler(uint32_t exception_num, uint64_t error_code) {
             break;
     }
     
-    vga_writestring(" (");
-    switch (exception_num) {
-        case EXCEPTION_DIVIDE_ERROR:
-        case EXCEPTION_DEBUG:
-        case EXCEPTION_NMI:
-        case EXCEPTION_BREAKPOINT:
-        case EXCEPTION_OVERFLOW:
-        case EXCEPTION_BOUND_RANGE:
-        case EXCEPTION_INVALID_OPCODE:
-        case EXCEPTION_DEVICE_NOT_AVAILABLE:
-        case EXCEPTION_DOUBLE_FAULT:
-        case EXCEPTION_INVALID_TSS:
-        case EXCEPTION_SEGMENT_NOT_PRESENT:
-        case EXCEPTION_STACK_SEGMENT:
-        case EXCEPTION_GENERAL_PROTECTION:
-        case EXCEPTION_PAGE_FAULT:
-        case EXCEPTION_X87_FPU:
-        case EXCEPTION_ALIGNMENT_CHECK:
-        case EXCEPTION_MACHINE_CHECK:
-        case EXCEPTION_SIMD_FP:
-            vga_writestring("No Error Code");
-            break;
-        default:
-            vga_writestring("Error Code Present");
-            break;
-    }
-    
-    vga_writestring(") (Exception Number: ");
-    
+    vga_writestring(" (Exception #");
+    print_hex(exception_num);
     
     if (error_code) {
-        vga_writestring(", Error Code: ");
+        vga_writestring(", Error Code: 0x");
+        print_hex(error_code);
     }
     
     vga_writestring(")\n");
-    
-    vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    vga_writestring("Error occurred at: ");
-    
-    vga_writestring("\n\nSystem halted. Press any key to reboot...\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    vga_writestring("System halted.\n");
     
     /* Hang the system */
     hang();
@@ -203,7 +181,7 @@ void irq_handler(uint32_t irq_num) {
             
         case 1: /* Keyboard IRQ */
             /* Handle keyboard input */
-            vga_writestring("Keyboard IRQ received\n");
+            keyboard_handler();
             break;
             
         default:

@@ -8,8 +8,10 @@
 void kernel_main(void);
 void kernel_init(void);
 
-/* GDT functions */
+/* System initialization */
 void gdt_init(void);
+void idt_init(void);
+void paging_init(void);
 
 /* Memory management */
 void *memset(void *dest, int val, size_t len);
@@ -28,5 +30,12 @@ void hang(void);
 /* Command processing */
 void process_command(const char *command);
 void print_prompt(void);
+
+/* Utility functions */
+void print_hex(uint64_t value);
+
+/* I/O port functions - declared here to avoid circular dependencies */
+uint8_t inb(uint16_t port);
+void outb(uint16_t port, uint8_t val);
 
 #endif /* KERNEL_H */

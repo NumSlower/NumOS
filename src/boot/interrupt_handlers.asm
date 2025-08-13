@@ -55,7 +55,7 @@ ISR_ERROR    10  ; Invalid TSS
 ISR_ERROR    11  ; Segment not present
 ISR_ERROR    12  ; Stack segment fault
 ISR_ERROR    13  ; General protection fault
-ISR_ERROR    14  ; Page fault
+ISR_ERROR    14  ; Page fault (has error code)
 ISR_NO_ERROR 15  ; Reserved
 ISR_NO_ERROR 16  ; x87 FPU error
 ISR_ERROR    17  ; Alignment check
@@ -119,10 +119,9 @@ isr_common:
     mov gs, ax
     
     ; Call exception handler
-    ; rdi = exception number (already on stack at rsp+144)
-    ; rsi = error code (already on stack at rsp+152)
-    mov rdi, [rsp + 144]  ; Exception number
-    mov rsi, [rsp + 152]  ; Error code
+    ; rdi = exception number, rsi = error code
+    mov rdi, [rsp + 160]  ; Exception number (adjusted for saved registers)
+    mov rsi, [rsp + 168]  ; Error code
     call exception_handler
     
     ; Restore segment registers
@@ -195,8 +194,8 @@ irq_common:
     mov gs, ax
     
     ; Call IRQ handler
-    ; rdi = IRQ number (already on stack at rsp+144)
-    mov rdi, [rsp + 144]  ; IRQ number
+    ; rdi = IRQ number
+    mov rdi, [rsp + 160]  ; IRQ number (adjusted for saved registers)
     call irq_handler
     
     ; Restore segment registers
