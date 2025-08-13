@@ -33,6 +33,4 @@ void keyboard_handler(void);
 char keyboard_getchar(void);
 void keyboard_read_line(char *buffer, size_t max_size);
 
-/* I/O port functions - moved to vga.h to avoid duplication */
-
 #endif /* KEYBOARD_H */
