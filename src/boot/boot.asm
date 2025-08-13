@@ -4,6 +4,9 @@
 bits 32
 
 global _start
+global p4_table
+global p3_table  
+global p2_table
 extern long_mode_start
 
 section .boot
@@ -80,7 +83,7 @@ check_long_mode:
     jmp error
 
 set_up_page_tables:
-    ; Map first P4 entry to P3 table
+    ; map first P4 entry to P3 table
     mov eax, p3_table
     or eax, 0b11 ; present + writable
     mov [p4_table], eax

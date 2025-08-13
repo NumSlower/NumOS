@@ -33,6 +33,7 @@ void print_prompt(void);
 
 /* Utility functions */
 void print_hex(uint64_t value);
+void print_dec(uint64_t value);
 
 /* I/O port functions - declared here to avoid circular dependencies */
 uint8_t inb(uint16_t port);

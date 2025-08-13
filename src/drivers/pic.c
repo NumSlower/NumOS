@@ -2,10 +2,6 @@
 #include "vga.h"
 
 void pic_init(void) {
-    /* Save masks */
-    uint8_t mask1 = inb(PIC1_DATA);
-    uint8_t mask2 = inb(PIC2_DATA);
-
     /* Start initialization sequence (ICW1) */
     outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4);
     outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4);
@@ -24,7 +20,7 @@ void pic_init(void) {
     outb(PIC1_DATA, ICW4_8086);
     outb(PIC2_DATA, ICW4_8086);
     
-    /* Restore saved masks (initially mask all interrupts except cascade) */
+    /* Mask all interrupts except cascade (initially) */
     outb(PIC1_DATA, 0xFB); /* Mask all except IRQ2 (cascade) */
     outb(PIC2_DATA, 0xFF); /* Mask all slave IRQs */
 }

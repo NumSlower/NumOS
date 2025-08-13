@@ -2,13 +2,13 @@
 #include "kernel.h"
 #include "vga.h"
 
-/* Page table pointers from boot */
-extern struct page_table p4_table;
-extern struct page_table p3_table;
-extern struct page_table p2_table;
+/* Page table pointers from boot (now properly declared as extern) */
+extern uint8_t p4_table[];
+extern uint8_t p3_table[];
+extern uint8_t p2_table[];
 
-/* Current page directory */
-static struct page_table *current_pml4 = &p4_table;
+/* Current page directory - cast to page_table structure */
+static struct page_table *current_pml4 = (struct page_table*)p4_table;
 
 /* Physical memory manager */
 static struct page_frame *free_frames = NULL;
@@ -61,6 +61,8 @@ uint64_t paging_get_physical_address(uint64_t virtual_addr) {
         return 0; // Not mapped
     }
     
+    // Convert physical address to virtual for accessing page tables
+    // In our setup, we have identity mapping for low memory
     struct page_table *pdpt = (struct page_table*)(pml4->entries[pml4_idx] & ~0xFFF);
     if (!(pdpt->entries[pdpt_idx] & PAGE_PRESENT)) {
         return 0; // Not mapped
@@ -171,6 +173,8 @@ uint64_t pmm_alloc_frame(void) {
 
 void pmm_free_frame(uint64_t frame_addr) {
     // In a real implementation, we'd add this frame back to the free list
+    // For now, just decrement the used counter
+    (void)frame_addr; // Suppress unused parameter warning
     if (used_frames > 0) {
         used_frames--;
     }
@@ -204,7 +208,12 @@ void* vmm_alloc_pages(size_t num_pages, uint64_t flags) {
         if (!physical) {
             // Cleanup already allocated pages
             for (size_t j = 0; j < i; j++) {
-                paging_unmap_page(virtual_start + j * PAGE_SIZE);
+                uint64_t cleanup_addr = virtual_start + j * PAGE_SIZE;
+                uint64_t cleanup_phys = paging_get_physical_address(cleanup_addr);
+                if (cleanup_phys) {
+                    pmm_free_frame(cleanup_phys);
+                }
+                paging_unmap_page(cleanup_addr);
             }
             return NULL;
         }
@@ -213,7 +222,12 @@ void* vmm_alloc_pages(size_t num_pages, uint64_t flags) {
             // Cleanup
             pmm_free_frame(physical);
             for (size_t j = 0; j < i; j++) {
-                paging_unmap_page(virtual_start + j * PAGE_SIZE);
+                uint64_t cleanup_addr = virtual_start + j * PAGE_SIZE;
+                uint64_t cleanup_phys = paging_get_physical_address(cleanup_addr);
+                if (cleanup_phys) {
+                    pmm_free_frame(cleanup_phys);
+                }
+                paging_unmap_page(cleanup_addr);
             }
             return NULL;
         }

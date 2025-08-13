@@ -95,9 +95,4 @@ void page_fault_handler(uint64_t error_code, uint64_t fault_addr);
 #define PT_INDEX(addr)   (((addr) >> 12) & 0x1FF)
 #define PAGE_OFFSET(addr) ((addr) & 0xFFF)
 
-/* External variables from boot */
-extern struct page_table *kernel_pml4;
-extern uint64_t kernel_physical_start;
-extern uint64_t kernel_physical_end;
-
 #endif /* PAGING_H */
