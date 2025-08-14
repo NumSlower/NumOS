@@ -21,15 +21,16 @@ LDFLAGS = -T link.ld -nostdlib --nmagic
 
 # Source files
 ASM_SOURCES = $(wildcard $(SRC_DIR)/boot/*.asm)
-C_SOURCES = $(wildcard $(SRC_DIR)/kernel/*.c) $(wildcard $(SRC_DIR)/drivers/*.c) $(wildcard $(SRC_DIR)/cpu/x86/*.c)
+C_SOURCES = $(wildcard $(SRC_DIR)/kernel/*.c) $(wildcard $(SRC_DIR)/drivers/*.c) $(wildcard $(SRC_DIR)/cpu/x86/*.c $(wildcard $(SRC_DIR)/fs/*.c))
 
 # Object files
 ASM_OBJECTS = $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_DIR)/boot/%.o,$(ASM_SOURCES))
 C_KERNEL_OBJECTS = $(patsubst $(SRC_DIR)/kernel/%.c,$(BUILD_DIR)/kernel/%.o,$(wildcard $(SRC_DIR)/kernel/*.c))
 C_CPU_OBJECTS    = $(patsubst $(SRC_DIR)/cpu/x86/%.c,$(BUILD_DIR)/cpu/x86/%.o,$(wildcard $(SRC_DIR)/cpu/x86/*.c))
 C_DRIVER_OBJECTS = $(patsubst $(SRC_DIR)/drivers/%.c,$(BUILD_DIR)/drivers/%.o,$(wildcard $(SRC_DIR)/drivers/*.c))
+C_FS_OBJECTS     = $(patsubst $(SRC_DIR)/fs/%.c,$(BUILD_DIR)/fs/%.o,$(wildcard $(SRC_DIR)/fs/*.c))
 
-OBJECTS = $(ASM_OBJECTS) $(C_KERNEL_OBJECTS) $(C_CPU_OBJECTS) $(C_DRIVER_OBJECTS)
+OBJECTS = $(ASM_OBJECTS) $(C_KERNEL_OBJECTS) $(C_CPU_OBJECTS) $(C_DRIVER_OBJECTS) $(C_FS_OBJECTS)
 
 # Target
 KERNEL = $(BUILD_DIR)/kernel.bin
@@ -41,7 +42,7 @@ all: $(ISO)
 
 # Create directories
 $(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)/boot $(BUILD_DIR)/kernel $(BUILD_DIR)/cpu/x86 $(BUILD_DIR)/drivers
+	mkdir -p $(BUILD_DIR)/boot $(BUILD_DIR)/kernel $(BUILD_DIR)/cpu/x86 $(BUILD_DIR)/drivers $(BUILD_DIR)/fs
 
 $(ISO_DIR):
 	mkdir -p $(BOOT_DIR) $(GRUB_DIR)
@@ -61,6 +62,10 @@ $(BUILD_DIR)/cpu/x86/%.o: $(SRC_DIR)/cpu/x86/%.c
 
 $(BUILD_DIR)/drivers/%.o: $(SRC_DIR)/drivers/%.c
 	@mkdir -p $(BUILD_DIR)/drivers
+	$(CC) $(CFLAGS) $< -o $@
+	
+$(BUILD_DIR)/fs/%.o: $(SRC_DIR)/fs/%.c
+	@mkdir -p $(BUILD_DIR)/fs
 	$(CC) $(CFLAGS) $< -o $@
 
 # Link kernel
