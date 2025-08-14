@@ -7,6 +7,8 @@
 #include "pic.h"
 #include "timer.h"
 #include "heap.h"
+#include "ata.h"
+#include "fat32.h"
 
 void kernel_init(void) {
     // Initialize VGA text mode first so we can see output
@@ -30,13 +32,20 @@ void kernel_init(void) {
     // Initialize keyboard
     keyboard_init();
     
+    // Initialize ATA/IDE disk driver
+    if (ata_init() == 0) {
+        vga_writestring("ATA driver initialized successfully\n");
+    } else {
+        vga_writestring("Warning: ATA driver initialization failed\n");
+    }
+    
     // Unmask timer and keyboard IRQs
     pic_unmask_irq(0); // Timer
     pic_unmask_irq(1); // Keyboard
     
     // Display welcome message
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("Welcome to NumOS - 64-bit Operating System\n");
+    vga_writestring("Welcome to NumOS - 64-bit Operating System with File System Support\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_writestring("System initialized successfully!\n");
     vga_writestring("- GDT loaded\n");
@@ -46,8 +55,15 @@ void kernel_init(void) {
     vga_writestring("- IDT loaded with exception/IRQ handlers\n");
     vga_writestring("- Interrupts enabled\n");
     vga_writestring("- Keyboard ready\n");
+    vga_writestring("- ATA/IDE disk driver loaded\n");
+    vga_writestring("- FAT32 file system support available\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
+    vga_writestring("\nTo get started with file operations:\n");
+    vga_writestring("1. Type 'drives' to see available disk drives\n");
+    vga_writestring("2. Type 'mount 0' to mount the first drive\n");
+    vga_writestring("3. Type 'ls' to list files in the root directory\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("\nType 'help' for available commands.\n\n");
+    vga_writestring("\nType 'help' for all available commands.\n\n");
     
     // Show initial system status
     vga_writestring("Initial system uptime: ");
@@ -64,6 +80,11 @@ void kernel_main(void) {
     if (!command_buffer) {
         panic("Failed to allocate command buffer");
     }
+    
+    // Show available drives on startup
+    vga_writestring("Scanning for disk drives...\n");
+    ata_print_drives();
+    vga_putchar('\n');
     
     // Main command loop
     while (1) {

@@ -26,8 +26,8 @@ C_SOURCES = $(wildcard $(SRC_DIR)/kernel/*.c) $(wildcard $(SRC_DIR)/drivers/*.c)
 # Object files
 ASM_OBJECTS = $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_DIR)/boot/%.o,$(ASM_SOURCES))
 C_KERNEL_OBJECTS = $(patsubst $(SRC_DIR)/kernel/%.c,$(BUILD_DIR)/kernel/%.o,$(wildcard $(SRC_DIR)/kernel/*.c))
-C_CPU_OBJECTS    = $(patsubst $(SRC_DIR)/cpu/x86/%.c,$(BUILD_DIR)/cpu/x86/%.o,$(wildcard $(SRC_DIR)/cpu/x86/*.c))
-C_DRIVER_OBJECTS = $(patsubst $(SRC_DIR)/drivers/%.c,$(BUILD_DIR)/drivers/%.o,$(wildcard $(SRC_DIR)/drivers/*.c))
+C_CPU_OBJECTS    = $(patsubst $(SRC_DIR)/cpu/x86/%.c,$(BUILD_DIR)/cpu/x86/%.o,$(wildcard $(SRC_DIR)/cpu/x86/*.c), $(wildcard $(SRC_DIR)/fs/*.c))
+C_DRIVER_OBJECTS = $(patsubst $(SRC_DIR)/drivers/%.c,$(BUILD_DIR)/drivers/%.o,$(wildcard $(SRC_DIR)/drivers/*.c),)
 
 OBJECTS = $(ASM_OBJECTS) $(C_KERNEL_OBJECTS) $(C_CPU_OBJECTS) $(C_DRIVER_OBJECTS)
 
