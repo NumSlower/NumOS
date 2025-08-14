@@ -8,7 +8,6 @@
 #include "timer.h"
 #include "heap.h"
 #include "fat32.h"
-#include "binary.h"  // Add binary loader support
 
 void kernel_init(void) {
     // Initialize VGA text mode first so we can see output
@@ -61,7 +60,6 @@ void kernel_init(void) {
         fat32_result = fat32_mount();
         if (fat32_result == FAT32_SUCCESS) {
             vga_writestring("- FAT32 filesystem mounted\n");
-            vga_writestring("- Binary loader ready\n");
         } else {
             vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
             vga_writestring("- FAT32 mount failed (use 'fat32mount' command)\n");
@@ -73,9 +71,7 @@ void kernel_init(void) {
     
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("\nType 'help' for available commands.\n");
-    vga_writestring("File commands: ls, cat, create, write\n");
-    vga_writestring("Binary commands: loadbin, execbin, listbin\n");
-    vga_writestring("Try: 'testbin' to test the binary loader\n\n");
+    vga_writestring("FAT32 commands: fat32init, fat32mount, ls, cat, create, write\n\n");
     
     // Show initial system status
     vga_writestring("Initial system uptime: ");
