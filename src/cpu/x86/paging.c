@@ -97,6 +97,19 @@ void paging_destroy_vm_region(uint64_t start, uint64_t end) {
     }
 }
 
+/* Find VM region containing the given address */
+struct vm_region* paging_find_vm_region(uint64_t addr) {
+    struct vm_region *region = vm_regions;
+    
+    while (region) {
+        if (addr >= region->start && addr < region->end) {
+            return region;
+        }
+        region = region->next;
+    }
+    
+    return NULL; // Not found
+}
 
 /* Enhanced page mapping with better error handling */
 int paging_map_page_advanced(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags, int overwrite) {
