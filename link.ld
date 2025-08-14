@@ -1,52 +1,50 @@
-/* NumOS 64-bit Kernel Linker Script */
 ENTRY(_start)
+
+PHDRS
+{
+    text PT_LOAD FLAGS(5);  /* 5 = Read + Execute */
+    data PT_LOAD FLAGS(6);  /* 6 = Read + Write */
+}
 
 SECTIONS
 {
-    /* Kernel starts at 1MB physical address */
     . = 0x100000;
-    
-    /* Multiboot header must be at the beginning */
+
+    /* Multiboot header must be first, in text segment */
     .multiboot ALIGN(4K) : {
         *(.multiboot)
-    }
-    
-    /* Boot code section */
-    .boot ALIGN(4K) : {
-        *(.boot)
-    }
-    
-    /* Text section for code */
+    } :text
+
+    /* Code (RX) */
     .text ALIGN(4K) : {
         *(.text)
         *(.text.*)
-    }
-    
-    /* Read-only data */
+    } :text
+
+    /* Read-only data (RX) */
     .rodata ALIGN(4K) : {
         *(.rodata)
         *(.rodata.*)
-    }
-    
-    /* Initialized data */
+    } :text
+
+    /* Initialized data (RW) */
     .data ALIGN(4K) : {
         *(.data)
         *(.data.*)
-    }
-    
-    /* Uninitialized data */
+    } :data
+
+    /* Uninitialized data (RW) */
     .bss ALIGN(4K) : {
         *(COMMON)
         *(.bss)
         *(.bss.*)
-    }
-    
-    /* Stack section */
+    } :data
+
+    /* Stack (RW) */
     .stack ALIGN(4K) : {
         *(.stack)
-    }
-    
-    /* Discard unnecessary sections */
+    } :data
+
     /DISCARD/ : {
         *(.comment)
         *(.note)

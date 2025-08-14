@@ -16,7 +16,7 @@ GRUB_DIR = iso/boot/grub
 
 # Flags
 ASFLAGS = -f elf64
-CFLAGS = -m64 -ffreestanding -fno-stack-protector -fno-pic -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -c -IInclude
+CFLAGS = -m64 -ffreestanding -fno-stack-protector -fno-pic -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel -Wall -Wextra -c -IInclude -Os
 LDFLAGS = -T link.ld -nostdlib --nmagic
 
 # Source files
