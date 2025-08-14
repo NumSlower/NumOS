@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "heap.h"
 #include "fat32.h"
+#include "binary.h"
 
 void *memset(void *dest, int val, size_t len) {
     unsigned char *ptr = (unsigned char*)dest;
@@ -139,6 +140,21 @@ static void parse_file_command(const char *command, char *filename, char *mode, 
     }
 }
 
+void show_binary_help(void) {
+    vga_writestring("\n--- Binary Program Loader Commands ---\n");
+    vga_writestring("  loadbin <file>     - Load a binary program\n");
+    vga_writestring("  execbin <file>     - Execute a loaded program\n");
+    vga_writestring("  unloadbin <file>   - Unload a program from memory\n");
+    vga_writestring("  listbin            - List all loaded programs\n");
+    vga_writestring("  cleanupbin         - Unload all programs\n");
+    vga_writestring("  createbin <file> <hex> - Create binary from hex code\n");
+    vga_writestring("  testbin            - Run binary loader tests\n");
+    vga_writestring("\nExample binary creation:\n");
+    vga_writestring("  createbin hello.bin B82A000000C3  # Returns 42\n");
+    vga_writestring("  loadbin hello.bin\n");
+    vga_writestring("  execbin hello.bin\n");
+}
+
 void process_command(const char *command) {
     if (strlen(command) == 0) {
         return;
@@ -162,6 +178,7 @@ void process_command(const char *command) {
         vga_writestring("  timer        - Show timer information\n");
         vga_writestring("  sleep <ms>   - Sleep for specified milliseconds\n");
         vga_writestring("  benchmark    - Run memory allocation benchmark\n");
+        
         vga_writestring("\n--- FAT32 File System Commands ---\n");
         vga_writestring("  fat32init    - Initialize FAT32 filesystem\n");
         vga_writestring("  fat32mount   - Mount FAT32 filesystem\n");
@@ -176,7 +193,10 @@ void process_command(const char *command) {
         vga_writestring("  bootinfo     - Show FAT32 boot sector info\n");
         vga_writestring("  fsinfo       - Show FAT32 filesystem info\n");
         vga_writestring("  testfat32    - Run FAT32 filesystem tests\n");
-        vga_writestring("  reboot       - Restart the system\n");
+        
+        show_binary_help();
+        
+        vga_writestring("\n  reboot       - Restart the system\n");
     } else if (strcmp(command, "clear") == 0) {
         vga_clear();
     } else if (strcmp(command, "version") == 0) {
@@ -660,9 +680,192 @@ void process_command(const char *command) {
         // Simple reboot via keyboard controller
         outb(0x64, 0xFE);
         hang();
+    } else if (strncmp(command, "loadbin ", 8) == 0) {
+        const char *filename = command + 8;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: loadbin <filename>\n");
+            return;
+        }
+        
+        vga_writestring("Loading binary: ");
+        vga_writestring(filename);
+        vga_putchar('\n');
+        
+        int result = binary_load(filename);
+        switch (result) {
+            case BINARY_SUCCESS:
+                vga_writestring("Binary loaded successfully!\n");
+                break;
+            case BINARY_ERROR_NOT_FOUND:
+                vga_writestring("Error: Binary file not found\n");
+                break;
+            case BINARY_ERROR_FORMAT:
+                vga_writestring("Error: Invalid binary format\n");
+                break;
+            case BINARY_ERROR_NO_MEMORY:
+                vga_writestring("Error: Not enough memory\n");
+                break;
+            case BINARY_ERROR_IO:
+                vga_writestring("Error: I/O error while loading\n");
+                break;
+            default:
+                vga_writestring("Error: Unknown error loading binary\n");
+                break;
+        }
+    } else if (strncmp(command, "execbin ", 8) == 0) {
+        const char *filename = command + 8;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: execbin <filename>\n");
+            return;
+        }
+        
+        vga_writestring("Executing binary: ");
+        vga_writestring(filename);
+        vga_putchar('\n');
+        
+        int result = binary_execute(filename);
+        if (result != BINARY_SUCCESS) {
+            vga_writestring("Error: Cannot execute binary\n");
+        }
+    } else if (strncmp(command, "unloadbin ", 10) == 0) {
+        const char *filename = command + 10;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: unloadbin <filename>\n");
+            return;
+        }
+        
+        int result = binary_unload(filename);
+        if (result == BINARY_SUCCESS) {
+            vga_writestring("Binary unloaded successfully\n");
+        } else {
+            vga_writestring("Error: Binary not found or cannot unload\n");
+        }
+    } else if (strcmp(command, "listbin") == 0) {
+        binary_list_programs();
+    } else if (strcmp(command, "cleanupbin") == 0) {
+        binary_cleanup();
+    } else if (strncmp(command, "createbin ", 10) == 0) {
+        // Parse: createbin <filename> <hex_code>
+        char filename[256];
+        char hex_code[512];
+        const char *args = command + 10;
+        
+        // Find space separator
+        const char *space = args;
+        while (*space && *space != ' ') space++;
+        if (!*space) {
+            vga_writestring("Usage: createbin <filename> <hex_code>\n");
+            vga_writestring("Example: createbin test.bin B82A000000C3\n");
+            return;
+        }
+        
+        // Copy filename
+        int len = space - args;
+        if (len >= sizeof(filename)) len = sizeof(filename) - 1;
+        memcpy(filename, args, len);
+        filename[len] = '\0';
+        
+        // Copy hex code
+        strcpy(hex_code, space + 1);
+        
+        // Convert hex string to bytes
+        int hex_len = strlen(hex_code);
+        if (hex_len % 2 != 0) {
+            vga_writestring("Error: Hex code must have even number of characters\n");
+            return;
+        }
+        
+        int code_len = hex_len / 2;
+        if (code_len > 256) {
+            vga_writestring("Error: Code too long (max 256 bytes)\n");
+            return;
+        }
+        
+        uint8_t code_bytes[256];
+        for (int i = 0; i < code_len; i++) {
+            char hex_byte[3] = {hex_code[i*2], hex_code[i*2+1], 0};
+            int byte_val = 0;
+            
+            // Parse hex byte
+            for (int j = 0; j < 2; j++) {
+                char c = hex_byte[j];
+                byte_val <<= 4;
+                if (c >= '0' && c <= '9') {
+                    byte_val += c - '0';
+                } else if (c >= 'A' && c <= 'F') {
+                    byte_val += c - 'A' + 10;
+                } else if (c >= 'a' && c <= 'f') {
+                    byte_val += c - 'a' + 10;
+                } else {
+                    vga_writestring("Error: Invalid hex character\n");
+                    return;
+                }
+            }
+            code_bytes[i] = byte_val;
+        }
+        
+        // Create binary
+        int result = binary_create_simple(filename, code_bytes, code_len, 0);
+        if (result == BINARY_SUCCESS) {
+            vga_writestring("Binary created successfully!\n");
+            vga_writestring("Use 'loadbin ");
+            vga_writestring(filename);
+            vga_writestring("' to load it.\n");
+        } else {
+            vga_writestring("Error: Cannot create binary\n");
+        }
+    } else if (strcmp(command, "testbin") == 0) {
+        vga_writestring("Running binary loader tests...\n");
+        
+        // Test 1: Create a simple binary that returns 123
+        vga_writestring("Test 1: Creating simple binary...\n");
+        uint8_t test_code[] = {
+            0xB8, 0x7B, 0x00, 0x00, 0x00, // mov eax, 123
+            0xC3                           // ret
+        };
+        
+        int result = binary_create_simple("test123.bin", test_code, sizeof(test_code), 0);
+        if (result != BINARY_SUCCESS) {
+            vga_writestring("  FAILED: Cannot create test binary\n");
+            return;
+        }
+        vga_writestring("  PASSED: Test binary created\n");
+        
+        // Test 2: Load the binary
+        vga_writestring("Test 2: Loading test binary...\n");
+        result = binary_load("test123.bin");
+        if (result != BINARY_SUCCESS) {
+            vga_writestring("  FAILED: Cannot load test binary\n");
+            return;
+        }
+        vga_writestring("  PASSED: Test binary loaded\n");
+        
+        // Test 3: Execute the binary
+        vga_writestring("Test 3: Executing test binary...\n");
+        result = binary_execute("test123.bin");
+        if (result != BINARY_SUCCESS) {
+            vga_writestring("  FAILED: Cannot execute test binary\n");
+            return;
+        }
+        vga_writestring("  PASSED: Test binary executed (should return 123)\n");
+        
+        // Test 4: List programs
+        vga_writestring("Test 4: Listing loaded programs...\n");
+        binary_list_programs();
+        
+        // Test 5: Unload the binary
+        vga_writestring("Test 5: Unloading test binary...\n");
+        result = binary_unload("test123.bin");
+        if (result != BINARY_SUCCESS) {
+            vga_writestring("  FAILED: Cannot unload test binary\n");
+            return;
+        }
+        vga_writestring("  PASSED: Test binary unloaded\n");
+        
+        vga_writestring("All binary loader tests PASSED!\n");
     } else {
         vga_writestring("Unknown command: ");
         vga_writestring(command);
         vga_writestring("\nType 'help' for available commands.\n");
-    }
+    } 
 }
