@@ -174,7 +174,85 @@ void fat32_unmount(void) {
     g_fat32_fs.initialized = 0;
     vga_writestring("FAT32: File system unmounted\n");
 }
+// Add this helper function before fat32_fopen
+static int fat32_create_dir_entry(uint32_t dir_cluster, const char *formatted_name, 
+                                  uint32_t first_cluster, uint32_t file_size, uint8_t attributes) {
+    // Read the directory cluster
+    if (fat32_read_cluster(dir_cluster, g_fat32_fs.cluster_buffer) != FAT32_SUCCESS) {
+        return FAT32_ERROR_IO;
+    }
+    
+    struct fat32_dir_entry *entries = (struct fat32_dir_entry*)g_fat32_fs.cluster_buffer;
+    int entry_count = g_fat32_fs.bytes_per_cluster / sizeof(struct fat32_dir_entry);
+    
+    // Find an empty directory entry
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].name[0] == 0x00 || entries[i].name[0] == 0xE5) {
+            // Found empty slot, create entry
+            memcpy(entries[i].name, formatted_name, 11);
+            entries[i].attributes = attributes;
+            entries[i].reserved = 0;
+            entries[i].creation_time_tenth = 0;
+            entries[i].creation_time = 0;
+            entries[i].creation_date = 0;
+            entries[i].last_access_date = 0;
+            entries[i].first_cluster_high = (uint16_t)(first_cluster >> 16);
+            entries[i].last_write_time = 0;
+            entries[i].last_write_date = 0;
+            entries[i].first_cluster_low = (uint16_t)(first_cluster & 0xFFFF);
+            entries[i].file_size = file_size;
+            
+            // Mark end of directory if this was the last entry
+            if (i + 1 < entry_count && entries[i + 1].name[0] != 0xE5) {
+                entries[i + 1].name[0] = 0x00;
+            }
+            
+            // Write the directory back
+            return fat32_write_cluster(dir_cluster, g_fat32_fs.cluster_buffer);
+        }
+    }
+    
+    return FAT32_ERROR_NO_SPACE; // Directory full
+}
 
+// Add this helper function to update existing directory entries
+static int fat32_update_dir_entry(uint32_t dir_cluster, const char *formatted_name, 
+                                  uint32_t file_size) {
+    // Read the directory cluster
+    if (fat32_read_cluster(dir_cluster, g_fat32_fs.cluster_buffer) != FAT32_SUCCESS) {
+        return FAT32_ERROR_IO;
+    }
+    
+    struct fat32_dir_entry *entries = (struct fat32_dir_entry*)g_fat32_fs.cluster_buffer;
+    int entry_count = g_fat32_fs.bytes_per_cluster / sizeof(struct fat32_dir_entry);
+    
+    // Find the directory entry
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].name[0] == 0x00) {
+            break; // End of directory
+        }
+        
+        if (entries[i].name[0] == 0xE5) {
+            continue; // Deleted entry
+        }
+        
+        if (entries[i].attributes & (FAT32_ATTR_LONG_NAME | FAT32_ATTR_VOLUME_ID)) {
+            continue; // Skip long name and volume ID entries
+        }
+        
+        // Compare filenames
+        if (memcmp(entries[i].name, formatted_name, 11) == 0) {
+            // Update file size
+            entries[i].file_size = file_size;
+            // Write the directory back
+            return fat32_write_cluster(dir_cluster, g_fat32_fs.cluster_buffer);
+        }
+    }
+    
+    return FAT32_ERROR_NOT_FOUND;
+}
+
+// Replace the fat32_fopen function with this fixed version:
 struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
     if (!g_fat32_fs.initialized) {
         vga_writestring("FAT32: File system not mounted\n");
@@ -210,7 +288,7 @@ struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
     struct fat32_dir_entry dir_entry;
     int found = fat32_find_file_in_dir(g_current_dir_cluster, formatted_name, &dir_entry);
     
-    if (found && (file_mode & FAT32_MODE_CREATE)) {
+    if (found && (file_mode & FAT32_MODE_CREATE) && !(file_mode & FAT32_MODE_APPEND)) {
         vga_writestring("FAT32: File already exists\n");
         return NULL;
     }
@@ -237,8 +315,16 @@ struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
         if (file_mode & FAT32_MODE_APPEND) {
             file->position = file->file_size;
         }
+        
+        // If opening for write (not append), truncate the file
+        if ((file_mode & FAT32_MODE_WRITE) && !(file_mode & FAT32_MODE_APPEND)) {
+            file->file_size = 0;
+            file->position = 0;
+            // Update directory entry
+            fat32_update_dir_entry(g_current_dir_cluster, formatted_name, 0);
+        }
     } else {
-        /* New file - would need to create directory entry and allocate first cluster */
+        /* New file - create directory entry and allocate first cluster */
         file->first_cluster = fat32_allocate_cluster();
         if (file->first_cluster == 0) {
             file->is_open = 0;
@@ -249,12 +335,21 @@ struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
         file->file_size = 0;
         file->attributes = FAT32_ATTR_ARCHIVE;
         
-        /* TODO: Create directory entry */
+        /* Create directory entry */
+        if (fat32_create_dir_entry(g_current_dir_cluster, formatted_name, 
+                                  file->first_cluster, 0, FAT32_ATTR_ARCHIVE) != FAT32_SUCCESS) {
+            // Failed to create directory entry, free the allocated cluster
+            fat32_free_cluster_chain(file->first_cluster);
+            file->is_open = 0;
+            vga_writestring("FAT32: Failed to create directory entry\n");
+            return NULL;
+        }
     }
     
     return file;
 }
 
+// Also update the fat32_fclose function to update directory entry on close:
 int fat32_fclose(struct fat32_file *file) {
     if (!file || !file->is_open) {
         return FAT32_ERROR_INVALID;
@@ -262,6 +357,14 @@ int fat32_fclose(struct fat32_file *file) {
     
     /* Flush any pending writes */
     fat32_fflush(file);
+    
+    /* Update directory entry if file was modified */
+    if (file->mode & FAT32_MODE_WRITE) {
+        char formatted_name[12];
+        if (fat32_format_name(file->name, formatted_name) == FAT32_SUCCESS) {
+            fat32_update_dir_entry(g_current_dir_cluster, formatted_name, file->file_size);
+        }
+    }
     
     /* Mark file as closed */
     file->is_open = 0;
