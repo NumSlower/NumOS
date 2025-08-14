@@ -4,6 +4,7 @@
 #include "paging.h"
 #include "timer.h"
 #include "heap.h"
+#include "fat32.h"
 
 void *memset(void *dest, int val, size_t len) {
     unsigned char *ptr = (unsigned char*)dest;
@@ -113,6 +114,31 @@ void print_dec(uint64_t value) {
     vga_writestring(&buffer[pos]);
 }
 
+// Helper function to parse filename and mode for file operations
+static void parse_file_command(const char *command, char *filename, char *mode, int max_filename_len) {
+    const char *space = command;
+    while (*space && *space != ' ') space++; // Find first space
+    if (!*space) return;
+    
+    space++; // Skip the space
+    int i = 0;
+    while (*space && *space != ' ' && i < max_filename_len - 1) {
+        filename[i++] = *space++;
+    }
+    filename[i] = '\0';
+    
+    if (*space == ' ') {
+        space++;
+        i = 0;
+        while (*space && i < 3) {
+            mode[i++] = *space++;
+        }
+        mode[i] = '\0';
+    } else {
+        strcpy(mode, "r"); // Default to read mode
+    }
+}
+
 void process_command(const char *command) {
     if (strlen(command) == 0) {
         return;
@@ -136,15 +162,30 @@ void process_command(const char *command) {
         vga_writestring("  timer        - Show timer information\n");
         vga_writestring("  sleep <ms>   - Sleep for specified milliseconds\n");
         vga_writestring("  benchmark    - Run memory allocation benchmark\n");
+        vga_writestring("\n--- FAT32 File System Commands ---\n");
+        vga_writestring("  fat32init    - Initialize FAT32 filesystem\n");
+        vga_writestring("  fat32mount   - Mount FAT32 filesystem\n");
+        vga_writestring("  fat32unmount - Unmount FAT32 filesystem\n");
+        vga_writestring("  ls           - List files in directory\n");
+        vga_writestring("  dir          - List files in directory (alias for ls)\n");
+        vga_writestring("  cat <file>   - Display file contents\n");
+        vga_writestring("  create <file> - Create a new file\n");
+        vga_writestring("  write <file> <text> - Write text to file\n");
+        vga_writestring("  fileinfo <file> - Show file information\n");
+        vga_writestring("  exists <file> - Check if file exists\n");
+        vga_writestring("  bootinfo     - Show FAT32 boot sector info\n");
+        vga_writestring("  fsinfo       - Show FAT32 filesystem info\n");
+        vga_writestring("  testfat32    - Run FAT32 filesystem tests\n");
         vga_writestring("  reboot       - Restart the system\n");
     } else if (strcmp(command, "clear") == 0) {
         vga_clear();
     } else if (strcmp(command, "version") == 0) {
-        vga_writestring("NumOS Version 2.0\n");
+        vga_writestring("NumOS Version 2.1\n");
         vga_writestring("64-bit Operating System with Advanced Features\n");
         vga_writestring("- Enhanced paging with VM regions\n");
         vga_writestring("- Kernel heap allocator (kmalloc/kfree)\n");
         vga_writestring("- Timer driver with PIT support\n");
+        vga_writestring("- FAT32 filesystem support\n");
         vga_writestring("- Built with C and Assembly\n");
     } else if (strncmp(command, "echo ", 5) == 0) {
         vga_writestring(command + 5);
@@ -398,6 +439,222 @@ void process_command(const char *command) {
         } else {
             vga_writestring("Large allocation test: FAILED (out of memory)\n");
         }
+    } 
+    // FAT32 Commands
+    else if (strcmp(command, "fat32init") == 0) {
+        vga_writestring("Initializing FAT32 filesystem...\n");
+        int result = fat32_init();
+        if (result == FAT32_SUCCESS) {
+            vga_writestring("FAT32 initialization successful\n");
+        } else {
+            vga_writestring("FAT32 initialization failed with code ");
+            print_dec(result);
+            vga_putchar('\n');
+        }
+    } else if (strcmp(command, "fat32mount") == 0) {
+        vga_writestring("Mounting FAT32 filesystem...\n");
+        int result = fat32_mount();
+        if (result == FAT32_SUCCESS) {
+            vga_writestring("FAT32 filesystem mounted successfully\n");
+        } else {
+            vga_writestring("FAT32 mount failed with code ");
+            print_dec(result);
+            vga_putchar('\n');
+        }
+    } else if (strcmp(command, "fat32unmount") == 0) {
+        fat32_unmount();
+    } else if (strcmp(command, "ls") == 0 || strcmp(command, "dir") == 0) {
+        fat32_list_files();
+    } else if (strncmp(command, "cat ", 4) == 0) {
+        const char *filename = command + 4;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: cat <filename>\n");
+            return;
+        }
+        
+        struct fat32_file *file = fat32_fopen(filename, "r");
+        if (!file) {
+            vga_writestring("Failed to open file: ");
+            vga_writestring(filename);
+            vga_putchar('\n');
+            return;
+        }
+        
+        char buffer[256];
+        size_t bytes_read;
+        vga_writestring("File contents:\n");
+        vga_writestring("--- ");
+        vga_writestring(filename);
+        vga_writestring(" ---\n");
+        
+        while ((bytes_read = fat32_fread(buffer, 1, sizeof(buffer) - 1, file)) > 0) {
+            buffer[bytes_read] = '\0';
+            vga_writestring(buffer);
+        }
+        
+        vga_writestring("\n--- End of file ---\n");
+        fat32_fclose(file);
+    } else if (strncmp(command, "create ", 7) == 0) {
+        const char *filename = command + 7;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: create <filename>\n");
+            return;
+        }
+        
+        struct fat32_file *file = fat32_fopen(filename, "w");
+        if (!file) {
+            vga_writestring("Failed to create file: ");
+            vga_writestring(filename);
+            vga_putchar('\n');
+            return;
+        }
+        
+        fat32_fclose(file);
+        vga_writestring("File created: ");
+        vga_writestring(filename);
+        vga_putchar('\n');
+    } else if (strncmp(command, "write ", 6) == 0) {
+        char filename[256];
+        const char *text_start = command + 6;
+        
+        // Find the space separating filename from text
+        const char *space = text_start;
+        while (*space && *space != ' ') space++;
+        
+        if (!*space) {
+            vga_writestring("Usage: write <filename> <text>\n");
+            return;
+        }
+        
+        // Copy filename
+        int len = space - text_start;
+        if (len >= sizeof(filename)) len = sizeof(filename) - 1;
+        memcpy(filename, text_start, len);
+        filename[len] = '\0';
+        
+        // Skip to text content
+        const char *text = space + 1;
+        
+        struct fat32_file *file = fat32_fopen(filename, "w");
+        if (!file) {
+            vga_writestring("Failed to open file for writing: ");
+            vga_writestring(filename);
+            vga_putchar('\n');
+            return;
+        }
+        
+        size_t text_len = strlen(text);
+        size_t written = fat32_fwrite(text, 1, text_len, file);
+        fat32_fclose(file);
+        
+        vga_writestring("Wrote ");
+        print_dec(written);
+        vga_writestring(" bytes to ");
+        vga_writestring(filename);
+        vga_putchar('\n');
+    } else if (strncmp(command, "fileinfo ", 9) == 0) {
+        const char *filename = command + 9;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: fileinfo <filename>\n");
+            return;
+        }
+        fat32_print_file_info(filename);
+    } else if (strncmp(command, "exists ", 7) == 0) {
+        const char *filename = command + 7;
+        if (strlen(filename) == 0) {
+            vga_writestring("Usage: exists <filename>\n");
+            return;
+        }
+        
+        if (fat32_exists(filename)) {
+            vga_writestring("File exists: ");
+            vga_writestring(filename);
+            vga_writestring(" (");
+            print_dec(fat32_get_file_size(filename));
+            vga_writestring(" bytes)\n");
+        } else {
+            vga_writestring("File does not exist: ");
+            vga_writestring(filename);
+            vga_putchar('\n');
+        }
+    } else if (strcmp(command, "bootinfo") == 0) {
+        fat32_print_boot_sector();
+    } else if (strcmp(command, "fsinfo") == 0) {
+        fat32_print_fs_info();
+    } else if (strcmp(command, "testfat32") == 0) {
+        vga_writestring("Running FAT32 filesystem tests...\n");
+        
+        // Test 1: Initialize and mount
+        vga_writestring("Test 1: Initialize and mount filesystem...\n");
+        if (fat32_init() != FAT32_SUCCESS) {
+            vga_writestring("  FAILED: Could not initialize FAT32\n");
+            return;
+        }
+        if (fat32_mount() != FAT32_SUCCESS) {
+            vga_writestring("  FAILED: Could not mount FAT32\n");
+            return;
+        }
+        vga_writestring("  PASSED: Filesystem initialized and mounted\n");
+        
+        // Test 2: Create and write to a file
+        vga_writestring("Test 2: Create and write to file...\n");
+        struct fat32_file *file = fat32_fopen("test.txt", "w");
+        if (!file) {
+            vga_writestring("  FAILED: Could not create test file\n");
+            return;
+        }
+        
+        const char *test_data = "Hello, FAT32 World!\nThis is a test file.";
+        size_t written = fat32_fwrite(test_data, 1, strlen(test_data), file);
+        fat32_fclose(file);
+        
+        if (written == strlen(test_data)) {
+            vga_writestring("  PASSED: File written successfully (");
+            print_dec(written);
+            vga_writestring(" bytes)\n");
+        } else {
+            vga_writestring("  FAILED: File write incomplete\n");
+            return;
+        }
+        
+        // Test 3: Read back the file
+        vga_writestring("Test 3: Read back file contents...\n");
+        file = fat32_fopen("test.txt", "r");
+        if (!file) {
+            vga_writestring("  FAILED: Could not open test file for reading\n");
+            return;
+        }
+        
+        char read_buffer[256];
+        size_t read_bytes = fat32_fread(read_buffer, 1, sizeof(read_buffer) - 1, file);
+        read_buffer[read_bytes] = '\0';
+        fat32_fclose(file);
+        
+        if (read_bytes == strlen(test_data) && strcmp(read_buffer, test_data) == 0) {
+            vga_writestring("  PASSED: File read successfully\n");
+            vga_writestring("  Content: ");
+            vga_writestring(read_buffer);
+            vga_putchar('\n');
+        } else {
+            vga_writestring("  FAILED: File read mismatch\n");
+            vga_writestring("  Expected: ");
+            vga_writestring(test_data);
+            vga_writestring("\n  Got:      ");
+            vga_writestring(read_buffer);
+            vga_putchar('\n');
+            return;
+        }
+        
+        // Test 4: File existence check
+        vga_writestring("Test 4: File existence check...\n");
+        if (fat32_exists("test.txt") && fat32_get_file_size("test.txt") == strlen(test_data)) {
+            vga_writestring("  PASSED: File exists with correct size\n");
+        } else {
+            vga_writestring("  FAILED: File existence/size check failed\n");
+            return;
+        }
+        
+        vga_writestring("All FAT32 tests PASSED!\n");
     } else if (strcmp(command, "reboot") == 0) {
         vga_writestring("Rebooting system...\n");
         // Simple reboot via keyboard controller

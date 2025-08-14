@@ -15,10 +15,16 @@ void paging_init(void);
 void timer_init(uint32_t frequency);
 void heap_init(void);
 
+/* FAT32 filesystem initialization */
+int fat32_init(void);
+int fat32_mount(void);
+void fat32_unmount(void);
+
 /* Memory management */
 void *memset(void *dest, int val, size_t len);
 void *memcpy(void *dest, const void *src, size_t len);
 size_t strlen(const char *str);
+int memcmp(const void *s1, const void *s2, size_t n);
 
 /* Dynamic memory allocation */
 void* kmalloc(size_t size);

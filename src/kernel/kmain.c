@@ -7,6 +7,7 @@
 #include "pic.h"
 #include "timer.h"
 #include "heap.h"
+#include "fat32.h"
 
 void kernel_init(void) {
     // Initialize VGA text mode first so we can see output
@@ -46,8 +47,31 @@ void kernel_init(void) {
     vga_writestring("- IDT loaded with exception/IRQ handlers\n");
     vga_writestring("- Interrupts enabled\n");
     vga_writestring("- Keyboard ready\n");
+    
+    // Initialize FAT32 filesystem
+    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
+    vga_writestring("Initializing FAT32 filesystem...\n");
+    int fat32_result = fat32_init();
+    if (fat32_result == FAT32_SUCCESS) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("- FAT32 filesystem initialized\n");
+        
+        // Attempt to mount the filesystem
+        fat32_result = fat32_mount();
+        if (fat32_result == FAT32_SUCCESS) {
+            vga_writestring("- FAT32 filesystem mounted\n");
+        } else {
+            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            vga_writestring("- FAT32 mount failed (use 'fat32mount' command)\n");
+        }
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("- FAT32 initialization failed\n");
+    }
+    
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("\nType 'help' for available commands.\n\n");
+    vga_writestring("\nType 'help' for available commands.\n");
+    vga_writestring("FAT32 commands: fat32init, fat32mount, ls, cat, create, write\n\n");
     
     // Show initial system status
     vga_writestring("Initial system uptime: ");
