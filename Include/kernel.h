@@ -12,11 +12,21 @@ void kernel_init(void);
 void gdt_init(void);
 void idt_init(void);
 void paging_init(void);
+void timer_init(uint32_t frequency);
+void heap_init(void);
 
 /* Memory management */
 void *memset(void *dest, int val, size_t len);
 void *memcpy(void *dest, const void *src, size_t len);
 size_t strlen(const char *str);
+
+/* Dynamic memory allocation */
+void* kmalloc(size_t size);
+void* kzalloc(size_t size);
+void* krealloc(void* ptr, size_t new_size);
+void kfree(void* ptr);
+void* kcalloc(size_t count, size_t size);
+char* kstrdup(const char* str);
 
 /* String functions */
 int strcmp(const char *str1, const char *str2);
@@ -34,6 +44,11 @@ void print_prompt(void);
 /* Utility functions */
 void print_hex(uint64_t value);
 void print_dec(uint64_t value);
+
+/* Timer functions */
+uint64_t timer_get_ticks(void);
+uint64_t timer_get_uptime_ms(void);
+void timer_sleep(uint32_t ms);
 
 /* I/O port functions - declared here to avoid circular dependencies */
 uint8_t inb(uint16_t port);

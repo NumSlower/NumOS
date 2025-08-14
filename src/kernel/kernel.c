@@ -2,6 +2,8 @@
 #include "vga.h"
 #include "keyboard.h"
 #include "paging.h"
+#include "timer.h"
+#include "heap.h"
 
 void *memset(void *dest, int val, size_t len) {
     unsigned char *ptr = (unsigned char*)dest;
@@ -118,21 +120,32 @@ void process_command(const char *command) {
     
     if (strcmp(command, "help") == 0) {
         vga_writestring("NumOS Commands:\n");
-        vga_writestring("  help      - Show this help message\n");
-        vga_writestring("  clear     - Clear the screen\n");
-        vga_writestring("  version   - Show system version\n");
-        vga_writestring("  echo <text> - Echo back text\n");
-        vga_writestring("  meminfo   - Show memory information\n");
-        vga_writestring("  paging    - Show paging status\n");
-        vga_writestring("  testpage  - Test page allocation\n");
+        vga_writestring("  help         - Show this help message\n");
+        vga_writestring("  clear        - Clear the screen\n");
+        vga_writestring("  version      - Show system version\n");
+        vga_writestring("  echo <text>  - Echo back text\n");
+        vga_writestring("  meminfo      - Show memory information\n");
+        vga_writestring("  heapinfo     - Show heap allocator statistics\n");
+        vga_writestring("  paging       - Show paging status\n");
+        vga_writestring("  pagingstats  - Show paging statistics\n");
+        vga_writestring("  vmregions    - Show virtual memory regions\n");
+        vga_writestring("  testpage     - Test page allocation\n");
+        vga_writestring("  testheap     - Test heap allocation\n");
         vga_writestring("  translate <addr> - Translate virtual to physical address\n");
-        vga_writestring("  reboot    - Restart the system\n");
+        vga_writestring("  uptime       - Show system uptime\n");
+        vga_writestring("  timer        - Show timer information\n");
+        vga_writestring("  sleep <ms>   - Sleep for specified milliseconds\n");
+        vga_writestring("  benchmark    - Run memory allocation benchmark\n");
+        vga_writestring("  reboot       - Restart the system\n");
     } else if (strcmp(command, "clear") == 0) {
         vga_clear();
     } else if (strcmp(command, "version") == 0) {
-        vga_writestring("NumOS Version 1.1\n");
-        vga_writestring("64-bit Operating System with Paging Support\n");
-        vga_writestring("Built with C and Assembly\n");
+        vga_writestring("NumOS Version 2.0\n");
+        vga_writestring("64-bit Operating System with Advanced Features\n");
+        vga_writestring("- Enhanced paging with VM regions\n");
+        vga_writestring("- Kernel heap allocator (kmalloc/kfree)\n");
+        vga_writestring("- Timer driver with PIT support\n");
+        vga_writestring("- Built with C and Assembly\n");
     } else if (strncmp(command, "echo ", 5) == 0) {
         vga_writestring(command + 5);
         vga_putchar('\n');
@@ -145,12 +158,19 @@ void process_command(const char *command) {
         vga_writestring("\n  Free frames:  ");
         print_dec(pmm_get_free_frames());
         vga_writestring("\n  Frame size:   4096 bytes\n");
+    } else if (strcmp(command, "heapinfo") == 0) {
+        heap_print_stats();
     } else if (strcmp(command, "paging") == 0) {
         vga_writestring("Paging System Status:\n");
         paging_enable(); // This will print status
         vga_writestring("  Page size: 4096 bytes (4 KB)\n");
         vga_writestring("  Large page size: 2097152 bytes (2 MB)\n");
         vga_writestring("  4-level paging active (PML4)\n");
+        vga_writestring("  Enhanced features: VM regions, bulk operations\n");
+    } else if (strcmp(command, "pagingstats") == 0) {
+        paging_print_stats();
+    } else if (strcmp(command, "vmregions") == 0) {
+        paging_print_vm_regions();
     } else if (strcmp(command, "testpage") == 0) {
         vga_writestring("Testing page allocation...\n");
         
@@ -172,11 +192,55 @@ void process_command(const char *command) {
             vga_putchar(*(test_ptr + 4096));
             vga_putchar('\n');
             
+            // Test mapping validation
+            if (paging_validate_range((uint64_t)pages, 2)) {
+                vga_writestring("Page mapping validation: PASSED\n");
+            } else {
+                vga_writestring("Page mapping validation: FAILED\n");
+            }
+            
             // Free the pages
             vmm_free_pages(pages, 2);
             vga_writestring("Pages freed successfully\n");
         } else {
             vga_writestring("Failed to allocate pages\n");
+        }
+    } else if (strcmp(command, "testheap") == 0) {
+        vga_writestring("Testing heap allocation...\n");
+        
+        // Test basic allocation
+        void *ptr1 = kmalloc(100);
+        void *ptr2 = kzalloc(200);
+        char *str = kstrdup("Hello, NumOS!");
+        
+        if (ptr1 && ptr2 && str) {
+            vga_writestring("Basic allocation test: PASSED\n");
+            vga_writestring("Duplicated string: ");
+            vga_writestring(str);
+            vga_putchar('\n');
+            
+            // Test reallocation
+            ptr1 = krealloc(ptr1, 500);
+            if (ptr1) {
+                vga_writestring("Reallocation test: PASSED\n");
+            } else {
+                vga_writestring("Reallocation test: FAILED\n");
+            }
+            
+            // Free everything
+            kfree(ptr1);
+            kfree(ptr2);
+            kfree(str);
+            vga_writestring("Memory freed successfully\n");
+        } else {
+            vga_writestring("Basic allocation test: FAILED\n");
+        }
+        
+        // Validate heap
+        if (heap_validate()) {
+            vga_writestring("Heap validation: PASSED\n");
+        } else {
+            vga_writestring("Heap validation: FAILED\n");
         }
     } else if (strncmp(command, "translate ", 10) == 0) {
         // Simple hex parser for virtual address
@@ -214,6 +278,126 @@ void process_command(const char *command) {
             vga_writestring("Not mapped");
         }
         vga_putchar('\n');
+    } else if (strcmp(command, "uptime") == 0) {
+        uint64_t uptime_ms = timer_get_uptime_ms();
+        uint64_t seconds = uptime_ms / 1000;
+        uint64_t minutes = seconds / 60;
+        uint64_t hours = minutes / 60;
+        
+        vga_writestring("System uptime: ");
+        if (hours > 0) {
+            print_dec(hours);
+            vga_writestring("h ");
+        }
+        if (minutes > 0) {
+            print_dec(minutes % 60);
+            vga_writestring("m ");
+        }
+        print_dec(seconds % 60);
+        vga_writestring("s (");
+        print_dec(uptime_ms);
+        vga_writestring(" ms)\n");
+    } else if (strcmp(command, "timer") == 0) {
+        struct timer_stats stats = timer_get_stats();
+        vga_writestring("Timer Information:\n");
+        vga_writestring("  Frequency:    ");
+        print_dec(stats.frequency);
+        vga_writestring(" Hz\n");
+        vga_writestring("  Total ticks:  ");
+        print_dec(stats.ticks);
+        vga_writestring("\n  Uptime:       ");
+        print_dec(stats.seconds);
+        vga_writestring(" seconds\n");
+    } else if (strncmp(command, "sleep ", 6) == 0) {
+        // Parse sleep duration
+        const char *ms_str = command + 6;
+        uint32_t ms = 0;
+        
+        while (*ms_str >= '0' && *ms_str <= '9') {
+            ms = ms * 10 + (*ms_str - '0');
+            ms_str++;
+        }
+        
+        if (ms > 0 && ms <= 10000) { // Max 10 seconds
+            vga_writestring("Sleeping for ");
+            print_dec(ms);
+            vga_writestring(" ms...\n");
+            
+            uint64_t start_time = timer_get_uptime_ms();
+            timer_sleep(ms);
+            uint64_t end_time = timer_get_uptime_ms();
+            
+            vga_writestring("Woke up after ");
+            print_dec(end_time - start_time);
+            vga_writestring(" ms\n");
+        } else {
+            vga_writestring("Invalid sleep duration (1-10000 ms)\n");
+        }
+    } else if (strcmp(command, "benchmark") == 0) {
+        vga_writestring("Running memory allocation benchmark...\n");
+        
+        uint64_t start_bench = timer_benchmark_start();
+        
+        // Allocate and free many small blocks
+        void *ptrs[100];
+        for (int i = 0; i < 100; i++) {
+            ptrs[i] = kmalloc(64);
+            if (!ptrs[i]) {
+                vga_writestring("Allocation failed at iteration ");
+                print_dec(i);
+                vga_putchar('\n');
+                break;
+            }
+        }
+        
+        // Free all blocks
+        for (int i = 0; i < 100; i++) {
+            if (ptrs[i]) {
+                kfree(ptrs[i]);
+            }
+        }
+        
+        uint64_t elapsed_ms = timer_benchmark_end(start_bench);
+        
+        vga_writestring("Benchmark completed in ");
+        print_dec(elapsed_ms);
+        vga_writestring(" ms\n");
+        
+        // Test large allocation
+        start_bench = timer_benchmark_start();
+        void *large_ptr = kmalloc(1024 * 1024); // 1MB
+        if (large_ptr) {
+            // Write pattern to test
+            char *test_ptr = (char*)large_ptr;
+            for (int i = 0; i < 1000; i++) {
+                test_ptr[i] = (char)(i % 256);
+            }
+            
+            // Verify pattern
+            int errors = 0;
+            for (int i = 0; i < 1000; i++) {
+                if (test_ptr[i] != (char)(i % 256)) {
+                    errors++;
+                }
+            }
+            
+            kfree(large_ptr);
+            elapsed_ms = timer_benchmark_end(start_bench);
+            
+            vga_writestring("Large allocation test (1MB): ");
+            if (errors == 0) {
+                vga_writestring("PASSED");
+            } else {
+                vga_writestring("FAILED (");
+                print_dec(errors);
+                vga_writestring(" errors)");
+            }
+            vga_writestring(" in ");
+            print_dec(elapsed_ms);
+            vga_writestring(" ms\n");
+        } else {
+            vga_writestring("Large allocation test: FAILED (out of memory)\n");
+        }
     } else if (strcmp(command, "reboot") == 0) {
         vga_writestring("Rebooting system...\n");
         // Simple reboot via keyboard controller

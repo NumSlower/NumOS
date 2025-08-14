@@ -5,6 +5,7 @@
 #include "pic.h"
 #include "gdt.h"
 #include "paging.h"
+#include "timer.h"
 
 /* IDT entries - we'll use 256 entries (0-255) */
 #define IDT_ENTRIES 256
@@ -176,7 +177,8 @@ void irq_handler(uint32_t irq_num) {
     /* Handle specific IRQs */
     switch (irq_num) {
         case 0: /* Timer IRQ */
-            /* Timer tick - we can add timer functionality here later */
+            /* Handle timer interrupt */
+            timer_handler();
             break;
             
         case 1: /* Keyboard IRQ */

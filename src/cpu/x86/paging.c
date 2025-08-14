@@ -1,6 +1,7 @@
 #include "paging.h"
 #include "kernel.h"
 #include "vga.h"
+#include "heap.h"
 
 /* Page table pointers from boot (now properly declared as extern) */
 extern uint8_t p4_table[];
@@ -19,6 +20,19 @@ static uint64_t next_frame_addr = 0x200000; // Start after 2MB (skip low memory)
 /* Memory layout */
 static struct physical_memory_info memory_info;
 
+/* Enhanced paging statistics */
+struct paging_stats {
+    uint64_t page_faults;
+    uint64_t pages_mapped;
+    uint64_t pages_unmapped;
+    uint64_t tlb_flushes;
+    uint64_t allocation_failures;
+};
+
+static struct paging_stats paging_stats = {0};
+
+static struct vm_region *vm_regions = NULL;
+
 void paging_init(void) {
     // Set up memory info (simplified - in real OS you'd parse multiboot info)
     memory_info.total_memory = 128 * 1024 * 1024; // 128MB for now
@@ -32,7 +46,13 @@ void paging_init(void) {
     // Initialize virtual memory manager  
     vmm_init();
     
-    vga_writestring("Paging initialized successfully\n");
+    // Create initial VM regions
+    paging_create_vm_region(KERNEL_VIRTUAL_BASE, KERNEL_VIRTUAL_BASE + 0x400000, 
+                           PAGE_PRESENT | PAGE_WRITABLE);
+    paging_create_vm_region(KERNEL_HEAP_START, KERNEL_HEAP_START + (16 * 1024 * 1024),
+                           PAGE_PRESENT | PAGE_WRITABLE);
+    
+    vga_writestring("Enhanced paging system initialized\n");
 }
 
 void paging_enable(void) {
@@ -45,6 +65,195 @@ void paging_enable(void) {
     } else {
         vga_writestring("Paging is active\n");
     }
+}
+
+/* Enhanced virtual memory region management */
+int paging_create_vm_region(uint64_t start, uint64_t end, uint64_t flags) {
+    struct vm_region *region = (struct vm_region*)kmalloc(sizeof(struct vm_region));
+    if (!region) {
+        return -1;
+    }
+    
+    region->start = paging_align_down(start, PAGE_SIZE);
+    region->end = paging_align_up(end, PAGE_SIZE);
+    region->flags = flags;
+    region->next = vm_regions;
+    vm_regions = region;
+    
+    return 0;
+}
+
+void paging_destroy_vm_region(uint64_t start, uint64_t end) {
+    struct vm_region **current = &vm_regions;
+    
+    while (*current) {
+        struct vm_region *region = *current;
+        if (region->start == start && region->end == end) {
+            *current = region->next;
+            kfree(region);
+            return;
+        }
+        current = &region->next;
+    }
+}
+
+
+/* Enhanced page mapping with better error handling */
+int paging_map_page_advanced(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags, int overwrite) {
+    // Align addresses
+    virtual_addr = paging_align_down(virtual_addr, PAGE_SIZE);
+    physical_addr = paging_align_down(physical_addr, PAGE_SIZE);
+    
+    // Check if page is already mapped
+    page_entry_t *entry = paging_get_page_entry(virtual_addr, 0);
+    if (entry && (*entry & PAGE_PRESENT) && !overwrite) {
+        vga_writestring("Warning: Page already mapped at ");
+        print_hex(virtual_addr);
+        vga_writestring("\n");
+        return -1;
+    }
+    
+    // Get or create page entry
+    entry = paging_get_page_entry(virtual_addr, 1);
+    if (!entry) {
+        paging_stats.allocation_failures++;
+        return -1; // Failed to get/create page entry
+    }
+    
+    // Map the page
+    *entry = physical_addr | flags | PAGE_PRESENT;
+    
+    // Flush TLB for this page
+    paging_flush_page(virtual_addr);
+    paging_stats.pages_mapped++;
+    
+    return 0;
+}
+
+int paging_unmap_page_advanced(uint64_t virtual_addr, int free_physical) {
+    // Align address
+    virtual_addr = paging_align_down(virtual_addr, PAGE_SIZE);
+    
+    // Get page entry
+    page_entry_t *entry = paging_get_page_entry(virtual_addr, 0);
+    if (!entry || !(*entry & PAGE_PRESENT)) {
+        return -1; // Not mapped
+    }
+    
+    // Get physical address before unmapping
+    uint64_t physical_addr = *entry & ~0xFFF;
+    
+    // Unmap the page
+    *entry = 0;
+    
+    // Free physical frame if requested
+    if (free_physical && physical_addr) {
+        pmm_free_frame(physical_addr);
+    }
+    
+    // Flush TLB for this page
+    paging_flush_page(virtual_addr);
+    paging_stats.pages_unmapped++;
+    
+    return 0;
+}
+
+/* Bulk operations */
+int paging_map_range(uint64_t virtual_start, uint64_t physical_start, size_t pages, uint64_t flags) {
+    for (size_t i = 0; i < pages; i++) {
+        uint64_t virt = virtual_start + (i * PAGE_SIZE);
+        uint64_t phys = physical_start + (i * PAGE_SIZE);
+        
+        if (paging_map_page_advanced(virt, phys, flags, 0) != 0) {
+            // Cleanup already mapped pages
+            for (size_t j = 0; j < i; j++) {
+                paging_unmap_page_advanced(virtual_start + (j * PAGE_SIZE), 1);
+            }
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int paging_unmap_range(uint64_t virtual_start, size_t pages, int free_physical) {
+    int success = 0;
+    
+    for (size_t i = 0; i < pages; i++) {
+        uint64_t virt = virtual_start + (i * PAGE_SIZE);
+        if (paging_unmap_page_advanced(virt, free_physical) == 0) {
+            success++;
+        }
+    }
+    
+    return success;
+}
+
+/* Protection and attribute changes */
+int paging_change_protection(uint64_t virtual_addr, uint64_t new_flags) {
+    page_entry_t *entry = paging_get_page_entry(virtual_addr, 0);
+    if (!entry || !(*entry & PAGE_PRESENT)) {
+        return -1; // Page not mapped
+    }
+    
+    // Preserve physical address, update flags
+    uint64_t physical = *entry & ~0xFFF;
+    *entry = physical | new_flags | PAGE_PRESENT;
+    
+    paging_flush_page(virtual_addr);
+    return 0;
+}
+
+int paging_is_mapped(uint64_t virtual_addr) {
+    page_entry_t *entry = paging_get_page_entry(virtual_addr, 0);
+    return (entry && (*entry & PAGE_PRESENT)) ? 1 : 0;
+}
+
+/* Memory information and debugging */
+void paging_print_stats(void) {
+    vga_writestring("Paging Statistics:\n");
+    vga_writestring("  Page faults:        ");
+    print_dec(paging_stats.page_faults);
+    vga_writestring("\n  Pages mapped:       ");
+    print_dec(paging_stats.pages_mapped);
+    vga_writestring("\n  Pages unmapped:     ");
+    print_dec(paging_stats.pages_unmapped);
+    vga_writestring("\n  TLB flushes:        ");
+    print_dec(paging_stats.tlb_flushes);
+    vga_writestring("\n  Allocation failures: ");
+    print_dec(paging_stats.allocation_failures);
+    vga_writestring("\n");
+}
+
+void paging_print_vm_regions(void) {
+    vga_writestring("Virtual Memory Regions:\n");
+    struct vm_region *region = vm_regions;
+    int count = 0;
+    
+    while (region) {
+        vga_writestring("  Region ");
+        print_dec(count++);
+        vga_writestring(": ");
+        print_hex(region->start);
+        vga_writestring(" - ");
+        print_hex(region->end);
+        vga_writestring(" (flags: ");
+        print_hex(region->flags);
+        vga_writestring(")\n");
+        region = region->next;
+    }
+}
+
+int paging_validate_range(uint64_t virtual_start, size_t pages) {
+    for (size_t i = 0; i < pages; i++) {
+        uint64_t addr = virtual_start + (i * PAGE_SIZE);
+        if (!paging_is_mapped(addr)) {
+            vga_writestring("Invalid page at ");
+            print_hex(addr);
+            vga_writestring("\n");
+            return 0;
+        }
+    }
+    return 1;
 }
 
 uint64_t paging_get_physical_address(uint64_t virtual_addr) {
@@ -88,48 +297,18 @@ uint64_t paging_get_physical_address(uint64_t virtual_addr) {
 }
 
 int paging_map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags) {
-    // Align addresses
-    virtual_addr = paging_align_down(virtual_addr, PAGE_SIZE);
-    physical_addr = paging_align_down(physical_addr, PAGE_SIZE);
-    
-    // Get page entry
-    page_entry_t *entry = paging_get_page_entry(virtual_addr, 1);
-    if (!entry) {
-        return -1; // Failed to get/create page entry
-    }
-    
-    // Map the page
-    *entry = physical_addr | flags | PAGE_PRESENT;
-    
-    // Flush TLB for this page
-    paging_flush_page(virtual_addr);
-    
-    return 0;
+    return paging_map_page_advanced(virtual_addr, physical_addr, flags, 0);
 }
 
 int paging_unmap_page(uint64_t virtual_addr) {
-    // Align address
-    virtual_addr = paging_align_down(virtual_addr, PAGE_SIZE);
-    
-    // Get page entry
-    page_entry_t *entry = paging_get_page_entry(virtual_addr, 0);
-    if (!entry || !(*entry & PAGE_PRESENT)) {
-        return -1; // Not mapped
-    }
-    
-    // Unmap the page
-    *entry = 0;
-    
-    // Flush TLB for this page
-    paging_flush_page(virtual_addr);
-    
-    return 0;
+    return paging_unmap_page_advanced(virtual_addr, 1);
 }
 
 void paging_flush_tlb(void) {
     uint64_t cr3;
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
     __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+    paging_stats.tlb_flushes++;
 }
 
 void paging_flush_page(uint64_t virtual_addr) {
@@ -344,6 +523,29 @@ int paging_is_aligned(uint64_t addr, uint64_t alignment) {
 }
 
 void page_fault_handler(uint64_t error_code, uint64_t fault_addr) {
+    paging_stats.page_faults++;
+    
+    // Check if it's in a valid VM region
+    struct vm_region *region = paging_find_vm_region(fault_addr);
+    
+    if (region) {
+        // Try to handle the fault by allocating a new page
+        if (!(error_code & 1)) { // Page not present
+            uint64_t physical = pmm_alloc_frame();
+            if (physical) {
+                uint64_t page_addr = paging_align_down(fault_addr, PAGE_SIZE);
+                if (paging_map_page_advanced(page_addr, physical, region->flags, 0) == 0) {
+                    vga_writestring("Page fault handled: allocated page at ");
+                    print_hex(page_addr);
+                    vga_writestring("\n");
+                    return; // Successfully handled
+                }
+                pmm_free_frame(physical); // Free if mapping failed
+            }
+        }
+    }
+    
+    // Unhandled page fault - display error
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_RED));
     vga_writestring("\n\nPAGE FAULT!\n");
     
@@ -371,8 +573,14 @@ void page_fault_handler(uint64_t error_code, uint64_t fault_addr) {
         vga_writestring("- Kernel mode access\n");
     }
     
+    if (region) {
+        vga_writestring("- Within valid VM region\n");
+    } else {
+        vga_writestring("- Outside valid VM regions\n");
+    }
+    
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("\nSystem halted due to page fault.\n");
+    vga_writestring("\nSystem halted due to unhandled page fault.\n");
     
     hang();
 }

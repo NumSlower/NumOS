@@ -52,6 +52,16 @@ struct page_frame {
 #define FRAME_USED      0x01
 #define FRAME_KERNEL    0x02
 
+/* Virtual memory region */
+struct vm_region {
+    uint64_t start;
+    uint64_t end;
+    uint64_t flags;
+    struct vm_region *next;
+};
+
+struct vm_region* paging_find_vm_region(uint64_t addr);
+
 /* Function prototypes */
 void paging_init(void);
 void paging_enable(void);
@@ -60,6 +70,24 @@ int paging_map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flag
 int paging_unmap_page(uint64_t virtual_addr);
 void paging_flush_tlb(void);
 void paging_flush_page(uint64_t virtual_addr);
+
+/* Enhanced paging functions */
+int paging_map_page_advanced(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags, int overwrite);
+int paging_unmap_page_advanced(uint64_t virtual_addr, int free_physical);
+int paging_map_range(uint64_t virtual_start, uint64_t physical_start, size_t pages, uint64_t flags);
+int paging_unmap_range(uint64_t virtual_start, size_t pages, int free_physical);
+int paging_change_protection(uint64_t virtual_addr, uint64_t new_flags);
+int paging_is_mapped(uint64_t virtual_addr);
+
+/* Virtual memory region management */
+int paging_create_vm_region(uint64_t start, uint64_t end, uint64_t flags);
+void paging_destroy_vm_region(uint64_t start, uint64_t end);
+struct vm_region* paging_find_vm_region(uint64_t addr);
+
+/* Debug and statistics */
+void paging_print_stats(void);
+void paging_print_vm_regions(void);
+int paging_validate_range(uint64_t virtual_start, size_t pages);
 
 /* Physical memory management */
 void pmm_init(struct physical_memory_info *mem_info);
