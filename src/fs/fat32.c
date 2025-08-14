@@ -3,13 +3,25 @@
 #include "vga.h"
 #include "heap.h"
 
+/* Add memcmp function since it's not available in kernel */
+int memcmp(const void *s1, const void *s2, size_t n) {
+    const unsigned char *p1 = (const unsigned char*)s1;
+    const unsigned char *p2 = (const unsigned char*)s2;
+    
+    while (n-- > 0) {
+        if (*p1 != *p2) {
+            return (*p1 < *p2) ? -1 : 1;
+        }
+        p1++;
+        p2++;
+    }
+    return 0;
+}
+
 /* Global FAT32 file system state */
 static struct fat32_fs g_fat32_fs = {0};
 static struct fat32_file g_open_files[FAT32_MAX_OPEN_FILES] = {0};
 static int g_current_dir_cluster = 0;
-static struct fat32_dir_entry *g_dir_entries = NULL;
-static int g_dir_entry_count = 0;
-static int g_dir_entry_index = 0;
 
 /* Simple disk simulation for demonstration - in real implementation, 
    this would interface with actual disk drivers */
@@ -154,9 +166,9 @@ void fat32_unmount(void) {
         g_fat32_fs.cluster_buffer = NULL;
     }
     
-    if (g_dir_entries) {
-        kfree(g_dir_entries);
-        g_dir_entries = NULL;
+    if (g_disk_image) {
+        kfree(g_disk_image);
+        g_disk_image = NULL;
     }
     
     g_fat32_fs.initialized = 0;
