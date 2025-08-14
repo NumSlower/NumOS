@@ -6,7 +6,7 @@
 
 /* Heap configuration */
 #define HEAP_START          0xFFFFFFFF90000000UL  // Kernel heap start
-#define HEAP_SIZE (16 * 1024)  // 16 KB           // 16MB initial heap
+#define HEAP_SIZE (16 * 1024 * 1024)  // 16 KB           // 16MB initial heap
 #define HEAP_MIN_SIZE       16                     // Minimum allocation size
 #define HEAP_ALIGNMENT      16                     // Memory alignment
 #define HEAP_MAGIC_ALLOC    0xDEADBEEF            // Allocated block magic
