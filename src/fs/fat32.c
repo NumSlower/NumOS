@@ -29,6 +29,26 @@ static struct {
 } g_fs = {0};
 
 static const uint32_t DISK_SIZE = 32 * 1024 * 1024; // 32MB
+/* Global FAT32 file system state */
+static struct fat32_fs g_fat32_fs = {0};
+static struct fat32_file g_open_files[FAT32_MAX_OPEN_FILES] = {0};
+static int g_current_dir_cluster = 0;
+static struct disk_handle *g_disk_handle = NULL;
+
+/* Helper function prototypes */
+static int fat32_read_boot_sector(void);
+static int fat32_read_fat_cache(void);
+static uint32_t fat32_cluster_to_sector(uint32_t cluster);
+static int fat32_read_cluster(uint32_t cluster, void *buffer);
+static int fat32_write_cluster(uint32_t cluster, const void *buffer);
+static struct fat32_file* fat32_find_free_handle(void);
+static int fat32_find_file_in_dir(uint32_t dir_cluster, const char *filename, struct fat32_dir_entry *entry);
+static int fat32_parse_mode(const char *mode);
+static void fat32_close_all_files(void);
+static int fat32_create_dir_entry(uint32_t dir_cluster, const char *formatted_name, 
+                                  uint32_t first_cluster, uint32_t file_size, uint8_t attributes);
+static int fat32_update_dir_entry(uint32_t dir_cluster, const char *formatted_name, 
+                                  uint32_t file_size);
 
 /* Optimized helper functions - inline where possible */
 static inline uint32_t cluster_to_sector(uint32_t cluster) {
@@ -177,122 +197,195 @@ static void create_boot_sector(void) {
 }
 
 int fat32_init(void) {
-    if (g_fs.initialized) return FAT32_SUCCESS;
+    if (g_fat32_fs.initialized) {
+        vga_writestring("FAT32: Already initialized\n");
+        return FAT32_SUCCESS;
+    }
     
-    g_fs.disk_image = (uint8_t*)kmalloc(DISK_SIZE);
-    if (!g_fs.disk_image) return FAT32_ERROR_NO_MEMORY;
+    /* Open disk handle */
+    g_disk_handle = disk_open(0); /* Use disk 0 */
+    if (!g_disk_handle) {
+        vga_writestring("FAT32: Failed to open disk 0\n");
+        return FAT32_ERROR_IO;
+    }
     
-    memset(g_fs.disk_image, 0, DISK_SIZE);
-    create_boot_sector();
-    memset(g_fs.files, 0, sizeof(g_fs.files));
+    /* Clear open files array */
+    memset(g_open_files, 0, sizeof(g_open_files));
     
+    vga_writestring("FAT32: File system initialized with disk driver\n");
     return FAT32_SUCCESS;
 }
 
 int fat32_mount(void) {
-    if (g_fs.initialized) return FAT32_SUCCESS;
-    
-    /* Read and parse boot sector */
-    struct fat32_boot_sector *boot = (struct fat32_boot_sector*)g_fs.disk_image;
-    if (boot->boot_sector_signature != 0xAA55) return FAT32_ERROR_INVALID;
-    
-    /* Store only needed values */
-    g_fs.bytes_per_sector = boot->bytes_per_sector;
-    g_fs.sectors_per_cluster = boot->sectors_per_cluster;
-    g_fs.reserved_sectors = boot->reserved_sectors;
-    g_fs.num_fats = boot->num_fats;
-    g_fs.sectors_per_fat = boot->sectors_per_fat_32;
-    g_fs.root_cluster = boot->root_cluster;
-    
-    /* Calculate derived values */
-    g_fs.fat_start_sector = g_fs.reserved_sectors;
-    g_fs.data_start_sector = g_fs.fat_start_sector + (g_fs.num_fats * g_fs.sectors_per_fat);
-    g_fs.bytes_per_cluster = g_fs.bytes_per_sector * g_fs.sectors_per_cluster;
-    g_fs.current_dir_cluster = g_fs.root_cluster;
-    
-    /* Allocate buffers */
-    g_fs.cluster_buffer = (uint8_t*)kmalloc(g_fs.bytes_per_cluster);
-    if (!g_fs.cluster_buffer) return FAT32_ERROR_NO_MEMORY;
-    
-    size_t fat_size = g_fs.sectors_per_fat * g_fs.bytes_per_sector;
-    g_fs.fat_cache = (uint32_t*)kmalloc(fat_size);
-    if (!g_fs.fat_cache) {
-        kfree(g_fs.cluster_buffer);
-        return FAT32_ERROR_NO_MEMORY;
+    if (g_fat32_fs.initialized) {
+        vga_writestring("FAT32: Already mounted\n");
+        return FAT32_SUCCESS;
     }
     
-    /* Read FAT */
-    if (read_sectors(g_fs.fat_start_sector, g_fs.sectors_per_fat, g_fs.fat_cache) != FAT32_SUCCESS) {
-        kfree(g_fs.cluster_buffer);
-        kfree(g_fs.fat_cache);
+    if (!g_disk_handle) {
+        vga_writestring("FAT32: No disk handle available\n");
+        return FAT32_ERROR_NOT_FOUND;
+    }
+    
+    /* Read boot sector */
+    if (fat32_read_boot_sector() != FAT32_SUCCESS) {
+        vga_writestring("FAT32: Failed to read boot sector\n");
         return FAT32_ERROR_IO;
     }
     
-    g_fs.initialized = 1;
+    /* Validate FAT32 signature */
+    if (g_fat32_fs.boot_sector.boot_sector_signature != 0xAA55) {
+        vga_writestring("FAT32: Invalid boot sector signature\n");
+        return FAT32_ERROR_INVALID;
+    }
+    
+    /* Calculate file system parameters */
+    g_fat32_fs.fat_start_sector = g_fat32_fs.boot_sector.reserved_sectors;
+    g_fat32_fs.data_start_sector = g_fat32_fs.fat_start_sector + 
+        (g_fat32_fs.boot_sector.num_fats * g_fat32_fs.boot_sector.sectors_per_fat_32);
+    g_fat32_fs.root_dir_cluster = g_fat32_fs.boot_sector.root_cluster;
+    g_fat32_fs.sectors_per_fat = g_fat32_fs.boot_sector.sectors_per_fat_32;
+    g_fat32_fs.bytes_per_cluster = g_fat32_fs.boot_sector.bytes_per_sector * 
+        g_fat32_fs.boot_sector.sectors_per_cluster;
+    
+    /* Allocate cluster buffer */
+    g_fat32_fs.cluster_buffer = (uint8_t*)kmalloc(g_fat32_fs.bytes_per_cluster);
+    if (!g_fat32_fs.cluster_buffer) {
+        vga_writestring("FAT32: Failed to allocate cluster buffer\n");
+        return FAT32_ERROR_NO_MEMORY;
+    }
+    
+    /* Read and cache FAT */
+    if (fat32_read_fat_cache() != FAT32_SUCCESS) {
+        vga_writestring("FAT32: Failed to read FAT cache\n");
+        kfree(g_fat32_fs.cluster_buffer);
+        return FAT32_ERROR_IO;
+    }
+    
+    g_fat32_fs.initialized = 1;
+    g_current_dir_cluster = g_fat32_fs.root_dir_cluster;
+    
+    vga_writestring("FAT32: File system mounted successfully\n");
     return FAT32_SUCCESS;
 }
 
 void fat32_unmount(void) {
-    if (!g_fs.initialized) return;
-    
-    /* Close all files */
-    for (int i = 0; i < FAT32_MAX_OPEN_FILES; i++) {
-        if (g_fs.files[i].is_open) fat32_fclose(&g_fs.files[i]);
+    if (!g_fat32_fs.initialized) {
+        return;
     }
     
-    if (g_fs.fat_cache) { kfree(g_fs.fat_cache); g_fs.fat_cache = NULL; }
-    if (g_fs.cluster_buffer) { kfree(g_fs.cluster_buffer); g_fs.cluster_buffer = NULL; }
-    if (g_fs.disk_image) { kfree(g_fs.disk_image); g_fs.disk_image = NULL; }
+    /* Close all open files */
+    fat32_close_all_files();
     
-    g_fs.initialized = 0;
+    /* Flush disk cache */
+    if (g_disk_handle) {
+        disk_flush_cache(g_disk_handle);
+    }
+    
+    /* Free allocated memory */
+    if (g_fat32_fs.fat_cache) {
+        kfree(g_fat32_fs.fat_cache);
+        g_fat32_fs.fat_cache = NULL;
+    }
+    
+    if (g_fat32_fs.cluster_buffer) {
+        kfree(g_fat32_fs.cluster_buffer);
+        g_fat32_fs.cluster_buffer = NULL;
+    }
+    
+    g_fat32_fs.initialized = 0;
+    vga_writestring("FAT32: File system unmounted\n");
 }
 
 struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
-    if (!g_fs.initialized || !filename || !mode) return NULL;
+    if (!g_fat32_fs.initialized) {
+        vga_writestring("FAT32: File system not mounted\n");
+        return NULL;
+    }
     
-    struct fat32_file *file = find_free_handle();
-    if (!file) return NULL;
+    if (!filename || !mode) {
+        return NULL;
+    }
     
-    int file_mode = parse_mode(mode);
-    if (file_mode < 0) return NULL;
+    /* Find free file handle */
+    struct fat32_file *file = fat32_find_free_handle();
+    if (!file) {
+        vga_writestring("FAT32: No free file handles\n");
+        return NULL;
+    }
     
+    /* Parse mode */
+    int file_mode = fat32_parse_mode(mode);
+    if (file_mode < 0) {
+        vga_writestring("FAT32: Invalid file mode\n");
+        return NULL;
+    }
+    
+    /* Format filename */
     char formatted_name[12];
-    if (fat32_format_name(filename, formatted_name) != FAT32_SUCCESS) return NULL;
+    if (fat32_format_name(filename, formatted_name) != FAT32_SUCCESS) {
+        vga_writestring("FAT32: Invalid filename\n");
+        return NULL;
+    }
     
+    /* Search for file in current directory */
     struct fat32_dir_entry dir_entry;
-    int found = find_dir_entry(g_fs.current_dir_cluster, formatted_name, &dir_entry, NULL);
+    int found = fat32_find_file_in_dir(g_current_dir_cluster, formatted_name, &dir_entry);
     
-    if (found && (file_mode & FAT32_MODE_CREATE) && !(file_mode & FAT32_MODE_APPEND)) return NULL;
-    if (!found && !(file_mode & FAT32_MODE_CREATE)) return NULL;
+    if (found && (file_mode & FAT32_MODE_CREATE) && !(file_mode & FAT32_MODE_APPEND)) {
+        vga_writestring("FAT32: File already exists\n");
+        return NULL;
+    }
     
+    if (!found && !(file_mode & FAT32_MODE_CREATE)) {
+        vga_writestring("FAT32: File not found\n");
+        return NULL;
+    }
+    
+    /* Initialize file handle */
     strcpy(file->name, filename);
     file->mode = file_mode;
     file->position = 0;
     file->is_open = 1;
     
     if (found) {
-        file->first_cluster = ((uint32_t)dir_entry.first_cluster_high << 16) | dir_entry.first_cluster_low;
+        /* Existing file */
+        file->first_cluster = ((uint32_t)dir_entry.first_cluster_high << 16) | 
+                             dir_entry.first_cluster_low;
         file->current_cluster = file->first_cluster;
         file->file_size = dir_entry.file_size;
         file->attributes = dir_entry.attributes;
         
-        if (file_mode & FAT32_MODE_APPEND) file->position = file->file_size;
+        if (file_mode & FAT32_MODE_APPEND) {
+            file->position = file->file_size;
+        }
+        
+        // If opening for write (not append), truncate the file
         if ((file_mode & FAT32_MODE_WRITE) && !(file_mode & FAT32_MODE_APPEND)) {
             file->file_size = 0;
             file->position = 0;
+            // Update directory entry
+            fat32_update_dir_entry(g_current_dir_cluster, formatted_name, 0);
         }
     } else {
+        /* New file - create directory entry and allocate first cluster */
         file->first_cluster = fat32_allocate_cluster();
-        if (file->first_cluster == 0) { file->is_open = 0; return NULL; }
-        
+        if (file->first_cluster == 0) {
+            file->is_open = 0;
+            vga_writestring("FAT32: Failed to allocate cluster for new file\n");
+            return NULL;
+        }
         file->current_cluster = file->first_cluster;
         file->file_size = 0;
         file->attributes = FAT32_ATTR_ARCHIVE;
         
-        if (create_dir_entry(g_fs.current_dir_cluster, formatted_name, 
-                           file->first_cluster, 0, FAT32_ATTR_ARCHIVE) != FAT32_SUCCESS) {
+        /* Create directory entry */
+        if (fat32_create_dir_entry(g_current_dir_cluster, formatted_name, 
+                                  file->first_cluster, 0, FAT32_ATTR_ARCHIVE) != FAT32_SUCCESS) {
+            // Failed to create directory entry, free the allocated cluster
             fat32_free_cluster_chain(file->first_cluster);
             file->is_open = 0;
+            vga_writestring("FAT32: Failed to create directory entry\n");
             return NULL;
         }
     }
@@ -301,20 +394,30 @@ struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
 }
 
 int fat32_fclose(struct fat32_file *file) {
-    if (!file || !file->is_open) return FAT32_ERROR_INVALID;
+    if (!file || !file->is_open) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    /* Flush any pending writes */
+    fat32_fflush(file);
     
     /* Update directory entry if file was modified */
-    if ((file->mode & FAT32_MODE_WRITE) && strlen(file->name) > 0) {
+    if (file->mode & FAT32_MODE_WRITE) {
         char formatted_name[12];
         if (fat32_format_name(file->name, formatted_name) == FAT32_SUCCESS) {
-            int entry_idx;
-            if (find_dir_entry(g_fs.current_dir_cluster, formatted_name, NULL, &entry_idx)) {
-                update_file_size_in_dir(g_fs.current_dir_cluster, entry_idx, file->file_size);
-            }
+            fat32_update_dir_entry(g_current_dir_cluster, formatted_name, file->file_size);
         }
     }
     
+    /* Flush disk cache to ensure data persistence */
+    if (g_disk_handle) {
+        disk_flush_cache(g_disk_handle);
+    }
+    
+    /* Mark file as closed */
+    file->is_open = 0;
     memset(file, 0, sizeof(struct fat32_file));
+    
     return FAT32_SUCCESS;
 }
 
@@ -627,19 +730,39 @@ void fat32_print_fs_info(void) {
     vga_putchar('\n');
 }
 
-/* Low-level disk I/O wrapper functions for compatibility */
+/* Low-level disk I/O implementations using disk driver */
 int fat32_read_sector(uint32_t sector, void *buffer) {
-    return read_sectors(sector, 1, buffer);
+    if (!g_disk_handle || !buffer) {
+        return FAT32_ERROR_IO;
+    }
+    
+    int result = disk_read_sector(g_disk_handle, sector, buffer);
+    return (result == DISK_SUCCESS) ? FAT32_SUCCESS : FAT32_ERROR_IO;
 }
 
 int fat32_write_sector(uint32_t sector, const void *buffer) {
-    return write_sectors(sector, 1, buffer);
+    if (!g_disk_handle || !buffer) {
+        return FAT32_ERROR_IO;
+    }
+    
+    int result = disk_write_sector(g_disk_handle, sector, buffer);
+    return (result == DISK_SUCCESS) ? FAT32_SUCCESS : FAT32_ERROR_IO;
 }
 
 int fat32_read_sectors(uint32_t start_sector, uint32_t count, void *buffer) {
-    return read_sectors(start_sector, count, buffer);
+    if (!g_disk_handle || !buffer || count == 0) {
+        return FAT32_ERROR_IO;
+    }
+    
+    int result = disk_read_sectors(g_disk_handle, start_sector, count, buffer);
+    return (result == DISK_SUCCESS) ? FAT32_SUCCESS : FAT32_ERROR_IO;
 }
 
 int fat32_write_sectors(uint32_t start_sector, uint32_t count, const void *buffer) {
-    return write_sectors(start_sector, count, buffer);
+    if (!g_disk_handle || !buffer || count == 0) {
+        return FAT32_ERROR_IO;
+    }
+    
+    int result = disk_write_sectors(g_disk_handle, start_sector, count, buffer);
+    return (result == DISK_SUCCESS) ? FAT32_SUCCESS : FAT32_ERROR_IO;
 }

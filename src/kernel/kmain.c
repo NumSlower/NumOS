@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "drivers/vga.h"
 #include "drivers/keyboard.h"
+#include "drivers/disk.h"
 #include "cpu/gdt.h"
 #include "cpu/idt.h"
 #include "cpu/paging.h"
@@ -16,7 +17,7 @@ void kernel_init(void) {
     
     /* Display early boot message */
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("NumOS v2.1 - 64-bit Operating System\n");
+    vga_writestring("NumOS v2.2 - 64-bit Operating System with Persistent Storage\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("Initializing kernel subsystems...\n\n");
     
@@ -44,6 +45,22 @@ void kernel_init(void) {
     vga_writestring("Initializing keyboard driver...\n");
     keyboard_init();
     
+    /* Initialize disk subsystem */
+    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
+    vga_writestring("Initializing disk subsystem...\n");
+    int disk_result = disk_init();
+    if (disk_result == DISK_SUCCESS) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("- Disk subsystem initialized successfully\n");
+        vga_writestring("- Default disk image created/mounted\n");
+        vga_writestring("- Disk cache enabled\n");
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("- Disk initialization failed\n");
+        vga_writestring("  File operations may not persist\n");
+    }
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    
     /* Unmask timer and keyboard IRQs */
     pic_unmask_irq(0); /* Timer */
     pic_unmask_irq(1); /* Keyboard */
@@ -59,10 +76,11 @@ void kernel_init(void) {
     vga_writestring("- IDT loaded with exception/IRQ handlers\n");
     vga_writestring("- Hardware interrupts enabled\n");
     vga_writestring("- Keyboard input ready\n");
+    vga_writestring("- Persistent disk storage available\n");
     
     /* Initialize FAT32 filesystem */
     vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
-    vga_writestring("\nInitializing FAT32 filesystem...\n");
+    vga_writestring("\nInitializing FAT32 filesystem with disk persistence...\n");
     int fat32_result = fat32_init();
     if (fat32_result == FAT32_SUCCESS) {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
@@ -72,10 +90,12 @@ void kernel_init(void) {
         fat32_result = fat32_mount();
         if (fat32_result == FAT32_SUCCESS) {
             vga_writestring("- FAT32 filesystem mounted successfully\n");
+            vga_writestring("- File operations will persist across reboots\n");
         } else {
             vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
             vga_writestring("- FAT32 mount failed (disk may not be formatted)\n");
             vga_writestring("  Use 'fat32mount' command to retry\n");
+            vga_writestring("  Data will still be stored but may not be FAT32 compatible\n");
         }
     } else {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
@@ -85,15 +105,17 @@ void kernel_init(void) {
     
     /* Initialize shell */
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("\nInitializing command shell...\n");
+    vga_writestring("\nInitializing enhanced command shell...\n");
     shell_init();
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_writestring("- Shell initialized with built-in commands\n");
     vga_writestring("- Command registry ready\n");
+    vga_writestring("- Disk management commands available\n");
+    vga_writestring("- File system commands available\n");
     
     /* Show system summary */
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    vga_writestring("\n" "System Ready!\n");
+    vga_writestring("\n" "System Ready with Persistent Storage!\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     
     /* Display memory statistics */
@@ -111,10 +133,24 @@ void kernel_init(void) {
     print_dec(heap_stats.total_size);
     vga_writestring(" bytes total\n");
     
+    /* Display disk statistics */
+    if (disk_is_ready(0)) {
+        uint64_t disk_size = disk_get_size(0);
+        vga_writestring("  Disk storage:    ");
+        print_dec(disk_size / 1024 / 1024);
+        vga_writestring("MB persistent storage available\n");
+    }
+    
     /* Display uptime */
     vga_writestring("  Boot time:       ");
     print_dec(timer_get_uptime_ms());
     vga_writestring(" ms\n");
+    
+    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
+    vga_writestring("\nPersistence Info:\n");
+    vga_writestring("- Files created will persist between reboots\n");
+    vga_writestring("- Use disk commands to manage storage\n");
+    vga_writestring("- Type 'help' for available commands\n");
     
     vga_writestring("\n");
 }
@@ -131,9 +167,17 @@ void kernel_main(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
     vga_writestring("\nShell exited. Cleaning up...\n");
     
+    /* Shutdown subsystems in reverse order */
     shell_shutdown();
     
+    /* Unmount FAT32 and flush caches */
+    fat32_unmount();
+    
+    /* Shutdown disk subsystem (flushes all caches) */
+    disk_shutdown();
+    
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("All data flushed to persistent storage.\n");
     vga_writestring("System shutdown complete.\n");
     
     /* Halt the system */

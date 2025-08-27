@@ -1,5 +1,5 @@
 # NumOS Main Makefile
-# 64-bit Operating System
+# 64-bit Operating System with Disk Driver
 
 # Compiler and tools
 AS = nasm
@@ -39,9 +39,20 @@ OBJECTS = $(ASM_OBJECTS) $(C_OBJECTS)
 KERNEL = $(BUILD_DIR)/kernel.bin
 ISO = NumOS.iso
 
-.PHONY: all clean iso run debug
+.PHONY: all clean iso run debug disk-image
 
 all: $(ISO)
+
+# Create disk image for persistence
+disk-image:
+	@echo "Creating persistent disk image..."
+	@mkdir -p images
+	@if [ ! -f images/numos_disk.img ]; then \
+		dd if=/dev/zero of=images/numos_disk.img bs=1M count=64 2>/dev/null; \
+		echo "Created 64MB disk image at images/numos_disk.img"; \
+	else \
+		echo "Disk image already exists at images/numos_disk.img"; \
+	fi
 
 # Compile assembly
 $(BUILD_DIR)/boot/%.o: $(SRC_DIR)/boot/%.asm
@@ -68,10 +79,58 @@ $(ISO): $(KERNEL) | $(ISO_DIR)
 clean:
 	rm -rf $(BUILD_DIR) $(ISO_DIR) $(ISO)
 
-# Run in QEMU
-run: $(ISO)
+# Clean everything including disk image
+clean-all: clean
+	rm -rf images/
+
+# Run in QEMU with persistent disk
+run: $(ISO) disk-image
+	qemu-system-x86_64 -cdrom $(ISO) -boot d -m 512M \
+		-drive file=images/numos_disk.img,format=raw,if=ide
+
+# Debug in QEMU with persistent disk
+debug: $(ISO) disk-image
+	qemu-system-x86_64 -cdrom $(ISO) -boot d -m 512M \
+		-drive file=images/numos_disk.img,format=raw,if=ide -s -S
+
+# Run without disk (RAM only mode)
+run-ram: $(ISO)
 	qemu-system-x86_64 -cdrom $(ISO) -boot d -m 512M
 
-# Debug in QEMU
-debug: $(ISO)
-	qemu-system-x86_64 -cdrom $(ISO) -boot d -m 512M -s -S
+# Test with different disk sizes
+run-large: $(ISO)
+	@mkdir -p images
+	@if [ ! -f images/numos_large_disk.img ]; then \
+		dd if=/dev/zero of=images/numos_large_disk.img bs=1M count=256 2>/dev/null; \
+		echo "Created 256MB large disk image"; \
+	fi
+	qemu-system-x86_64 -cdrom $(ISO) -boot d -m 512M \
+		-drive file=images/numos_large_disk.img,format=raw,if=ide
+
+# Format disk image with FAT32
+format-disk: disk-image
+	@echo "Formatting disk image with FAT32..."
+	@if command -v mkfs.fat >/dev/null 2>&1; then \
+		mkfs.fat -F 32 -n "NUMOS_DISK" images/numos_disk.img; \
+		echo "Disk image formatted with FAT32"; \
+	else \
+		echo "mkfs.fat not available, disk will be formatted by NumOS"; \
+	fi
+
+# Mount disk image (Linux/macOS)
+mount-disk: disk-image
+	@echo "Mounting disk image..."
+	@mkdir -p mnt
+	@if [ -f images/numos_disk.img ]; then \
+		sudo mount -o loop images/numos_disk.img mnt/; \
+		echo "Disk mounted at mnt/"; \
+		echo "Use 'make unmount-disk' to unmount"; \
+	fi
+
+# Unmount disk image
+unmount-disk:
+	@if mountpoint -q mnt/ 2>/dev/null; then \
+		sudo umount mnt/; \
+		echo "Disk unmounted"; \
+	fi
+	@rmdir mnt/ 2>/dev/null || true

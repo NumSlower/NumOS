@@ -6,6 +6,7 @@
 #include "cpu/paging.h"
 #include "drivers/timer.h"
 #include "fs/fat32.h"
+#include "drivers/disk.h"
 
 /* Shell state */
 static struct shell_state shell_state = {0};
@@ -349,6 +350,19 @@ static void shell_register_builtin_commands(void) {
     shell_register_command("bootinfo", "- Show FAT32 boot sector info", shell_cmd_bootinfo, 0, 0);
     shell_register_command("fsinfo", "- Show FAT32 filesystem info", shell_cmd_fsinfo, 0, 0);
     shell_register_command("testfat32", "- Run FAT32 filesystem tests", shell_cmd_testfat32, 0, 0);
+
+        shell_register_command("lsdisk", "List available disks", shell_cmd_lsdisk, 0, 0);
+    shell_register_command("diskinfo", "Show disk information", shell_cmd_diskinfo, 1, 1);
+    shell_register_command("diskcache", "Show disk cache statistics", shell_cmd_diskcache, 1, 1);
+    shell_register_command("diskflush", "Flush disk cache", shell_cmd_diskflush, 1, 1);
+    shell_register_command("createimage", "Create disk image", shell_cmd_createimage, 2, 2);
+    shell_register_command("mountimage", "Mount disk image", shell_cmd_mountimage, 2, 2);
+    shell_register_command("unmountdisk", "Unmount disk", shell_cmd_unmountdisk, 1, 1);
+    shell_register_command("diskread", "Read disk sector", shell_cmd_diskread, 2, 2);
+    shell_register_command("diskwrite", "Write disk sector", shell_cmd_diskwrite, 3, 3);
+    shell_register_command("disktest", "Test disk I/O", shell_cmd_disktest, 0, 0);
+
+
 }
 
 /* Built-in Command Implementations */
@@ -919,4 +933,253 @@ void shell_cmd_testfat32(int argc, char **argv) {
     }
     
     shell_print_success("All FAT32 tests PASSED!");
+}
+
+/* Disk Management Commands */
+void shell_cmd_lsdisk(int argc, char **argv) {
+    (void)argc; (void)argv;
+    disk_list_disks();
+}
+
+void shell_cmd_diskinfo(int argc, char **argv) {
+    if (argc < 2) {
+        shell_print_error("Usage: diskinfo <disk_id>");
+        return;
+    }
+    
+    uint8_t disk_id = (uint8_t)strtol(argv[1], NULL, 10);
+    disk_print_info(disk_id);
+}
+
+void shell_cmd_diskcache(int argc, char **argv) {
+    if (argc < 2) {
+        shell_print_error("Usage: diskcache <disk_id>");
+        return;
+    }
+    
+    uint8_t disk_id = (uint8_t)strtol(argv[1], NULL, 10);
+    disk_print_cache_stats(disk_id);
+}
+
+void shell_cmd_diskflush(int argc, char **argv) {
+    if (argc < 2) {
+        shell_print_error("Usage: diskflush <disk_id>");
+        return;
+    }
+    
+    uint8_t disk_id = (uint8_t)strtol(argv[1], NULL, 10);
+    struct disk_handle *disk = disk_open(disk_id);
+    if (!disk) {
+        shell_print_error("Failed to open disk");
+        return;
+    }
+    
+    int result = disk_flush_cache(disk);
+    if (result == DISK_SUCCESS) {
+        shell_print_success("Disk cache flushed successfully");
+    } else {
+        shell_print_error("Failed to flush disk cache");
+    }
+    
+    disk_close(disk);
+}
+
+void shell_cmd_createimage(int argc, char **argv) {
+    if (argc < 3) {
+        shell_print_error("Usage: createimage <filename> <size_mb>");
+        return;
+    }
+    
+    const char *filename = argv[1];
+    uint64_t size_mb = (uint64_t)strtol(argv[2], NULL, 10);
+    uint64_t size_bytes = size_mb * 1024 * 1024;
+    
+    vga_writestring("Creating disk image '");
+    vga_writestring(filename);
+    vga_writestring("' (");
+    print_dec(size_mb);
+    vga_writestring("MB)...\n");
+    
+    int result = disk_create_image(filename, size_bytes);
+    if (result == DISK_SUCCESS) {
+        shell_print_success("Disk image created successfully");
+    } else {
+        shell_print_error("Failed to create disk image");
+    }
+}
+
+void shell_cmd_mountimage(int argc, char **argv) {
+    if (argc < 3) {
+        shell_print_error("Usage: mountimage <filename> <disk_id>");
+        return;
+    }
+    
+    const char *filename = argv[1];
+    uint8_t disk_id = (uint8_t)strtol(argv[2], NULL, 10);
+    
+    vga_writestring("Mounting disk image '");
+    vga_writestring(filename);
+    vga_writestring("' as disk ");
+    print_dec(disk_id);
+    vga_writestring("...\n");
+    
+    int result = disk_mount_image(filename, disk_id);
+    if (result == DISK_SUCCESS) {
+        shell_print_success("Disk image mounted successfully");
+    } else {
+        shell_print_error("Failed to mount disk image");
+    }
+}
+
+void shell_cmd_unmountdisk(int argc, char **argv) {
+    if (argc < 2) {
+        shell_print_error("Usage: unmountdisk <disk_id>");
+        return;
+    }
+    
+    uint8_t disk_id = (uint8_t)strtol(argv[1], NULL, 10);
+    
+    int result = disk_unmount(disk_id);
+    if (result == DISK_SUCCESS) {
+        shell_print_success("Disk unmounted successfully");
+    } else {
+        shell_print_error("Failed to unmount disk");
+    }
+}
+
+void shell_cmd_diskread(int argc, char **argv) {
+    if (argc < 3) {
+        shell_print_error("Usage: diskread <disk_id> <sector>");
+        return;
+    }
+    
+    uint8_t disk_id = (uint8_t)strtol(argv[1], NULL, 10);
+    uint32_t sector = (uint32_t)strtol(argv[2], NULL, 10);
+    
+    struct disk_handle *disk = disk_open(disk_id);
+    if (!disk) {
+        shell_print_error("Failed to open disk");
+        return;
+    }
+    
+    uint8_t *buffer = kmalloc(512);
+    if (!buffer) {
+        shell_print_error("Failed to allocate buffer");
+        disk_close(disk);
+        return;
+    }
+    
+    int result = disk_read_sector(disk, sector, buffer);
+    if (result == DISK_SUCCESS) {
+        vga_writestring("Sector ");
+        print_dec(sector);
+        vga_writestring(" contents:\n");
+        print_memory(buffer, 512);
+    } else {
+        shell_print_error("Failed to read sector");
+    }
+    
+    kfree(buffer);
+    disk_close(disk);
+}
+
+void shell_cmd_diskwrite(int argc, char **argv) {
+    if (argc < 4) {
+        shell_print_error("Usage: diskwrite <disk_id> <sector> <data>");
+        shell_print_error("Example: diskwrite 0 1 'Hello World'");
+        return;
+    }
+    
+    uint8_t disk_id = (uint8_t)strtol(argv[1], NULL, 10);
+    uint32_t sector = (uint32_t)strtol(argv[2], NULL, 10);
+    const char *data = argv[3];
+    
+    struct disk_handle *disk = disk_open(disk_id);
+    if (!disk) {
+        shell_print_error("Failed to open disk");
+        return;
+    }
+    
+    uint8_t *buffer = kzalloc(512);
+    if (!buffer) {
+        shell_print_error("Failed to allocate buffer");
+        disk_close(disk);
+        return;
+    }
+    
+    /* Copy data to buffer (max 512 bytes) */
+    size_t data_len = strlen(data);
+    if (data_len > 511) data_len = 511;
+    memcpy(buffer, data, data_len);
+    
+    int result = disk_write_sector(disk, sector, buffer);
+    if (result == DISK_SUCCESS) {
+        shell_print_success("Data written to sector successfully");
+        
+        /* Flush to ensure persistence */
+        disk_flush_cache(disk);
+    } else {
+        shell_print_error("Failed to write sector");
+    }
+    
+    kfree(buffer);
+    disk_close(disk);
+}
+
+void shell_cmd_disktest(int argc, char **argv) {
+    (void)argc; (void)argv;
+    
+    vga_writestring("Disk subsystem test:\n");
+    
+    /* Test disk 0 */
+    struct disk_handle *disk = disk_open(0);
+    if (!disk) {
+        shell_print_error("Failed to open disk 0");
+        return;
+    }
+    
+    vga_writestring("Testing disk 0...\n");
+    
+    /* Test write */
+    uint8_t test_data[512];
+    memset(test_data, 0, 512);
+    strcpy((char*)test_data, "NumOS Disk Test - This data should persist!");
+    
+    vga_writestring("Writing test data to sector 100...\n");
+    int result = disk_write_sector(disk, 100, test_data);
+    if (result != DISK_SUCCESS) {
+        shell_print_error("Write test failed");
+        disk_close(disk);
+        return;
+    }
+    
+    /* Test read */
+    uint8_t read_buffer[512];
+    memset(read_buffer, 0, 512);
+    
+    vga_writestring("Reading test data from sector 100...\n");
+    result = disk_read_sector(disk, 100, read_buffer);
+    if (result != DISK_SUCCESS) {
+        shell_print_error("Read test failed");
+        disk_close(disk);
+        return;
+    }
+    
+    /* Verify data */
+    if (memcmp(test_data, read_buffer, 512) == 0) {
+        shell_print_success("Disk test passed - data matches!");
+    } else {
+        shell_print_error("Disk test failed - data mismatch!");
+        vga_writestring("Expected: ");
+        vga_writestring((char*)test_data);
+        vga_writestring("\nActual: ");
+        vga_writestring((char*)read_buffer);
+        vga_putchar('\n');
+    }
+    
+    /* Flush cache */
+    disk_flush_cache(disk);
+    disk_close(disk);
+    
+    vga_writestring("Test completed.\n");
 }
