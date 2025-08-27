@@ -124,6 +124,7 @@ void kernel_main(void) {
     kernel_init();
     
     /* Start the shell - this will run the main command loop */
+    vga_clear();
     shell_run();
     
     /* If shell exits, clean up and halt */
