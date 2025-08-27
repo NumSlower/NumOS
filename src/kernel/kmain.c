@@ -8,99 +8,133 @@
 #include "timer.h"
 #include "heap.h"
 #include "fat32.h"
+#include "shell.h"
 
 void kernel_init(void) {
-    // Initialize VGA text mode first so we can see output
+    /* Initialize VGA text mode first so we can see output */
     vga_init();
     
-    // Initialize GDT
+    /* Display early boot message */
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("NumOS v2.1 - 64-bit Operating System\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    vga_writestring("Initializing kernel subsystems...\n\n");
+    
+    /* Initialize GDT */
+    vga_writestring("Loading GDT...\n");
     gdt_init();
     
-    // Initialize enhanced paging system
+    /* Initialize enhanced paging system */
+    vga_writestring("Initializing paging system...\n");
     paging_init();
     
-    // Initialize heap allocator
+    /* Initialize heap allocator */
+    vga_writestring("Initializing heap allocator...\n");
     heap_init();
     
-    // Initialize timer (100Hz = 10ms ticks)
+    /* Initialize timer (100Hz = 10ms ticks) */
+    vga_writestring("Initializing timer (100Hz)...\n");
     timer_init(100);
     
-    // Initialize IDT (this will also initialize PIC and enable interrupts)
+    /* Initialize IDT (this will also initialize PIC and enable interrupts) */
+    vga_writestring("Loading IDT and enabling interrupts...\n");
     idt_init();
     
-    // Initialize keyboard
+    /* Initialize keyboard */
+    vga_writestring("Initializing keyboard driver...\n");
     keyboard_init();
     
-    // Unmask timer and keyboard IRQs
-    pic_unmask_irq(0); // Timer
-    pic_unmask_irq(1); // Keyboard
+    /* Unmask timer and keyboard IRQs */
+    pic_unmask_irq(0); /* Timer */
+    pic_unmask_irq(1); /* Keyboard */
     
-    // Display welcome message
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("Welcome to NumOS - 64-bit Operating System\n");
+    /* Display subsystem initialization status */
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("System initialized successfully!\n");
-    vga_writestring("- GDT loaded\n");
-    vga_writestring("- Enhanced paging active\n");
-    vga_writestring("- Heap allocator ready\n");
+    vga_writestring("\nCore subsystems initialized successfully!\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    vga_writestring("- GDT loaded and active\n");
+    vga_writestring("- Enhanced 4-level paging enabled\n");
+    vga_writestring("- Kernel heap allocator ready\n");
     vga_writestring("- Timer running at 100Hz\n");
     vga_writestring("- IDT loaded with exception/IRQ handlers\n");
-    vga_writestring("- Interrupts enabled\n");
-    vga_writestring("- Keyboard ready\n");
+    vga_writestring("- Hardware interrupts enabled\n");
+    vga_writestring("- Keyboard input ready\n");
     
-    // Initialize FAT32 filesystem
+    /* Initialize FAT32 filesystem */
     vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
-    vga_writestring("Initializing FAT32 filesystem...\n");
+    vga_writestring("\nInitializing FAT32 filesystem...\n");
     int fat32_result = fat32_init();
     if (fat32_result == FAT32_SUCCESS) {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("- FAT32 filesystem initialized\n");
+        vga_writestring("- FAT32 filesystem driver initialized\n");
         
-        // Attempt to mount the filesystem
+        /* Attempt to mount the filesystem */
         fat32_result = fat32_mount();
         if (fat32_result == FAT32_SUCCESS) {
-            vga_writestring("- FAT32 filesystem mounted\n");
+            vga_writestring("- FAT32 filesystem mounted successfully\n");
         } else {
-            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-            vga_writestring("- FAT32 mount failed (use 'fat32mount' command)\n");
+            vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
+            vga_writestring("- FAT32 mount failed (disk may not be formatted)\n");
+            vga_writestring("  Use 'fat32mount' command to retry\n");
         }
     } else {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_writestring("- FAT32 initialization failed\n");
+        vga_writestring("  Filesystem commands will not be available\n");
     }
     
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("\nType 'help' for available commands.\n");
-    vga_writestring("FAT32 commands: fat32init, fat32mount, ls, cat, create, write\n\n");
+    /* Initialize shell */
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("\nInitializing command shell...\n");
+    shell_init();
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("- Shell initialized with built-in commands\n");
+    vga_writestring("- Command registry ready\n");
     
-    // Show initial system status
-    vga_writestring("Initial system uptime: ");
+    /* Show system summary */
+    vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    vga_writestring("\n" "System Ready!\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    
+    /* Display memory statistics */
+    vga_writestring("Memory Status:\n");
+    vga_writestring("  Physical frames: ");
+    print_dec(pmm_get_free_frames());
+    vga_writestring(" free / ");
+    print_dec(pmm_get_total_frames());
+    vga_writestring(" total\n");
+    
+    struct heap_stats heap_stats = heap_get_stats();
+    vga_writestring("  Heap memory:     ");
+    print_dec(heap_stats.free_size);
+    vga_writestring(" bytes free / ");
+    print_dec(heap_stats.total_size);
+    vga_writestring(" bytes total\n");
+    
+    /* Display uptime */
+    vga_writestring("  Boot time:       ");
     print_dec(timer_get_uptime_ms());
-    vga_writestring(" ms\n\n");
+    vga_writestring(" ms\n");
+    
+    vga_writestring("\n");
 }
 
 void kernel_main(void) {
-    // Initialize kernel subsystems
+    /* Initialize all kernel subsystems */
     kernel_init();
     
-    // Command buffer
-    char *command_buffer = (char*)kmalloc(256);
-    if (!command_buffer) {
-        panic("Failed to allocate command buffer");
-    }
+    /* Start the shell - this will run the main command loop */
+    shell_run();
     
-    // Main command loop
-    while (1) {
-        // Print prompt
-        print_prompt();
-        
-        // Read command from user
-        keyboard_read_line(command_buffer, 256);
-        
-        // Process the command
-        process_command(command_buffer);
-    }
+    /* If shell exits, clean up and halt */
+    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
+    vga_writestring("\nShell exited. Cleaning up...\n");
     
-    // This should never be reached, but clean up just in case
-    kfree(command_buffer);
+    shell_shutdown();
+    
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("System shutdown complete.\n");
+    
+    /* Halt the system */
+    hang();
 }
