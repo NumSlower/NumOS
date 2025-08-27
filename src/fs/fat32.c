@@ -1,7 +1,7 @@
-#include "fat32.h"
+#include "fs/fat32.h"
 #include "kernel.h"
-#include "vga.h"
-#include "heap.h"
+#include "drivers/vga.h"
+#include "cpu/heap.h"
 
 /* Global FAT32 file system state */
 static struct fat32_fs g_fat32_fs = {0};

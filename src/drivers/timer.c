@@ -1,6 +1,6 @@
-#include "timer.h"
-#include "vga.h"
-#include "pic.h"
+#include "drivers/timer.h"
+#include "drivers/vga.h"
+#include "drivers/pic.h"
 #include "kernel.h"
 
 /* Timer variables */

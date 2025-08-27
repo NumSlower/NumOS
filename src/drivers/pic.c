@@ -1,5 +1,5 @@
-#include "pic.h"
-#include "vga.h"
+#include "drivers/pic.h"
+#include "drivers/vga.h"
 
 void pic_init(void) {
     /* Start initialization sequence (ICW1) */

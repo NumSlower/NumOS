@@ -1,11 +1,11 @@
-#include "idt.h"
+#include "cpu/idt.h"
 #include "kernel.h"
-#include "keyboard.h"
-#include "vga.h"
-#include "pic.h"
-#include "gdt.h"
-#include "paging.h"
-#include "timer.h"
+#include "drivers/keyboard.h"
+#include "drivers/vga.h"
+#include "drivers/pic.h"
+#include "cpu/gdt.h"
+#include "cpu/paging.h"
+#include "drivers/timer.h"
 
 /* IDT entries - we'll use 256 entries (0-255) */
 #define IDT_ENTRIES 256

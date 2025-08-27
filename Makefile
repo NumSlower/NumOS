@@ -26,7 +26,8 @@ ASM_SOURCES = $(wildcard $(SRC_DIR)/boot/*.asm)
 C_SOURCES = $(wildcard $(SRC_DIR)/kernel/*.c) \
             $(wildcard $(SRC_DIR)/drivers/*.c) \
             $(wildcard $(SRC_DIR)/cpu/x86/*.c) \
-            $(wildcard $(SRC_DIR)/fs/*.c)
+            $(wildcard $(SRC_DIR)/fs/*.c) \
+			$(wildcard $(SRC_DIR)/usr/*.c)
 
 # Object files
 ASM_OBJECTS = $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_DIR)/boot/%.o,$(ASM_SOURCES))

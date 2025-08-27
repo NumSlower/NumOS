@@ -1,4 +1,4 @@
-#include "vga.h"
+#include "drivers/vga.h"
 #include "kernel.h"
 
 static size_t vga_row;

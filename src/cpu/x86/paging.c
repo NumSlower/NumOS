@@ -1,7 +1,7 @@
-#include "paging.h"
+#include "cpu/paging.h"
 #include "kernel.h"
-#include "vga.h"
-#include "heap.h"
+#include "drivers/vga.h"
+#include "cpu/heap.h"
 
 /* Page table pointers from boot (now properly declared as extern) */
 extern uint8_t p4_table[];

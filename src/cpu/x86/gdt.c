@@ -1,4 +1,4 @@
-#include "gdt.h"
+#include "cpu/gdt.h"
 #include "kernel.h"
 
 /* GDT entries - we'll use 5 entries */

@@ -1,5 +1,5 @@
 #include "kernel.h"
-#include "vga.h"
+#include "drivers/vga.h"
 
 /* Basic memory and string functions */
 void *memset(void *dest, int val, size_t len) {

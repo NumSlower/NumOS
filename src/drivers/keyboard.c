@@ -1,5 +1,5 @@
-#include "keyboard.h"
-#include "vga.h"
+#include "drivers/keyboard.h"
+#include "drivers/vga.h"
 
 // Keyboard state
 uint8_t shift_pressed = 0;

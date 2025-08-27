@@ -1,0 +1,13 @@
+{
+    "files.associations": {
+        "vga.h": "c",
+        "pic.h": "c",
+        "keyboard.h": "c",
+        "paging.h": "c",
+        "gdt.h": "c",
+        "idt.h": "c",
+        "kernel.h": "c",
+        "heap.h": "c",
+        "timer.h": "c"
+    }
+}
