@@ -94,6 +94,18 @@ void shell_cmd_bootinfo(int argc, char **argv);
 void shell_cmd_fsinfo(int argc, char **argv);
 void shell_cmd_testfat32(int argc, char **argv);
 
+/* Disk Management Commands */
+void shell_cmd_lsdisk(int argc, char **argv);
+void shell_cmd_diskinfo(int argc, char **argv);
+void shell_cmd_diskcache(int argc, char **argv);
+void shell_cmd_diskflush(int argc, char **argv);
+void shell_cmd_createimage(int argc, char **argv);
+void shell_cmd_mountimage(int argc, char **argv);
+void shell_cmd_unmountdisk(int argc, char **argv);
+void shell_cmd_diskread(int argc, char **argv);
+void shell_cmd_diskwrite(int argc, char **argv);
+void shell_cmd_disktest(int argc, char **argv);
+
 /* Shell Statistics */
 struct shell_stats {
     uint32_t commands_executed;

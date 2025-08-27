@@ -41,6 +41,9 @@ char *strcpy(char *dest, const char *src);
 char *strcat(char *dest, const char *src);
 char *strstr(const char *haystack, const char *needle);
 
+/* String conversion functions */
+long strtol(const char *str, char **endptr, int base);
+
 /* System functions */
 void panic(const char *message);
 void hang(void);
@@ -52,6 +55,7 @@ void print_prompt(void);
 /* Utility functions */
 void print_hex(uint64_t value);
 void print_dec(uint64_t value);
+void print_memory(const void *ptr, size_t size);
 
 /* Timer functions */
 uint64_t timer_get_ticks(void);

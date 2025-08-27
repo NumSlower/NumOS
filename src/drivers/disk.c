@@ -422,7 +422,10 @@ struct disk_info* disk_get_info(uint8_t disk_id) {
 
 int disk_get_sector_size(uint8_t disk_id) {
     struct disk_info *info = disk_get_info(disk_id);
-    return info ? info->sector_size : -1;
+    if (!info) {
+        return -1;  // Return -1 as int, not mixed with uint32_t
+    }
+    return (int)info->sector_size;  // Explicit cast to int
 }
 
 uint32_t disk_get_sector_count(uint8_t disk_id) {
