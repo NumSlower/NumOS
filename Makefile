@@ -4,7 +4,7 @@
 # Compiler and tools
 AS = nasm
 CC = x86_64-elf-gcc
-LD = ld
+LD = x86_64-elf-ld
 GRUB_MKRESCUE = grub-mkrescue
 
 # Directories

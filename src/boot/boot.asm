@@ -47,7 +47,6 @@ check_multiboot:
 
 check_cpuid:
     ; Check if CPUID is supported by attempting to flip the ID bit (bit 21)
-    ; in the FLAGS register
     pushfd
     pop eax
     mov ecx, eax
@@ -83,49 +82,46 @@ check_long_mode:
     jmp error
 
 set_up_page_tables:
-    ; map first P4 entry to P3 table
+    ; Map first P4 entry to P3 table
     mov eax, p3_table
-    or eax, 0b11 ; present + writable
+    or eax, 0b11      ; present + writable
     mov [p4_table], eax
     
-    ; map first P3 entry to P2 table
+    ; Map first P3 entry to P2 table
     mov eax, p2_table
-    or eax, 0b11 ; present + writable
+    or eax, 0b11      ; present + writable
     mov [p3_table], eax
     
-    ; map each P2 entry to a huge 2MiB page
-    mov ecx, 0
+    ; Map each P2 entry to a 2MiB huge page
+    xor ecx, ecx
     
 .map_p2_table:
-    ; map ecx-th P2 entry to a huge page that starts at address 2MiB*ecx
-    mov eax, 0x200000  ; 2MiB
-    mul ecx            ; start address of ecx-th page
-    or eax, 0b10000011 ; present + writable + huge
-    mov [p2_table + ecx * 8], eax ; map ecx-th entry
-    
-    inc ecx            ; increase counter
-    cmp ecx, 512       ; if counter == 512, the whole P2 table is mapped
-    jne .map_p2_table  ; else map the next entry
-    
+    mov eax, 0x200000      ; 2MiB
+    mul ecx                ; start address of ecx-th page
+    or eax, 0b10000011     ; present + writable + huge page
+    mov [p2_table + ecx*8], eax
+    inc ecx
+    cmp ecx, 512
+    jne .map_p2_table
     ret
 
 enable_paging:
-    ; load P4 to cr3 register (cpu uses this to access the P4 table)
+    ; Load P4 table into CR3
     mov eax, p4_table
     mov cr3, eax
     
-    ; enable PAE-flag in cr4 (Physical Address Extension)
+    ; Enable PAE in CR4
     mov eax, cr4
     or eax, 1 << 5
     mov cr4, eax
     
-    ; set the long mode bit in the EFER MSR (model specific register)
+    ; Enable Long Mode in EFER
     mov ecx, 0xC0000080
     rdmsr
     or eax, 1 << 8
     wrmsr
     
-    ; enable paging in the cr0 register
+    ; Enable paging in CR0
     mov eax, cr0
     or eax, 1 << 31
     mov cr0, eax
@@ -153,9 +149,9 @@ stack_top:
 
 section .rodata
 gdt64:
-    dq 0 ; zero entry
-.code: equ $ - gdt64 ; new
-    dq (1<<43) | (1<<44) | (1<<47) | (1<<53) ; code segment
+    dq 0                     ; null descriptor
+.code: equ $ - gdt64         ; code segment offset
+    dq (1<<43) | (1<<44) | (1<<47) | (1<<53)
 .pointer:
     dw $ - gdt64 - 1
     dq gdt64

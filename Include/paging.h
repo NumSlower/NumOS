@@ -4,92 +4,91 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Page size constants */
-#define PAGE_SIZE       4096
-#define LARGE_PAGE_SIZE (2 * 1024 * 1024)  // 2MB pages
-#define PAGE_ENTRIES    512
+/* Page Size Constants */
+#define PAGE_SIZE           4096                   /* Standard page size (4KB) */
+#define LARGE_PAGE_SIZE     (2 * 1024 * 1024)    /* Large page size (2MB) */
+#define PAGE_ENTRIES        512                    /* Entries per page table */
 
-/* Page table entry flags */
-#define PAGE_PRESENT    0x001
-#define PAGE_WRITABLE   0x002
-#define PAGE_USER       0x004
-#define PAGE_WRITETHROUGH 0x008
-#define PAGE_CACHE_DISABLE 0x010
-#define PAGE_ACCESSED   0x020
-#define PAGE_DIRTY      0x040
-#define PAGE_HUGE       0x080
-#define PAGE_GLOBAL     0x100
-#define PAGE_NX         0x8000000000000000UL
+/* Page Table Entry Flags */
+#define PAGE_PRESENT        0x001                  /* Page is present in memory */
+#define PAGE_WRITABLE       0x002                  /* Page is writable */
+#define PAGE_USER           0x004                  /* Page is user-accessible */
+#define PAGE_WRITETHROUGH   0x008                  /* Page uses write-through caching */
+#define PAGE_CACHE_DISABLE  0x010                  /* Page caching is disabled */
+#define PAGE_ACCESSED       0x020                  /* Page has been accessed */
+#define PAGE_DIRTY          0x040                  /* Page has been written to */
+#define PAGE_HUGE           0x080                  /* Large/huge page */
+#define PAGE_GLOBAL         0x100                  /* Global page */
+#define PAGE_NX             0x8000000000000000UL   /* No-execute bit */
 
-/* Virtual address layout */
-#define KERNEL_VIRTUAL_BASE 0xFFFFFFFF80000000UL
-#define USER_VIRTUAL_BASE   0x0000000000000000UL
-#define KERNEL_HEAP_START   0xFFFFFFFF90000000UL
+/* Virtual Memory Layout Constants */
+#define KERNEL_VIRTUAL_BASE 0xFFFFFFFF80000000UL   /* Kernel space start */
+#define USER_VIRTUAL_BASE   0x0000000000000000UL   /* User space start */
+#define KERNEL_HEAP_START   0xFFFFFFFF90000000UL   /* Kernel heap start */
 
-/* Page table structures */
+/* Page Table Entry Type */
 typedef uint64_t page_entry_t;
 
+/* Page Table Structure */
 struct page_table {
     page_entry_t entries[PAGE_ENTRIES];
 } __attribute__((aligned(PAGE_SIZE)));
 
-/* Physical memory info */
+/* Physical Memory Information */
 struct physical_memory_info {
-    uint64_t total_memory;
-    uint64_t available_memory;
-    uint64_t kernel_start;
-    uint64_t kernel_end;
+    uint64_t total_memory;         /* Total physical memory */
+    uint64_t available_memory;     /* Available physical memory */
+    uint64_t kernel_start;         /* Kernel start address */
+    uint64_t kernel_end;           /* Kernel end address */
 };
 
-/* Page frame allocator */
+/* Page Frame Status Flags */
+#define FRAME_FREE          0x00                   /* Frame is available */
+#define FRAME_USED          0x01                   /* Frame is in use */
+#define FRAME_KERNEL        0x02                   /* Frame reserved for kernel */
+
+/* Page Frame Structure */
 struct page_frame {
-    uint64_t address;
-    uint8_t flags;
-    struct page_frame *next;
+    uint64_t address;              /* Physical frame address */
+    uint8_t flags;                 /* Frame status flags */
+    struct page_frame *next;       /* Next frame in list */
 };
 
-#define FRAME_FREE      0x00
-#define FRAME_USED      0x01
-#define FRAME_KERNEL    0x02
-
-/* Virtual memory region */
+/* Virtual Memory Region */
 struct vm_region {
-    uint64_t start;
-    uint64_t end;
-    uint64_t flags;
-    struct vm_region *next;
+    uint64_t start;                /* Region start address */
+    uint64_t end;                  /* Region end address */
+    uint64_t flags;                /* Region access flags */
+    struct vm_region *next;        /* Next region in list */
 };
 
-struct vm_region* paging_find_vm_region(uint64_t addr);
-
-/* Function prototypes */
+/* Core Paging Functions */
 void paging_init(void);
 void paging_enable(void);
-uint64_t paging_get_physical_address(uint64_t virtual_addr);
-int paging_map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
-int paging_unmap_page(uint64_t virtual_addr);
 void paging_flush_tlb(void);
 void paging_flush_page(uint64_t virtual_addr);
 
-/* Enhanced paging functions */
-int paging_map_page_advanced(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags, int overwrite);
-int paging_unmap_page_advanced(uint64_t virtual_addr, int free_physical);
+/* Page Mapping Functions */
+int paging_map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
+int paging_unmap_page(uint64_t virtual_addr);
 int paging_map_range(uint64_t virtual_start, uint64_t physical_start, size_t pages, uint64_t flags);
 int paging_unmap_range(uint64_t virtual_start, size_t pages, int free_physical);
 int paging_change_protection(uint64_t virtual_addr, uint64_t new_flags);
 int paging_is_mapped(uint64_t virtual_addr);
+uint64_t paging_get_physical_address(uint64_t virtual_addr);
 
-/* Virtual memory region management */
+/* Virtual Memory Region Management */
 int paging_create_vm_region(uint64_t start, uint64_t end, uint64_t flags);
 void paging_destroy_vm_region(uint64_t start, uint64_t end);
 struct vm_region* paging_find_vm_region(uint64_t addr);
 
-/* Debug and statistics */
-void paging_print_stats(void);
-void paging_print_vm_regions(void);
-int paging_validate_range(uint64_t virtual_start, size_t pages);
+/* Page Table Management */
+struct page_table* paging_get_page_table(uint64_t virtual_addr, int create);
+page_entry_t* paging_get_page_entry(uint64_t virtual_addr, int create);
+struct page_table* paging_create_page_table(void);
+void paging_destroy_page_table(struct page_table* table);
 
-/* Physical memory management */
+/* Physical Memory Manager */
 void pmm_init(struct physical_memory_info *mem_info);
 uint64_t pmm_alloc_frame(void);
 void pmm_free_frame(uint64_t frame_addr);
@@ -97,30 +96,29 @@ uint64_t pmm_get_total_frames(void);
 uint64_t pmm_get_free_frames(void);
 uint64_t pmm_get_used_frames(void);
 
-/* Virtual memory management */
+/* Virtual Memory Manager */
 void vmm_init(void);
 void* vmm_alloc_pages(size_t num_pages, uint64_t flags);
 void vmm_free_pages(void* virtual_addr, size_t num_pages);
 
-/* Page table management */
-struct page_table* paging_get_page_table(uint64_t virtual_addr, int create);
-page_entry_t* paging_get_page_entry(uint64_t virtual_addr, int create);
-struct page_table* paging_create_page_table(void);
-void paging_destroy_page_table(struct page_table* table);
-
-/* Utility functions */
+/* Utility Functions */
 uint64_t paging_align_up(uint64_t addr, uint64_t alignment);
 uint64_t paging_align_down(uint64_t addr, uint64_t alignment);
 int paging_is_aligned(uint64_t addr, uint64_t alignment);
+int paging_validate_range(uint64_t virtual_start, size_t pages);
 
-/* Page fault handler */
+/* Debug and Information Functions */
+void paging_print_stats(void);
+void paging_print_vm_regions(void);
+
+/* Exception Handler */
 void page_fault_handler(uint64_t error_code, uint64_t fault_addr);
 
-/* Constants for page table indices */
-#define PML4_INDEX(addr) (((addr) >> 39) & 0x1FF)
-#define PDPT_INDEX(addr) (((addr) >> 30) & 0x1FF)
-#define PD_INDEX(addr)   (((addr) >> 21) & 0x1FF)
-#define PT_INDEX(addr)   (((addr) >> 12) & 0x1FF)
-#define PAGE_OFFSET(addr) ((addr) & 0xFFF)
+/* Page Table Index Extraction Macros */
+#define PML4_INDEX(addr) (((addr) >> 39) & 0x1FF)   /* PML4 index */
+#define PDPT_INDEX(addr) (((addr) >> 30) & 0x1FF)   /* PDPT index */
+#define PD_INDEX(addr)   (((addr) >> 21) & 0x1FF)   /* Page directory index */
+#define PT_INDEX(addr)   (((addr) >> 12) & 0x1FF)   /* Page table index */
+#define PAGE_OFFSET(addr) ((addr) & 0xFFF)          /* Page offset */
 
 #endif /* PAGING_H */
