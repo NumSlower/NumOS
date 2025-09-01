@@ -77,7 +77,7 @@ $(ISO): $(KERNEL) | $(ISO_DIR)
 
 # Clean
 clean:
-	rm -rf $(BUILD_DIR) $(ISO_DIR) $(ISO)
+	rm -rf $(BUILD_DIR) $(ISO_DIR) $(ISO) images bin
 
 # Clean everything including disk image
 clean-all: clean
