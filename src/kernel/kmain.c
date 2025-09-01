@@ -103,56 +103,6 @@ void kernel_init(void) {
         vga_writestring("  Filesystem commands will not be available\n");
     }
     
-    /* Initialize shell */
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("\nInitializing enhanced command shell...\n");
-    shell_init();
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("- Shell initialized with built-in commands\n");
-    vga_writestring("- Command registry ready\n");
-    vga_writestring("- Disk management commands available\n");
-    vga_writestring("- File system commands available\n");
-    
-    /* Show system summary */
-    vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    vga_writestring("\n" "System Ready with Persistent Storage!\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    
-    /* Display memory statistics */
-    vga_writestring("Memory Status:\n");
-    vga_writestring("  Physical frames: ");
-    print_dec(pmm_get_free_frames());
-    vga_writestring(" free / ");
-    print_dec(pmm_get_total_frames());
-    vga_writestring(" total\n");
-    
-    struct heap_stats heap_stats = heap_get_stats();
-    vga_writestring("  Heap memory:     ");
-    print_dec(heap_stats.free_size);
-    vga_writestring(" bytes free / ");
-    print_dec(heap_stats.total_size);
-    vga_writestring(" bytes total\n");
-    
-    /* Display disk statistics */
-    if (disk_is_ready(0)) {
-        uint64_t disk_size = disk_get_size(0);
-        vga_writestring("  Disk storage:    ");
-        print_dec(disk_size / 1024 / 1024);
-        vga_writestring("MB persistent storage available\n");
-    }
-    
-    /* Display uptime */
-    vga_writestring("  Boot time:       ");
-    print_dec(timer_get_uptime_ms());
-    vga_writestring(" ms\n");
-    
-    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
-    vga_writestring("\nPersistence Info:\n");
-    vga_writestring("- Files created will persist between reboots\n");
-    vga_writestring("- Use disk commands to manage storage\n");
-    vga_writestring("- Type 'help' for available commands\n");
-    
-    vga_writestring("\n");
 }
 
 void kernel_main(void) {
@@ -160,8 +110,8 @@ void kernel_main(void) {
     kernel_init();
     
     /* Start the shell - this will run the main command loop */
-    vga_clear();
-    shell_run();
+    // vga_clear();
+    //  shell_run();
     
     /* If shell exits, clean up and halt */
     vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
