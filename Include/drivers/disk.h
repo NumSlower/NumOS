@@ -28,13 +28,13 @@
 
 /* Error Codes */
 #define DISK_SUCCESS            0
-#define DISK_ERROR_GENERIC      -1
-#define DISK_ERROR_NOT_FOUND    -2
-#define DISK_ERROR_IO           -3
-#define DISK_ERROR_INVALID      -4
-#define DISK_ERROR_NO_MEMORY    -5
-#define DISK_ERROR_READ_ONLY    -6
-#define DISK_ERROR_NOT_READY    -7
+#define DISK_ERROR_GENERIC      1
+#define DISK_ERROR_NOT_FOUND    2
+#define DISK_ERROR_IO           3
+#define DISK_ERROR_INVALID      4
+#define DISK_ERROR_NO_MEMORY    5
+#define DISK_ERROR_READ_ONLY    6
+#define DISK_ERROR_NOT_READY    7
 
 /* Disk Information Structure */
 struct disk_info {

@@ -35,13 +35,13 @@
 
 /* Error Codes */
 #define FAT32_SUCCESS           0
-#define FAT32_ERROR_GENERIC     -1
-#define FAT32_ERROR_NOT_FOUND   -2
-#define FAT32_ERROR_NO_SPACE    -3
-#define FAT32_ERROR_INVALID     -4
-#define FAT32_ERROR_IO          -5
-#define FAT32_ERROR_EXISTS      -6
-#define FAT32_ERROR_NO_MEMORY   -7
+#define FAT32_ERROR_GENERIC     1
+#define FAT32_ERROR_NOT_FOUND   2
+#define FAT32_ERROR_NO_SPACE    3
+#define FAT32_ERROR_INVALID     4
+#define FAT32_ERROR_IO          5
+#define FAT32_ERROR_EXISTS      6
+#define FAT32_ERROR_NO_MEMORY   7
 
 /* FAT32 Boot Sector Structure */
 struct fat32_boot_sector {

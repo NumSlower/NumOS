@@ -32,12 +32,15 @@ static struct disk_cache_entry* disk_find_cache_entry(struct disk_handle *disk, 
 static struct disk_cache_entry* disk_allocate_cache_entry(struct disk_handle *disk, uint32_t sector);
 
 int disk_init(void) {
+    vga_writestring("Disk: === Starting disk subsystem initialization ===\n");
+    
     if (g_disk_initialized) {
         vga_writestring("Disk: Already initialized\n");
         return DISK_SUCCESS;
     }
     
     /* Initialize disk handles */
+    vga_writestring("Disk: Initializing disk handles...\n");
     memset(g_disks, 0, sizeof(g_disks));
     memset(g_disk_images, 0, sizeof(g_disk_images));
     memset(g_disk_image_sizes, 0, sizeof(g_disk_image_sizes));
@@ -54,34 +57,80 @@ int disk_init(void) {
         strcpy(g_disks[i].info.serial, "NUM000000000");
         
         /* Initialize cache */
+        vga_writestring("Disk: Allocating cache for disk ");
+        print_dec(i);
+        vga_writestring("...\n");
+        
         for (int j = 0; j < DISK_CACHE_SECTORS; j++) {
             g_disks[i].cache[j].data = kmalloc(DISK_SECTOR_SIZE);
+            if (!g_disks[i].cache[j].data) {
+                vga_writestring("Disk: ERROR - Failed to allocate cache for disk ");
+                print_dec(i);
+                vga_writestring(", sector ");
+                print_dec(j);
+                vga_putchar('\n');
+                return DISK_ERROR_NO_MEMORY;
+            }
             g_disks[i].cache[j].valid = 0;
             g_disks[i].cache[j].dirty = 0;
             g_disks[i].cache[j].sector = 0;
             g_disks[i].cache[j].last_access = 0;
         }
     }
+    vga_writestring("Disk: All disk handles initialized\n");
     
     /* Try to detect hardware disks */
+    vga_writestring("Disk: Detecting hardware...\n");
     disk_detect_hardware();
     
     /* Create default disk image if it doesn't exist */
-    if (disk_create_image(DISK_IMAGE_PATH, DISK_DEFAULT_SIZE) == DISK_SUCCESS) {
-        vga_writestring("Disk: Created default disk image (");
+    vga_writestring("Disk: Creating/checking default disk image...\n");
+    int create_result = disk_create_image(DISK_IMAGE_PATH, DISK_DEFAULT_SIZE);
+    if (create_result == DISK_SUCCESS) {
+        vga_writestring("Disk: Default disk image ready (");
         print_dec(DISK_DEFAULT_SIZE / 1024 / 1024);
         vga_writestring("MB)\n");
+    } else {
+        vga_writestring("Disk: ERROR - Failed to create disk image, code: ");
+        print_dec(create_result);
+        vga_putchar('\n');
+        return create_result;
     }
     
     /* Mount the default disk image */
-    if (disk_mount_image(DISK_IMAGE_PATH, 0) == DISK_SUCCESS) {
-        vga_writestring("Disk: Mounted default disk image as disk 0\n");
+    vga_writestring("Disk: Mounting default disk image as disk 0...\n");
+    int mount_result = disk_mount_image(DISK_IMAGE_PATH, 0);
+    if (mount_result == DISK_SUCCESS) {
+        vga_writestring("Disk: Default disk image mounted successfully\n");
+        
+        /* Verify disk is ready */
+        if (disk_is_ready(0)) {
+            vga_writestring("Disk: Disk 0 is ready and accessible\n");
+            
+            /* Print disk info for verification */
+            struct disk_info *info = disk_get_info(0);
+            if (info) {
+                vga_writestring("Disk: Verification - Size: ");
+                print_dec(info->total_size / 1024);
+                vga_writestring("KB, Sectors: ");
+                print_dec(info->sector_count);
+                vga_writestring(", Status: 0x");
+                print_hex(info->status);
+                vga_putchar('\n');
+            }
+        } else {
+            vga_writestring("Disk: ERROR - Disk 0 mounted but not ready!\n");
+            return DISK_ERROR_NOT_READY;
+        }
     } else {
-        vga_writestring("Disk: Warning - Could not mount default disk image\n");
+        vga_writestring("Disk: ERROR - Failed to mount disk image, code: ");
+        print_dec(mount_result);
+        vga_putchar('\n');
+        return mount_result;
     }
     
     g_disk_initialized = 1;
-    vga_writestring("Disk: Subsystem initialized\n");
+    vga_writestring("Disk: === Subsystem initialized successfully ===\n");
     return DISK_SUCCESS;
 }
 
@@ -89,6 +138,8 @@ void disk_shutdown(void) {
     if (!g_disk_initialized) {
         return;
     }
+    
+    vga_writestring("Disk: Shutting down subsystem...\n");
     
     /* Flush all caches and close disks */
     for (int i = 0; i < DISK_MAX_DISKS; i++) {
@@ -101,6 +152,7 @@ void disk_shutdown(void) {
         for (int j = 0; j < DISK_CACHE_SECTORS; j++) {
             if (g_disks[i].cache[j].data) {
                 kfree(g_disks[i].cache[j].data);
+                g_disks[i].cache[j].data = NULL;
             }
         }
         
@@ -115,25 +167,39 @@ void disk_shutdown(void) {
     for (int i = 0; i < MAX_DISK_FILES; i++) {
         if (g_disk_files[i].in_use && g_disk_files[i].data) {
             kfree(g_disk_files[i].data);
+            g_disk_files[i].data = NULL;
+            g_disk_files[i].in_use = 0;
         }
     }
     
     g_disk_initialized = 0;
-    vga_writestring("Disk: Subsystem shutdown\n");
+    vga_writestring("Disk: Subsystem shutdown completed\n");
 }
 
 struct disk_handle* disk_open(uint8_t disk_id) {
     if (!g_disk_initialized || disk_id >= DISK_MAX_DISKS) {
+        vga_writestring("Disk: Open failed - invalid parameters (init: ");
+        vga_writestring(g_disk_initialized ? "yes" : "no");
+        vga_writestring(", id: ");
+        print_dec(disk_id);
+        vga_writestring(")\n");
         return NULL;
     }
     
     struct disk_handle *disk = &g_disks[disk_id];
     
     if (!(disk->info.status & DISK_STATUS_READY)) {
-        vga_writestring("Disk: Disk not ready\n");
+        vga_writestring("Disk: Open failed - disk ");
+        print_dec(disk_id);
+        vga_writestring(" not ready (status: 0x");
+        print_hex(disk->info.status);
+        vga_writestring(")\n");
         return NULL;
     }
     
+    vga_writestring("Disk: Successfully opened disk ");
+    print_dec(disk_id);
+    vga_putchar('\n');
     return disk;
 }
 
@@ -142,16 +208,33 @@ int disk_close(struct disk_handle *disk) {
         return DISK_ERROR_INVALID;
     }
     
-    /* Flush any cached data */
-    disk_flush_cache(disk);
+    vga_writestring("Disk: Closing disk ");
+    print_dec(disk->disk_id);
+    vga_writestring("...\n");
     
+    /* Flush any cached data */
+    int flush_result = disk_flush_cache(disk);
+    if (flush_result != DISK_SUCCESS) {
+        vga_writestring("Disk: Warning - flush failed during close\n");
+    }
+    
+    vga_writestring("Disk: Disk ");
+    print_dec(disk->disk_id);
+    vga_writestring(" closed\n");
     return DISK_SUCCESS;
 }
 
 int disk_create_image(const char *filename, uint64_t size_bytes) {
     if (!filename || size_bytes == 0) {
+        vga_writestring("Disk: Create image failed - invalid parameters\n");
         return DISK_ERROR_INVALID;
     }
+    
+    vga_writestring("Disk: Creating image '");
+    vga_writestring(filename);
+    vga_writestring("' (");
+    print_dec(size_bytes / 1024 / 1024);
+    vga_writestring("MB)...\n");
     
     /* Check if file already exists in our simulation */
     for (int i = 0; i < MAX_DISK_FILES; i++) {
@@ -171,16 +254,22 @@ int disk_create_image(const char *filename, uint64_t size_bytes) {
     }
     
     if (slot == -1) {
-        vga_writestring("Disk: No free file slots\n");
+        vga_writestring("Disk: ERROR - No free file slots\n");
         return DISK_ERROR_NO_MEMORY;
     }
     
     /* Allocate memory for disk image */
+    vga_writestring("Disk: Allocating ");
+    print_dec(size_bytes / 1024);
+    vga_writestring("KB memory...\n");
+    
     uint8_t *image_data = kmalloc((size_t)size_bytes);
     if (!image_data) {
-        vga_writestring("Disk: Failed to allocate memory for disk image\n");
+        vga_writestring("Disk: ERROR - Failed to allocate memory for disk image\n");
         return DISK_ERROR_NO_MEMORY;
     }
+    
+    vga_writestring("Disk: Memory allocated, initializing image...\n");
     
     /* Initialize with zeros */
     memset(image_data, 0, (size_t)size_bytes);
@@ -191,13 +280,21 @@ int disk_create_image(const char *filename, uint64_t size_bytes) {
     g_disk_files[slot].size = (uint32_t)size_bytes;
     g_disk_files[slot].in_use = 1;
     
+    vga_writestring("Disk: Image created successfully\n");
     return DISK_SUCCESS;
 }
 
 int disk_mount_image(const char *filename, uint8_t disk_id) {
     if (!filename || disk_id >= DISK_MAX_DISKS) {
+        vga_writestring("Disk: Mount failed - invalid parameters\n");
         return DISK_ERROR_INVALID;
     }
+    
+    vga_writestring("Disk: Mounting image '");
+    vga_writestring(filename);
+    vga_writestring("' as disk ");
+    print_dec(disk_id);
+    vga_writestring("...\n");
     
     /* Find the file in our simulation */
     int file_slot = -1;
@@ -209,9 +306,13 @@ int disk_mount_image(const char *filename, uint8_t disk_id) {
     }
     
     if (file_slot == -1) {
-        vga_writestring("Disk: Image file not found\n");
+        vga_writestring("Disk: ERROR - Image file not found\n");
         return DISK_ERROR_NOT_FOUND;
     }
+    
+    vga_writestring("Disk: Found image file (");
+    print_dec(g_disk_files[file_slot].size / 1024);
+    vga_writestring("KB)\n");
     
     struct disk_handle *disk = &g_disks[disk_id];
     
@@ -220,7 +321,16 @@ int disk_mount_image(const char *filename, uint8_t disk_id) {
     disk->info.sector_size = DISK_SECTOR_SIZE;
     disk->info.sector_count = g_disk_files[file_slot].size / DISK_SECTOR_SIZE;
     disk->info.total_size = g_disk_files[file_slot].size;
-    disk->info.status = DISK_STATUS_READY | DISK_STATUS_WRITABLE | DISK_STATUS_CACHED;
+    disk->info.status = DISK_STATUS_READY | DISK_STATUS_MOUNTED | DISK_STATUS_WRITABLE | DISK_STATUS_CACHED;
+    
+    vga_writestring("Disk: Configured disk parameters:\n");
+    vga_writestring("  Sectors: ");
+    print_dec(disk->info.sector_count);
+    vga_writestring("\n  Size: ");
+    print_dec(disk->info.total_size);
+    vga_writestring(" bytes\n  Status: 0x");
+    print_hex(disk->info.status);
+    vga_putchar('\n');
     
     /* Store reference to image data */
     g_disk_images[disk_id] = g_disk_files[file_slot].data;
@@ -232,6 +342,23 @@ int disk_mount_image(const char *filename, uint8_t disk_id) {
     disk->flush = disk_image_flush;
     disk->identify = disk_image_identify;
     
+    /* Test the disk by reading first sector */
+    vga_writestring("Disk: Testing disk access...\n");
+    uint8_t test_buffer[DISK_SECTOR_SIZE];
+    int test_result = disk_read_sector(disk, 0, test_buffer);
+    if (test_result != DISK_SUCCESS) {
+        vga_writestring("Disk: ERROR - Failed to read test sector, code: ");
+        print_dec(test_result);
+        vga_putchar('\n');
+        
+        /* Clean up on failure */
+        disk->info.status = 0;
+        g_disk_images[disk_id] = NULL;
+        g_disk_image_sizes[disk_id] = 0;
+        return DISK_ERROR_IO;
+    }
+    
+    vga_writestring("Disk: Mount completed successfully\n");
     return DISK_SUCCESS;
 }
 
@@ -240,10 +367,17 @@ int disk_unmount(uint8_t disk_id) {
         return DISK_ERROR_INVALID;
     }
     
+    vga_writestring("Disk: Unmounting disk ");
+    print_dec(disk_id);
+    vga_writestring("...\n");
+    
     struct disk_handle *disk = &g_disks[disk_id];
     
     /* Flush cache */
-    disk_flush_cache(disk);
+    int flush_result = disk_flush_cache(disk);
+    if (flush_result != DISK_SUCCESS) {
+        vga_writestring("Disk: Warning - flush failed during unmount\n");
+    }
     
     /* Clear disk information */
     disk->info.status = 0;
@@ -255,11 +389,24 @@ int disk_unmount(uint8_t disk_id) {
     disk->flush = NULL;
     disk->identify = NULL;
     
+    /* Clear image references */
+    g_disk_images[disk_id] = NULL;
+    g_disk_image_sizes[disk_id] = 0;
+    
+    vga_writestring("Disk: Unmount completed\n");
     return DISK_SUCCESS;
 }
 
 int disk_read_sector(struct disk_handle *disk, uint32_t sector, void *buffer) {
     if (!disk || !buffer) {
+        return DISK_ERROR_INVALID;
+    }
+    
+    if (!(disk->info.status & DISK_STATUS_READY)) {
+        return DISK_ERROR_NOT_READY;
+    }
+    
+    if (sector >= disk->info.sector_count) {
         return DISK_ERROR_INVALID;
     }
     
@@ -272,7 +419,11 @@ int disk_read_sector(struct disk_handle *disk, uint32_t sector, void *buffer) {
     }
     
     /* Read from disk */
-    int result = disk->read_sectors(disk, sector, 1, buffer);
+    int result = DISK_ERROR_IO;
+    if (disk->read_sectors) {
+        result = disk->read_sectors(disk, sector, 1, buffer);
+    }
+    
     if (result == DISK_SUCCESS) {
         /* Cache the sector */
         cache_entry = disk_allocate_cache_entry(disk, sector);
@@ -292,8 +443,16 @@ int disk_write_sector(struct disk_handle *disk, uint32_t sector, const void *buf
         return DISK_ERROR_INVALID;
     }
     
+    if (!(disk->info.status & DISK_STATUS_READY)) {
+        return DISK_ERROR_NOT_READY;
+    }
+    
     if (!(disk->info.status & DISK_STATUS_WRITABLE)) {
         return DISK_ERROR_READ_ONLY;
+    }
+    
+    if (sector >= disk->info.sector_count) {
+        return DISK_ERROR_INVALID;
     }
     
     /* Update cache */
@@ -309,9 +468,11 @@ int disk_write_sector(struct disk_handle *disk, uint32_t sector, const void *buf
         cache_entry->last_access = timer_get_ticks();
     }
     
-    /* Write through to disk if caching is disabled */
-    if (!(disk->info.status & DISK_STATUS_CACHED)) {
-        return disk->write_sectors(disk, sector, 1, buffer);
+    /* Write through to disk if caching is disabled or for critical writes */
+    if (!(disk->info.status & DISK_STATUS_CACHED) || sector == 0) {
+        if (disk->write_sectors) {
+            return disk->write_sectors(disk, sector, 1, buffer);
+        }
     }
     
     return DISK_SUCCESS;
@@ -359,18 +520,34 @@ int disk_flush_cache(struct disk_handle *disk) {
     }
     
     int errors = 0;
+    int flushed = 0;
     
     /* Write all dirty cache entries */
     for (int i = 0; i < DISK_CACHE_SECTORS; i++) {
         struct disk_cache_entry *entry = &disk->cache[i];
         if (entry->valid && entry->dirty) {
-            int result = disk->write_sectors(disk, entry->sector, 1, entry->data);
-            if (result == DISK_SUCCESS) {
-                entry->dirty = 0;
-            } else {
-                errors++;
+            if (disk->write_sectors) {
+                int result = disk->write_sectors(disk, entry->sector, 1, entry->data);
+                if (result == DISK_SUCCESS) {
+                    entry->dirty = 0;
+                    flushed++;
+                } else {
+                    errors++;
+                }
             }
         }
+    }
+    
+    if (flushed > 0) {
+        vga_writestring("Disk: Flushed ");
+        print_dec(flushed);
+        vga_writestring(" dirty sectors");
+        if (errors > 0) {
+            vga_writestring(" (");
+            print_dec(errors);
+            vga_writestring(" errors)");
+        }
+        vga_putchar('\n');
     }
     
     /* Call disk-specific flush */
@@ -405,11 +582,15 @@ void disk_enable_cache(struct disk_handle *disk, int enable) {
     
     if (enable) {
         disk->info.status |= DISK_STATUS_CACHED;
+        vga_writestring("Disk: Cache enabled for disk ");
     } else {
         /* Flush cache before disabling */
         disk_flush_cache(disk);
         disk->info.status &= ~DISK_STATUS_CACHED;
+        vga_writestring("Disk: Cache disabled for disk ");
     }
+    print_dec(disk->disk_id);
+    vga_putchar('\n');
 }
 
 struct disk_info* disk_get_info(uint8_t disk_id) {
@@ -423,9 +604,9 @@ struct disk_info* disk_get_info(uint8_t disk_id) {
 int disk_get_sector_size(uint8_t disk_id) {
     struct disk_info *info = disk_get_info(disk_id);
     if (!info) {
-        return -1;  // Return -1 as int, not mixed with uint32_t
+        return -1;
     }
-    return (int)info->sector_size;  // Explicit cast to int
+    return (int)info->sector_size;
 }
 
 uint32_t disk_get_sector_count(uint8_t disk_id) {
@@ -620,7 +801,7 @@ static struct disk_cache_entry* disk_allocate_cache_entry(struct disk_handle *di
     }
     
     /* Flush if dirty */
-    if (lru->dirty) {
+    if (lru->dirty && disk->write_sectors) {
         disk->write_sectors(disk, lru->sector, 1, lru->data);
     }
     
