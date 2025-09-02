@@ -7,7 +7,7 @@
 /* Disk Configuration Constants */
 #define DISK_SECTOR_SIZE        512                    /* Standard sector size */
 #define DISK_IMAGE_PATH         "numos_disk.img"      /* Disk image filename */
-#define DISK_DEFAULT_SIZE       (64 * 1024 * 1024)    /* 64MB default disk */
+#define DISK_DEFAULT_SIZE       (4 * 1024 * 1024)     /* 4MB default disk */
 #define DISK_MAX_DISKS          4                      /* Maximum number of disks */
 #define DISK_CACHE_SECTORS      32                     /* Number of sectors to cache */
 
