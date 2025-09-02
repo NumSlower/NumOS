@@ -804,6 +804,230 @@ void fat32_print_fs_info(void) {
     vga_putchar('\n');
 }
 
+static int fat32_create_dir_entry(const char *formatted_name, uint32_t first_cluster, 
+                                 uint32_t file_size, uint8_t attributes) {
+    if (!g_fat32.mounted) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    uint32_t root_sector = fat32_cluster_to_sector(g_fat32.root_cluster);
+    if (root_sector == 0) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    /* Read root directory */
+    if (disk_read_sectors(g_fat32.disk, root_sector, g_fat32.sectors_per_cluster, 
+                         g_fat32.cluster_buffer) != DISK_SUCCESS) {
+        return FAT32_ERROR_IO;
+    }
+    
+    struct fat32_dir_entry *entries = (struct fat32_dir_entry*)g_fat32.cluster_buffer;
+    int entry_count = g_fat32.bytes_per_cluster / sizeof(struct fat32_dir_entry);
+    
+    /* Find free entry */
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].name[0] == 0x00 || entries[i].name[0] == 0xE5) {
+            /* Found free entry */
+            memset(&entries[i], 0, sizeof(struct fat32_dir_entry));
+            memcpy(entries[i].name, formatted_name, 11);
+            entries[i].attributes = attributes;
+            entries[i].first_cluster_low = first_cluster & 0xFFFF;
+            entries[i].first_cluster_high = (first_cluster >> 16) & 0xFFFF;
+            entries[i].file_size = file_size;
+            
+            /* Set current date/time (simplified) */
+            entries[i].creation_date = 0x4A21; /* Jan 1, 2017 */
+            entries[i].creation_time = 0x0000;
+            entries[i].last_write_date = 0x4A21;
+            entries[i].last_write_time = 0x0000;
+            entries[i].last_access_date = 0x4A21;
+            
+            /* Write back to disk */
+            return (disk_write_sectors(g_fat32.disk, root_sector, g_fat32.sectors_per_cluster, 
+                                     g_fat32.cluster_buffer) == DISK_SUCCESS) ? 
+                   FAT32_SUCCESS : FAT32_ERROR_IO;
+        }
+    }
+    
+    return FAT32_ERROR_NO_SPACE; /* Directory full */
+}
+
+/* Helper function to update an existing directory entry */
+static int fat32_update_dir_entry(const char *formatted_name, uint32_t first_cluster, 
+                                 uint32_t file_size) {
+    if (!g_fat32.mounted) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    uint32_t root_sector = fat32_cluster_to_sector(g_fat32.root_cluster);
+    if (root_sector == 0) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    /* Read root directory */
+    if (disk_read_sectors(g_fat32.disk, root_sector, g_fat32.sectors_per_cluster, 
+                         g_fat32.cluster_buffer) != DISK_SUCCESS) {
+        return FAT32_ERROR_IO;
+    }
+    
+    struct fat32_dir_entry *entries = (struct fat32_dir_entry*)g_fat32.cluster_buffer;
+    int entry_count = g_fat32.bytes_per_cluster / sizeof(struct fat32_dir_entry);
+    
+    /* Find the entry */
+    for (int i = 0; i < entry_count; i++) {
+        if (entries[i].name[0] == 0x00) break;
+        if (entries[i].name[0] == 0xE5) continue;
+        if (entries[i].attributes & (FAT32_ATTR_LONG_NAME | FAT32_ATTR_VOLUME_ID)) continue;
+        
+        if (memcmp(entries[i].name, formatted_name, 11) == 0) {
+            /* Update entry */
+            entries[i].first_cluster_low = first_cluster & 0xFFFF;
+            entries[i].first_cluster_high = (first_cluster >> 16) & 0xFFFF;
+            entries[i].file_size = file_size;
+            entries[i].last_write_date = 0x4A21; /* Update timestamp */
+            entries[i].last_write_time = 0x0000;
+            
+            /* Write back to disk */
+            return (disk_write_sectors(g_fat32.disk, root_sector, g_fat32.sectors_per_cluster, 
+                                     g_fat32.cluster_buffer) == DISK_SUCCESS) ? 
+                   FAT32_SUCCESS : FAT32_ERROR_IO;
+        }
+    }
+    
+    return FAT32_ERROR_NOT_FOUND;
+}
+
+/* Helper function to read data from a cluster chain */
+static int fat32_read_cluster_chain(uint32_t start_cluster, void *buffer, 
+                                   uint32_t offset, uint32_t size) {
+    if (start_cluster < 2 || !buffer || size == 0) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    uint32_t cluster = start_cluster;
+    uint32_t bytes_read = 0;
+    uint32_t cluster_offset = offset % g_fat32.bytes_per_cluster;
+    uint32_t clusters_to_skip = offset / g_fat32.bytes_per_cluster;
+    
+    /* Skip clusters to reach the starting position */
+    for (uint32_t i = 0; i < clusters_to_skip && cluster < FAT32_END_OF_CHAIN; i++) {
+        cluster = fat32_get_next_cluster(cluster);
+    }
+    
+    if (cluster >= FAT32_END_OF_CHAIN) {
+        return FAT32_ERROR_INVALID; /* Offset beyond file end */
+    }
+    
+    /* Read data */
+    uint8_t *buf = (uint8_t*)buffer;
+    while (bytes_read < size && cluster < FAT32_END_OF_CHAIN) {
+        /* Read current cluster */
+        uint32_t sector = fat32_cluster_to_sector(cluster);
+        if (sector == 0 || disk_read_sectors(g_fat32.disk, sector, g_fat32.sectors_per_cluster, 
+                                           g_fat32.cluster_buffer) != DISK_SUCCESS) {
+            return FAT32_ERROR_IO;
+        }
+        
+        /* Calculate how much to copy from this cluster */
+        uint32_t bytes_in_cluster = g_fat32.bytes_per_cluster - cluster_offset;
+        uint32_t bytes_to_copy = (size - bytes_read < bytes_in_cluster) ? 
+                                (size - bytes_read) : bytes_in_cluster;
+        
+        /* Copy data */
+        memcpy(buf + bytes_read, g_fat32.cluster_buffer + cluster_offset, bytes_to_copy);
+        bytes_read += bytes_to_copy;
+        cluster_offset = 0; /* Only first cluster may have offset */
+        
+        /* Move to next cluster */
+        if (bytes_read < size) {
+            cluster = fat32_get_next_cluster(cluster);
+        }
+    }
+    
+    return bytes_read;
+}
+
+/* Helper function to write data to a cluster chain */
+static int fat32_write_cluster_chain(uint32_t start_cluster, const void *buffer, 
+                                    uint32_t offset, uint32_t size) {
+    if (start_cluster < 2 || !buffer || size == 0) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    uint32_t cluster = start_cluster;
+    uint32_t bytes_written = 0;
+    uint32_t cluster_offset = offset % g_fat32.bytes_per_cluster;
+    uint32_t clusters_to_skip = offset / g_fat32.bytes_per_cluster;
+    
+    /* Skip clusters to reach the starting position */
+    for (uint32_t i = 0; i < clusters_to_skip && cluster < FAT32_END_OF_CHAIN; i++) {
+        cluster = fat32_get_next_cluster(cluster);
+    }
+    
+    if (cluster >= FAT32_END_OF_CHAIN) {
+        return FAT32_ERROR_INVALID; /* Offset beyond allocated space */
+    }
+    
+    /* Write data */
+    const uint8_t *buf = (const uint8_t*)buffer;
+    while (bytes_written < size && cluster < FAT32_END_OF_CHAIN) {
+        /* Read current cluster first (for partial writes) */
+        uint32_t sector = fat32_cluster_to_sector(cluster);
+        if (sector == 0) {
+            return FAT32_ERROR_IO;
+        }
+        
+        if (cluster_offset != 0 || (size - bytes_written) < g_fat32.bytes_per_cluster) {
+            /* Partial cluster write - need to read first */
+            if (disk_read_sectors(g_fat32.disk, sector, g_fat32.sectors_per_cluster, 
+                                g_fat32.cluster_buffer) != DISK_SUCCESS) {
+                return FAT32_ERROR_IO;
+            }
+        }
+        
+        /* Calculate how much to write to this cluster */
+        uint32_t bytes_in_cluster = g_fat32.bytes_per_cluster - cluster_offset;
+        uint32_t bytes_to_write = (size - bytes_written < bytes_in_cluster) ? 
+                                 (size - bytes_written) : bytes_in_cluster;
+        
+        /* Update cluster buffer */
+        memcpy(g_fat32.cluster_buffer + cluster_offset, buf + bytes_written, bytes_to_write);
+        
+        /* Write cluster back to disk */
+        if (disk_write_sectors(g_fat32.disk, sector, g_fat32.sectors_per_cluster, 
+                             g_fat32.cluster_buffer) != DISK_SUCCESS) {
+            return FAT32_ERROR_IO;
+        }
+        
+        bytes_written += bytes_to_write;
+        cluster_offset = 0; /* Only first cluster may have offset */
+        
+        /* Move to next cluster or allocate new one */
+        if (bytes_written < size) {
+            uint32_t next_cluster = fat32_get_next_cluster(cluster);
+            if (next_cluster >= FAT32_END_OF_CHAIN) {
+                /* Need to allocate new cluster */
+                next_cluster = fat32_allocate_cluster();
+                if (next_cluster == 0) {
+                    return FAT32_ERROR_NO_SPACE; /* Disk full */
+                }
+                
+                /* Link clusters */
+                if (cluster < (g_fat32.fat_cache_sectors * FAT32_SECTOR_SIZE) / 4) {
+                    g_fat32.fat_cache[cluster] = next_cluster;
+                    disk_write_sectors(g_fat32.disk, g_fat32.fat_start_sector, 
+                                     g_fat32.fat_cache_sectors, g_fat32.fat_cache);
+                    disk_write_sectors(g_fat32.disk, g_fat32.fat_start_sector + g_fat32.sectors_per_fat, 
+                                     g_fat32.fat_cache_sectors, g_fat32.fat_cache);
+                }
+            }
+            cluster = next_cluster;
+        }
+    }
+    
+    return bytes_written;
+}
+
 /* File I/O stub implementations - these need to be implemented for full functionality */
 struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
     if (!g_fat32.mounted || !filename || !mode) {
