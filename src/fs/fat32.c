@@ -811,47 +811,307 @@ struct fat32_file* fat32_fopen(const char *filename, const char *mode) {
         return NULL;
     }
     
-    vga_writestring("FAT32: fopen not fully implemented yet for: ");
+    vga_writestring("FAT32: Opening file '");
     vga_writestring(filename);
-    vga_putchar('\n');
-    return NULL;
+    vga_writestring("' mode '");
+    vga_writestring(mode);
+    vga_writestring("'\n");
+    
+    /* Parse mode string */
+    int file_mode = fat32_parse_mode(mode);
+    if (file_mode < 0) {
+        vga_writestring("FAT32: Invalid file mode\n");
+        return NULL;
+    }
+    
+    /* Find free file handle */
+    struct fat32_file *file = fat32_find_free_handle();
+    if (!file) {
+        vga_writestring("FAT32: No free file handles\n");
+        return NULL;
+    }
+    
+    /* Format filename to FAT32 8.3 format */
+    char formatted_name[12];
+    if (fat32_format_name(filename, formatted_name) != FAT32_SUCCESS) {
+        vga_writestring("FAT32: Invalid filename format\n");
+        return NULL;
+    }
+    
+    /* Search for existing file */
+    struct fat32_dir_entry dir_entry;
+    int entry_found = fat32_find_dir_entry(g_fat32.current_dir_cluster, formatted_name, 
+                                          &dir_entry, NULL);
+    
+    if (entry_found) {
+        /* File exists */
+        vga_writestring("FAT32: File exists (");
+        print_dec(dir_entry.file_size);
+        vga_writestring(" bytes)\n");
+        
+        if (file_mode & FAT32_MODE_WRITE && !(file_mode & FAT32_MODE_APPEND)) {
+            /* Write mode - truncate file */
+            vga_writestring("FAT32: Truncating existing file\n");
+            
+            uint32_t first_cluster = ((uint32_t)dir_entry.first_cluster_high << 16) | 
+                                   dir_entry.first_cluster_low;
+            
+            /* Free cluster chain if it exists */
+            if (first_cluster >= 2) {
+                fat32_free_cluster_chain(first_cluster);
+            }
+            
+            /* Update directory entry */
+            fat32_update_dir_entry(formatted_name, 0, 0);
+            
+            /* Set up file handle */
+            strcpy(file->name, filename);
+            file->first_cluster = 0;
+            file->current_cluster = 0;
+            file->file_size = 0;
+            file->position = 0;
+            file->attributes = dir_entry.attributes;
+            file->mode = file_mode;
+            file->is_open = 1;
+        } else {
+            /* Read or append mode */
+            uint32_t first_cluster = ((uint32_t)dir_entry.first_cluster_high << 16) | 
+                                   dir_entry.first_cluster_low;
+            
+            /* Set up file handle */
+            strcpy(file->name, filename);
+            file->first_cluster = first_cluster;
+            file->current_cluster = first_cluster;
+            file->file_size = dir_entry.file_size;
+            file->attributes = dir_entry.attributes;
+            file->mode = file_mode;
+            file->is_open = 1;
+            
+            if (file_mode & FAT32_MODE_APPEND) {
+                /* Append mode - position at end */
+                file->position = file->file_size;
+            } else {
+                /* Read mode - position at beginning */
+                file->position = 0;
+            }
+        }
+    } else {
+        /* File doesn't exist */
+        if (!(file_mode & FAT32_MODE_CREATE)) {
+            vga_writestring("FAT32: File not found and not in create mode\n");
+            return NULL;
+        }
+        
+        vga_writestring("FAT32: Creating new file\n");
+        
+        /* Create new directory entry */
+        if (fat32_create_dir_entry(formatted_name, 0, 0, FAT32_ATTR_ARCHIVE) != FAT32_SUCCESS) {
+            vga_writestring("FAT32: Failed to create directory entry\n");
+            return NULL;
+        }
+        
+        /* Set up file handle */
+        strcpy(file->name, filename);
+        file->first_cluster = 0;
+        file->current_cluster = 0;
+        file->file_size = 0;
+        file->position = 0;
+        file->attributes = FAT32_ATTR_ARCHIVE;
+        file->mode = file_mode;
+        file->is_open = 1;
+    }
+    
+    vga_writestring("FAT32: File opened successfully\n");
+    return file;
 }
 
 int fat32_fclose(struct fat32_file *file) {
-    if (file && file->is_open) {
-        memset(file, 0, sizeof(struct fat32_file));
-        return FAT32_SUCCESS;
+    if (!file || !file->is_open) {
+        return FAT32_ERROR_INVALID;
     }
-    return FAT32_ERROR_INVALID;
+    
+    vga_writestring("FAT32: Closing file '");
+    vga_writestring(file->name);
+    vga_writestring("'\n");
+    
+    /* Flush any pending writes */
+    fat32_fflush(file);
+    
+    /* Clear file handle */
+    memset(file, 0, sizeof(struct fat32_file));
+    
+    vga_writestring("FAT32: File closed\n");
+    return FAT32_SUCCESS;
 }
 
+
 size_t fat32_fread(void *buffer, size_t size, size_t count, struct fat32_file *file) {
-    (void)buffer; (void)size; (void)count; (void)file;
+    if (!file || !file->is_open || !buffer || size == 0 || count == 0) {
+        return 0;
+    }
+    
+    if (!(file->mode & FAT32_MODE_READ)) {
+        vga_writestring("FAT32: File not open for reading\n");
+        return 0;
+    }
+    
+    uint32_t total_bytes = size * count;
+    uint32_t available_bytes = (file->file_size > file->position) ? 
+                              (file->file_size - file->position) : 0;
+    
+    if (total_bytes > available_bytes) {
+        total_bytes = available_bytes;
+    }
+    
+    if (total_bytes == 0 || file->first_cluster < 2) {
+        return 0; /* Nothing to read or empty file */
+    }
+    
+    vga_writestring("FAT32: Reading ");
+    print_dec(total_bytes);
+    vga_writestring(" bytes at position ");
+    print_dec(file->position);
+    vga_putchar('\n');
+    
+    /* Read data from cluster chain */
+    int bytes_read = fat32_read_cluster_chain(file->first_cluster, buffer, 
+                                            file->position, total_bytes);
+    
+    if (bytes_read > 0) {
+        file->position += bytes_read;
+        return bytes_read / size; /* Return number of complete elements read */
+    }
+    
     return 0;
 }
 
 size_t fat32_fwrite(const void *buffer, size_t size, size_t count, struct fat32_file *file) {
-    (void)buffer; (void)size; (void)count; (void)file;
+    if (!file || !file->is_open || !buffer || size == 0 || count == 0) {
+        return 0;
+    }
+    
+    if (!(file->mode & (FAT32_MODE_WRITE | FAT32_MODE_APPEND))) {
+        vga_writestring("FAT32: File not open for writing\n");
+        return 0;
+    }
+    
+    uint32_t total_bytes = size * count;
+    
+    vga_writestring("FAT32: Writing ");
+    print_dec(total_bytes);
+    vga_writestring(" bytes at position ");
+    print_dec(file->position);
+    vga_putchar('\n');
+    
+    /* Allocate first cluster if file is empty */
+    if (file->first_cluster < 2) {
+        file->first_cluster = fat32_allocate_cluster();
+        if (file->first_cluster == 0) {
+            vga_writestring("FAT32: Failed to allocate cluster\n");
+            return 0;
+        }
+        file->current_cluster = file->first_cluster;
+        
+        /* Update directory entry with first cluster */
+        char formatted_name[12];
+        fat32_format_name(file->name, formatted_name);
+        fat32_update_dir_entry(formatted_name, file->first_cluster, 0);
+    }
+    
+    /* Write data to cluster chain */
+    int bytes_written = fat32_write_cluster_chain(file->first_cluster, buffer, 
+                                                file->position, total_bytes);
+    
+    if (bytes_written > 0) {
+        file->position += bytes_written;
+        
+        /* Update file size if we wrote beyond current end */
+        if (file->position > file->file_size) {
+            file->file_size = file->position;
+            
+            /* Update directory entry with new file size */
+            char formatted_name[12];
+            fat32_format_name(file->name, formatted_name);
+            fat32_update_dir_entry(formatted_name, file->first_cluster, file->file_size);
+        }
+        
+        return bytes_written / size; /* Return number of complete elements written */
+    }
+    
     return 0;
 }
 
+
 int fat32_fseek(struct fat32_file *file, long offset, int whence) {
-    (void)file; (void)offset; (void)whence;
-    return FAT32_ERROR_INVALID;
+    if (!file || !file->is_open) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    uint32_t new_position;
+    
+    switch (whence) {
+        case FAT32_SEEK_SET:
+            new_position = (offset >= 0) ? (uint32_t)offset : 0;
+            break;
+            
+        case FAT32_SEEK_CUR:
+            if (offset >= 0) {
+                new_position = file->position + (uint32_t)offset;
+            } else {
+                new_position = (file->position >= (uint32_t)(-offset)) ? 
+                              (file->position - (uint32_t)(-offset)) : 0;
+            }
+            break;
+            
+        case FAT32_SEEK_END:
+            if (offset >= 0) {
+                new_position = file->file_size + (uint32_t)offset;
+            } else {
+                new_position = (file->file_size >= (uint32_t)(-offset)) ? 
+                              (file->file_size - (uint32_t)(-offset)) : 0;
+            }
+            break;
+            
+        default:
+            return FAT32_ERROR_INVALID;
+    }
+    
+    file->position = new_position;
+    
+    vga_writestring("FAT32: Seek to position ");
+    print_dec(file->position);
+    vga_putchar('\n');
+    
+    return FAT32_SUCCESS;
 }
 
 long fat32_ftell(struct fat32_file *file) {
-    (void)file;
-    return -1;
+    if (!file || !file->is_open) {
+        return -1;
+    }
+    
+    return (long)file->position;
 }
 
 int fat32_feof(struct fat32_file *file) {
-    (void)file;
-    return 1;
+    if (!file || !file->is_open) {
+        return 1;
+    }
+    
+    return (file->position >= file->file_size) ? 1 : 0;
 }
 
 int fat32_fflush(struct fat32_file *file) {
-    (void)file;
+    if (!file || !file->is_open) {
+        return FAT32_ERROR_INVALID;
+    }
+    
+    /* For our implementation, data is written immediately */
+    /* Just flush the disk cache */
+    if (g_fat32.disk) {
+        disk_flush_cache(g_fat32.disk);
+    }
+    
     return FAT32_SUCCESS;
 }
 
