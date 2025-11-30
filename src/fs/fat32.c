@@ -752,22 +752,29 @@ void fat32_list_files(void) {
 int fat32_format_name(const char *filename, char *formatted_name) {
     if (!filename || !formatted_name) return FAT32_ERROR_INVALID;
     
+    /* Initialize with spaces */
     memset(formatted_name, ' ', 11);
     formatted_name[11] = '\0';
     
     const char *dot = strstr(filename, ".");
     int name_len = dot ? (int)(dot - filename) : (int)strlen(filename);
     
+    /* Prevent buffer overflow */
+    if (name_len > 8) name_len = 8;
+    
     /* Copy name part */
-    for (int i = 0; i < name_len && i < 8; i++) {
+    for (int i = 0; i < name_len; i++) {
         char c = filename[i];
         if (c >= 'a' && c <= 'z') c -= 32;  /* Convert to uppercase */
         formatted_name[i] = c;
     }
     
     /* Copy extension part */
-    if (dot) {
-        for (int i = 0; i < 3 && dot[i + 1] != '\0'; i++) {
+    if (dot && dot[1] != '\0') {
+        int ext_len = strlen(dot + 1);
+        if (ext_len > 3) ext_len = 3;
+        
+        for (int i = 0; i < ext_len; i++) {
             char c = dot[i + 1];
             if (c >= 'a' && c <= 'z') c -= 32;  /* Convert to uppercase */
             formatted_name[8 + i] = c;

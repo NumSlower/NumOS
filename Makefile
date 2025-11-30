@@ -153,9 +153,6 @@ clean:
 	@rm -rf $(BUILD_DIR)
 	@$(MAKE) -C userspace clean
 	@echo "[OK] Clean complete"
-
-.PHONY: distclean
-distclean: clean
 	@echo "[DISTCLEAN] Removing disk image..."
 	@rm -f $(DISK_IMG)
 	@echo "[OK] Distribution clean complete"
