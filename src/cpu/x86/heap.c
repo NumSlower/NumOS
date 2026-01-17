@@ -11,7 +11,7 @@ static int heap_initialized = 0;
 static int guards_enabled = 0;
 
 /* Helper functions */
-static uint32_t calculate_checksum(struct heap_block *block);
+static uint32_t heap_calculate_checksum(struct heap_block *block);
 static int is_block_valid(struct heap_block *block);
 static struct heap_block* find_free_block(size_t size);
 static struct heap_block* split_block(struct heap_block *block, size_t size);
@@ -40,7 +40,7 @@ void heap_init(void) {
     heap_start->magic = HEAP_MAGIC_FREE;
     heap_start->size = HEAP_SIZE - sizeof(struct heap_block);
     heap_start->flags = HEAP_FLAG_FREE | HEAP_FLAG_FIRST | HEAP_FLAG_LAST;
-    heap_start->checksum = calculate_checksum(heap_start);
+    heap_start->checksum = heap_calculate_checksum(heap_start);
     heap_start->prev = NULL;
     heap_start->next = NULL;
     
@@ -92,7 +92,7 @@ void* kmalloc(size_t size) {
     /* Mark block as used */
     block->magic = HEAP_MAGIC_ALLOC;
     block->flags = (block->flags & ~HEAP_FLAG_FREE) | HEAP_FLAG_USED;
-    block->checksum = calculate_checksum(block);
+    block->checksum = heap_calculate_checksum(block);
     
     /* Update statistics */
     heap_stats.allocations++;
@@ -162,7 +162,7 @@ void kfree(void* ptr) {
     /* Mark block as free */
     block->magic = HEAP_MAGIC_FREE;
     block->flags = (block->flags & ~HEAP_FLAG_USED) | HEAP_FLAG_FREE;
-    block->checksum = calculate_checksum(block);
+    block->checksum = heap_calculate_checksum(block);
     
     /* Clear the data if guards are enabled */
     if (guards_enabled) {
@@ -301,7 +301,7 @@ void heap_enable_guards(int enable) {
 }
 
 /* Helper function implementations */
-static uint32_t calculate_checksum(struct heap_block *block) {
+static uint32_t heap_calculate_checksum(struct heap_block *block) {
     /* Simple checksum calculation */
     uint32_t checksum = 0;
     checksum ^= block->magic;
@@ -323,7 +323,7 @@ static int is_block_valid(struct heap_block *block) {
     }
     
     /* Check checksum */
-    uint32_t expected = calculate_checksum(block);
+    uint32_t expected = heap_calculate_checksum(block);
     if (block->checksum != expected) {
         return 0;
     }
@@ -364,17 +364,17 @@ static struct heap_block* split_block(struct heap_block *block, size_t size) {
     new_block->flags = HEAP_FLAG_FREE;
     new_block->prev = block;
     new_block->next = block->next;
-    new_block->checksum = calculate_checksum(new_block);
+    new_block->checksum = heap_calculate_checksum(new_block);
     
     /* Update original block */
     block->size = size;
     block->next = new_block;
-    block->checksum = calculate_checksum(block);
+    block->checksum = heap_calculate_checksum(block);
     
     /* Update next block's prev pointer */
     if (new_block->next) {
         new_block->next->prev = new_block;
-        new_block->next->checksum = calculate_checksum(new_block->next);
+        new_block->next->checksum = heap_calculate_checksum(new_block->next);
     }
     
     return block;
@@ -392,10 +392,10 @@ static void merge_free_blocks(void) {
             
             if (next->next) {
                 next->next->prev = block;
-                next->next->checksum = calculate_checksum(next->next);
+                next->next->checksum = heap_calculate_checksum(next->next);
             }
             
-            block->checksum = calculate_checksum(block);
+            block->checksum = heap_calculate_checksum(block);
         } else {
             block = block->next;
         }
