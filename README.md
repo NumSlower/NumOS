@@ -1,6 +1,6 @@
 # NumOS
 
-A 64-bit operating system written from scratch in C and Assembly, featuring a custom kernel, FAT32 filesystem, ELF loader, and userspace shell.
+A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, FAT32 filesystem, and hardware drivers.
 
 ![NumOS Version](https://img.shields.io/badge/version-2.5-blue)
 ![Architecture](https://img.shields.io/badge/architecture-x86__64-green)
@@ -19,7 +19,7 @@ A 64-bit operating system written from scratch in C and Assembly, featuring a cu
   - IDT with 256 entries
   - Exception handlers (divide by zero, page fault, GPF, etc.)
   - IRQ handling through PIC
-- **GDT**: Proper segmentation for kernel/user code and data
+- **GDT**: Proper segmentation for kernel code and data
 
 ### Drivers
 - **VGA Text Mode**: 80x25 color text display with cursor support
@@ -38,41 +38,21 @@ A 64-bit operating system written from scratch in C and Assembly, featuring a cu
   - Cluster chain management
   - Automatic filesystem creation if needed
 
-### Process Management
-- **ELF Loader**: Load and execute ELF64 binaries
-- **Process Control**: Process creation and execution
-- **Ring 3 Execution**: Proper user/kernel mode separation
-- **System Calls**: INT 0x80 system call interface with 10+ syscalls
-
-### Userspace
-- **Interactive Shell**: Full-featured command-line interface
-  - Command history
-  - File operations (read, write, cat, ls)
-  - System information (help, clear, sysinfo)
-  - Memory and disk utilities
+### Kernel Shell
+- **Interactive Command Line**: Built-in kernel shell
+  - File operations (cat, write, ls)
+  - System information (sysinfo, heap, disk)
+  - System control (shutdown, reboot)
 
 ## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────┐
-│         Userspace (Ring 3)          │
-│  ┌──────────────────────────────┐   │
-│  │    Shell Application          │   │
-│  │  - Command processor          │   │
-│  │  - File operations            │   │
-│  │  - System utilities           │   │
-│  └──────────────────────────────┘   │
-└─────────────────────────────────────┘
-            │ System Calls (INT 0x80)
-┌─────────────────────────────────────┐
 │         Kernel (Ring 0)             │
 │  ┌──────────────────────────────┐   │
-│  │   System Call Interface      │   │
-│  └──────────────────────────────┘   │
-│  ┌──────────────────────────────┐   │
-│  │   Process Management         │   │
-│  │  - ELF Loader                │   │
-│  │  - Process creation/exec     │   │
+│  │   Command Shell              │   │
+│  │  - Built-in kernel commands  │   │
+│  │  - File operations           │   │
 │  └──────────────────────────────┘   │
 │  ┌──────────────────────────────┐   │
 │  │   Memory Management          │   │
@@ -151,7 +131,7 @@ brew install x86_64-elf-gcc x86_64-elf-binutils
 ### Compilation
 
 ```bash
-# Build kernel and userspace
+# Build kernel
 make all
 
 # Create bootable disk image (Linux only)
@@ -180,8 +160,6 @@ NumOS/
 │   ├── drivers/         # Device drivers
 │   ├── fs/              # FAT32 implementation
 │   └── kernel/          # Kernel main and utilities
-├── userspace/           # Userspace programs
-│   └── shell/           # Interactive shell
 ├── preboot/             # GRUB configuration
 ├── build/               # Build output directory
 ├── Makefile             # Main build system
@@ -220,40 +198,7 @@ sudo dd if=NumOS.img of=/dev/sdX bs=4M status=progress
 sudo sync
 ```
 
-## 📚 System Calls
-
-NumOS provides the following system calls (INT 0x80):
-
-| Number | Name | Description |
-|--------|------|-------------|
-| 0 | exit | Terminate process |
-| 1 | print | Write string to console |
-| 2 | read | Read from file |
-| 3 | write | Write to file |
-| 4 | open | Open file |
-| 5 | close | Close file |
-| 6 | malloc | Allocate memory |
-| 7 | free | Free memory |
-| 8 | getpid | Get process ID |
-| 9 | sleep | Sleep for milliseconds |
-| 10 | getkey | Read keyboard input |
-
-### Example Usage (from userspace):
-```c
-// Print to console
-syscall_print("Hello from userspace!\n");
-
-// File I/O
-int fd = syscall_open("test.txt", MODE_WRITE);
-syscall_write(fd, "Hello, file!", 12);
-syscall_close(fd);
-
-// Memory allocation
-void *ptr = syscall_malloc(1024);
-syscall_free(ptr);
-```
-
-## 🎮 Shell Commands
+## 🎮 Kernel Shell Commands
 
 ```
 help        - Show available commands
@@ -261,7 +206,6 @@ clear       - Clear the screen
 ls          - List files in current directory
 cat <file>  - Display file contents
 write <file> <text> - Write text to file
-read <file> - Read and display file
 sysinfo     - Show system information
 heap        - Display heap statistics
 disk        - Show disk information
@@ -271,33 +215,12 @@ shutdown    - Shutdown the system
 
 ## 🔧 Development
 
-### Adding a New System Call
-
-1. **Define in `Include/kernel/syscall.h`:**
-```c
-#define SYSCALL_MYNEWCALL 11
-```
-
-2. **Implement in `src/kernel/syscall.c`:**
-```c
-case SYSCALL_MYNEWCALL:
-    result = my_new_function(arg1, arg2);
-    break;
-```
-
-3. **Add wrapper in userspace:**
-```c
-int syscall_mynewcall(int arg1, int arg2) {
-    return syscall(SYSCALL_MYNEWCALL, arg1, arg2, 0, 0);
-}
-```
-
 ### Adding a New Driver
 
 1. Create header in `Include/drivers/mydriver.h`
 2. Implement in `src/drivers/mydriver.c`
 3. Initialize in `kernel_init()` in `src/kernel/kmain.c`
-4. Add to Makefile
+4. Makefile will automatically pick it up
 
 ### Debugging Tips
 
@@ -312,7 +235,6 @@ int syscall_mynewcall(int arg1, int arg2) {
 ```
 0x0000000000000000 - 0x00000000000FFFFF  Low memory (1MB)
 0x0000000000100000 - 0x00000000003FFFFF  Kernel code/data (identity mapped)
-0x0000000000400000 - 0x00000000007FFFFF  User space (4MB - 8MB)
 0xFFFFFFFF80000000 - 0xFFFFFFFF803FFFFF  Kernel virtual base
 0xFFFFFFFF90000000 - 0xFFFFFFFF93FFFFFF  Kernel heap (64MB)
 ```
@@ -328,6 +250,8 @@ int syscall_mynewcall(int arg1, int arg2) {
 ## 🗺️ Roadmap
 
 - [ ] Multi-tasking and scheduling
+- [ ] User space support
+- [ ] System calls and IPC
 - [ ] Virtual filesystem layer (VFS)
 - [ ] Additional filesystems (ext2)
 - [ ] Network stack (TCP/IP)
@@ -341,7 +265,6 @@ int syscall_mynewcall(int arg1, int arg2) {
 - [OSDev Wiki](https://wiki.osdev.org/)
 - [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 - [AMD64 Architecture Programmer's Manual](https://www.amd.com/en/support/tech-docs)
-- [ELF Specification](http://www.skyfree.org/linux/references/ELF_Format.pdf)
 - [FAT32 Specification](https://www.win.tue.nl/~aeb/linux/fs/fat/fat-1.html)
 
 ## 🤝 Contributing

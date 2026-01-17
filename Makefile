@@ -1,5 +1,5 @@
 ################################################################################
-#  FIXED MAKEFILE FOR NumOS WITH USERSPACE
+#  KERNEL-ONLY MAKEFILE FOR NumOS
 ################################################################################
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
@@ -16,8 +16,8 @@ endif
 #  TOOLCHAIN
 # ==============================
 AS := nasm
-CC := $(shell command -v x86_64-elf-gcc || echo /usr/local/cross/bin/x86_64-elf-gcc)
-LD := $(shell command -v x86_64-elf-ld || echo /usr/local/cross/bin/x86_64-elf-ld)
+CC := x86_64-elf-gcc
+LD := x86_64-elf-ld
 
 # ==============================
 #  DIRECTORIES
@@ -25,7 +25,6 @@ LD := $(shell command -v x86_64-elf-ld || echo /usr/local/cross/bin/x86_64-elf-l
 SRC_DIR := src
 BUILD_DIR := build
 BUILD_KERNEL := $(BUILD_DIR)/kernel
-MOUNT_DIR := /tmp/numos_mount
 
 # ==============================
 #  FLAGS
@@ -41,16 +40,15 @@ LDFLAGS := -T linker.ld -nostdlib --nmagic
 # ==============================
 #  SOURCE FILES
 # ==============================
-ASM_SOURCES := $(wildcard $(SRC_DIR)/boot/*.asm) \
-               $(SRC_DIR)/kernel/process_switch.asm
+ASM_SOURCES := $(wildcard $(SRC_DIR)/boot/*.asm)
 
-KERNEL_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/*.c) \
+KERNEL_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/kmain.c) \
+                    $(wildcard $(SRC_DIR)/kernel/kernel.c) \
                     $(wildcard $(SRC_DIR)/drivers/*.c) \
                     $(wildcard $(SRC_DIR)/cpu/x86/*.c) \
                     $(wildcard $(SRC_DIR)/fs/*.c)
 
-ASM_OBJECTS := $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_KERNEL)/boot/%.o,$(filter $(SRC_DIR)/boot/%,$(ASM_SOURCES))) \
-               $(patsubst $(SRC_DIR)/kernel/%.asm,$(BUILD_KERNEL)/kernel/%.o,$(filter $(SRC_DIR)/kernel/%,$(ASM_SOURCES)))
+ASM_OBJECTS := $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_KERNEL)/boot/%.o,$(ASM_SOURCES))
 
 KERNEL_C_OBJECTS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL)/%.o,$(KERNEL_C_SOURCES))
 
@@ -60,14 +58,13 @@ ALL_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS)
 #  ARTIFACTS
 # ==============================
 KERNEL := $(BUILD_DIR)/kernel.bin
-USERSPACE_BIN := $(BUILD_DIR)/shell.bin
 DISK_IMG := NumOS.img
 
 # ==============================
 #  DEFAULT TARGET
 # ==============================
 .PHONY: all
-all: kernel userspace
+all: kernel
 
 # ==============================
 #  KERNEL BUILD
@@ -78,11 +75,6 @@ kernel: $(KERNEL)
 $(BUILD_KERNEL)/boot/%.o: $(SRC_DIR)/boot/%.asm
 	@echo "[AS] $<"
 	@mkdir -p $(BUILD_KERNEL)/boot
-	@$(AS) $(ASFLAGS) $< -o $@
-
-$(BUILD_KERNEL)/kernel/%.o: $(SRC_DIR)/kernel/%.asm
-	@echo "[AS] $<"
-	@mkdir -p $(BUILD_KERNEL)/kernel
 	@$(AS) $(ASFLAGS) $< -o $@
 
 $(BUILD_KERNEL)/%.o: $(SRC_DIR)/%.c
@@ -96,25 +88,10 @@ $(KERNEL): $(ALL_KERNEL_OBJECTS)
 	@echo "[OK] Kernel built: $(KERNEL)"
 
 # ==============================
-#  USERSPACE BUILD
-# ==============================
-.PHONY: userspace
-userspace:
-	@echo "[BUILD] Building userspace shell..."
-	@$(MAKE) -C userspace
-	@if [ -f "$(USERSPACE_BIN)" ]; then \
-		echo "[OK] Shell built: $(USERSPACE_BIN)"; \
-		file $(USERSPACE_BIN); \
-	else \
-		echo "[ERROR] Shell build failed!"; \
-		exit 1; \
-	fi
-
-# ==============================
 #  DISK IMAGE (Linux only)
 # ==============================
 .PHONY: disk
-disk: kernel userspace
+disk: kernel
 	@echo "=== Creating bootable disk image ==="
 	@if [ "$(OS_TYPE)" != "linux" ]; then \
 		echo "Disk image creation only supported on Linux"; \
@@ -151,8 +128,10 @@ debug: disk
 clean:
 	@echo "[CLEAN] Removing build artifacts..."
 	@rm -rf $(BUILD_DIR)
-	@$(MAKE) -C userspace clean
 	@echo "[OK] Clean complete"
+
+.PHONY: distclean
+distclean: clean
 	@echo "[DISTCLEAN] Removing disk image..."
 	@rm -f $(DISK_IMG)
 	@echo "[OK] Distribution clean complete"
@@ -162,13 +141,12 @@ clean:
 # ==============================
 .PHONY: help
 help:
-	@echo "NumOS Build System"
-	@echo "=================="
+	@echo "NumOS Kernel Build System"
+	@echo "========================="
 	@echo ""
 	@echo "Targets:"
-	@echo "  all       - Build kernel and userspace (default)"
+	@echo "  all       - Build kernel (default)"
 	@echo "  kernel    - Build kernel only"
-	@echo "  userspace - Build userspace shell only"
 	@echo "  disk      - Create bootable disk image (Linux only)"
 	@echo "  run       - Build and run in QEMU"
 	@echo "  debug     - Build and run with GDB support"

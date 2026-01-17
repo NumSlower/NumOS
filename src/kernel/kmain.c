@@ -1,5 +1,5 @@
 /*
- * kmain.c - Fixed kernel main with proper shell loading
+ * kmain.c - Kernel main without userspace support
  */
 
 #include "kernel/kernel.h"
@@ -9,13 +9,22 @@
 #include "cpu/gdt.h"
 #include "cpu/idt.h"
 #include "cpu/paging.h"
-#include "kernel/syscall.h"
 #include "drivers/pic.h"
 #include "drivers/timer.h"
 #include "cpu/heap.h"
 #include "fs/fat32.h"
-#include "kernel/elf.h"
-#include "kernel/process.h"
+
+/* Simple command buffer */
+#define CMD_BUFFER_SIZE 256
+static char cmd_buffer[CMD_BUFFER_SIZE];
+
+void print_prompt(void) {
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("numos> ");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
+void process_command(const char *command);
 
 void kernel_init(void) {
     /* Initialize VGA text mode first so we can see output */
@@ -23,7 +32,7 @@ void kernel_init(void) {
     
     /* Display early boot message */
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("NumOS v2.5 - 64-bit OS with ELF Loader\n");
+    vga_writestring("NumOS v2.5 - 64-bit Kernel\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("Initializing kernel subsystems...\n\n");
     
@@ -50,24 +59,6 @@ void kernel_init(void) {
     /* Initialize keyboard */
     vga_writestring("Initializing keyboard driver...\n");
     keyboard_init();
-    
-    /* Initialize system call interface */
-    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
-    vga_writestring("\nInitializing system call interface...\n");
-    syscall_init();
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("- System call handler registered (INT 0x80)\n");
-    vga_writestring("- User-space API available\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    
-    /* Initialize process management */
-    vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
-    vga_writestring("\nInitializing process management...\n");
-    process_init();
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("- Process table initialized\n");
-    vga_writestring("- Context switching ready\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     
     /* Initialize disk subsystem */
     vga_setcolor(vga_entry_color(VGA_COLOR_BLUE, VGA_COLOR_BLACK));
@@ -112,252 +103,228 @@ void kernel_init(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 }
 
-int load_shell_from_disk(void **shell_data, uint32_t *shell_size) {
-    vga_writestring("\n=== Loading Shell from Disk ===\n");
-    
-    /* Try different possible paths - FAT32 uses uppercase */
-    const char *shell_paths[] = {
-        "SHELL",       /* FAT32 uppercase, no extension - PRIMARY */
-        "SHELL.BIN",   /* With extension */
-        "shell",       /* Lowercase fallback */
-        "shell.bin",   /* Lowercase with extension */
-        NULL
-    };
-    
-    const char *found_path = NULL;
-    
-    /* Check which path exists */
-    vga_writestring("Searching for shell binary...\n");
-    for (int i = 0; shell_paths[i] != NULL; i++) {
-        vga_writestring("  Trying: '");
-        vga_writestring(shell_paths[i]);
-        vga_writestring("'");
-        
-        if (fat32_exists(shell_paths[i])) {
-            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-            vga_writestring(" - FOUND!\n");
-            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-            found_path = shell_paths[i];
-            break;
-        } else {
-            vga_writestring(" - not found\n");
-        }
-    }
-    
-    if (!found_path) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("\nERROR: Shell binary not found on disk!\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        vga_writestring("\nAvailable files on disk:\n");
-        fat32_list_files();
-        vga_writestring("\n");
-        return -1;
-    }
-    
-    /* Get file size */
-    *shell_size = fat32_get_file_size(found_path);
-    vga_writestring("\nShell file: '");
-    vga_writestring(found_path);
-    vga_writestring("'\n");
-    vga_writestring("Size: ");
-    print_dec(*shell_size);
-    vga_writestring(" bytes\n");
-    
-    if (*shell_size == 0 || *shell_size > 1024 * 1024) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Invalid shell file size\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        return -1;
-    }
-    
-    /* Allocate memory for shell */
-    *shell_data = kmalloc(*shell_size);
-    if (!*shell_data) {
-        vga_writestring("ERROR: Failed to allocate memory for shell\n");
-        return -1;
-    }
-    
-    vga_writestring("Allocated ");
-    print_dec(*shell_size);
-    vga_writestring(" bytes at 0x");
-    print_hex((uint64_t)*shell_data);
-    vga_writestring("\n");
-    
-    /* Open and read shell file */
-    vga_writestring("Opening '");
-    vga_writestring(found_path);
-    vga_writestring("'...\n");
-    
-    struct fat32_file *file = fat32_fopen(found_path, "r");
-    if (!file) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Failed to open shell file\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        kfree(*shell_data);
-        *shell_data = NULL;
-        return -1;
-    }
-    
-    vga_writestring("Reading shell binary...\n");
-    size_t bytes_read = fat32_fread(*shell_data, 1, *shell_size, file);
-    fat32_fclose(file);
-    
-    if (bytes_read != *shell_size) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Read ");
-        print_dec(bytes_read);
-        vga_writestring(" bytes, expected ");
-        print_dec(*shell_size);
-        vga_writestring("\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        kfree(*shell_data);
-        *shell_data = NULL;
-        return -1;
-    }
-    
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("Successfully loaded ");
-    print_dec(bytes_read);
-    vga_writestring(" bytes\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    
-    return 0;
-}
-
 void kernel_main(void) {
     /* Initialize all kernel subsystems */
     kernel_init();
     
-    /* List available files for debugging */
-    vga_writestring("Filesystem contents:\n");
-    fat32_list_files();
     vga_writestring("\n");
-    
-    /* Load shell from disk */
-    void *shell_data = NULL;
-    uint32_t shell_size = 0;
-    
-    if (load_shell_from_disk(&shell_data, &shell_size) != 0) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("\nFailed to load shell from disk!\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        vga_writestring("\nKernel will now idle...\n");
-        hang();
-    }
-    
-    /* Validate and load ELF */
-    vga_writestring("\n=== ELF Validation and Loading ===\n");
-    
-    int valid = elf_validate(shell_data);
-    if (valid != ELF_SUCCESS) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Invalid ELF file (code ");
-        print_dec(valid);
-        vga_writestring(")\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        
-        /* Show first few bytes for debugging */
-        vga_writestring("First 16 bytes of file:\n  ");
-        uint8_t *bytes = (uint8_t*)shell_data;
-        for (uint32_t i = 0; i < 16 && i < shell_size; i++) {
-            if (bytes[i] < 0x10) vga_putchar('0');
-            print_hex32(bytes[i]);
-            vga_putchar(' ');
-        }
-        vga_writestring("\n");
-        
-        kfree(shell_data);
-        hang();
-    }
-    
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("ELF validation passed!\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    
-    /* Print ELF information */
-    elf_print_info(shell_data);
-    
-    /* Load ELF into memory */
-    uint64_t entry_point = 0;
-    int load_result = elf_load(shell_data, &entry_point);
-    
-    if (load_result != ELF_SUCCESS) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Failed to load ELF (code ");
-        print_dec(load_result);
-        vga_writestring(")\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        kfree(shell_data);
-        hang();
-    }
-    
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("\nELF loaded successfully!\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    
-    /* Setup user stack */
-    vga_writestring("\n=== Setting Up User Environment ===\n");
-    uint64_t stack_top = elf_setup_user_stack();
-    if (stack_top == 0) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Failed to setup user stack\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        kfree(shell_data);
-        hang();
-    }
-    
-    /* Create process */
-    vga_writestring("\n=== Creating User Process ===\n");
-    struct process *shell_proc = process_create("shell", entry_point, stack_top);
-    if (!shell_proc) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ERROR: Failed to create process\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        kfree(shell_data);
-        hang();
-    }
-    
-    /* Free the ELF data (it's been loaded into process memory) */
-    kfree(shell_data);
-    
-    /* Final status */
-    vga_writestring("\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("=== Ready to Execute User Process ===\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("Process: ");
-    vga_writestring(shell_proc->name);
-    vga_writestring(" (PID ");
-    print_dec(shell_proc->pid);
-    vga_writestring(")\n");
-    vga_writestring("Entry point: 0x");
-    print_hex(entry_point);
-    vga_writestring("\nStack: 0x");
-    print_hex(stack_top);
-    vga_writestring("\n\n");
-    
-    /* Give user time to read */
-    timer_sleep(2000);
-    
-    /* Clear screen for shell */
-    vga_clear();
-    
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("Executing userspace shell...\n\n");
+    vga_writestring("Welcome to NumOS Kernel Shell\n");
+    vga_writestring("Type 'help' for available commands\n\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     
-    /* Execute the process (switch to ring 3) */
-    process_exec(shell_proc);
-    
-    /* If we return here, the process has exited */
-    vga_writestring("\n\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("Shell process terminated\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("Kernel will now idle...\n");
-    
-    /* Idle loop */
+    /* Main command loop */
     while (1) {
-        __asm__ volatile("hlt");
+        print_prompt();
+        keyboard_read_line(cmd_buffer, CMD_BUFFER_SIZE);
+        
+        if (cmd_buffer[0] != '\0') {
+            process_command(cmd_buffer);
+        }
+    }
+}
+
+void process_command(const char *command) {
+    /* Skip leading whitespace */
+    while (*command == ' ' || *command == '\t') {
+        command++;
+    }
+    
+    if (strcmp(command, "help") == 0) {
+        vga_writestring("Available commands:\n");
+        vga_writestring("  help      - Show this help message\n");
+        vga_writestring("  clear     - Clear the screen\n");
+        vga_writestring("  sysinfo   - Display system information\n");
+        vga_writestring("  heap      - Show heap statistics\n");
+        vga_writestring("  disk      - Show disk information\n");
+        vga_writestring("  ls        - List files on disk\n");
+        vga_writestring("  cat       - Display file contents (cat <filename>)\n");
+        vga_writestring("  write     - Write to file (write <filename> <text>)\n");
+        vga_writestring("  shutdown  - Shutdown the system\n");
+        vga_writestring("  reboot    - Reboot the system\n");
+        
+    } else if (strcmp(command, "clear") == 0) {
+        vga_clear();
+        
+    } else if (strcmp(command, "sysinfo") == 0) {
+        vga_writestring("NumOS System Information\n");
+        vga_writestring("========================\n");
+        vga_writestring("Version: 2.5 (64-bit Kernel)\n");
+        vga_writestring("Architecture: x86-64\n");
+        vga_writestring("Uptime: ");
+        print_dec(timer_get_uptime_seconds());
+        vga_writestring(" seconds\n");
+        
+        vga_writestring("\nMemory:\n");
+        struct heap_stats stats = heap_get_stats();
+        vga_writestring("  Total heap: ");
+        print_dec(stats.total_size / 1024);
+        vga_writestring(" KB\n");
+        vga_writestring("  Used: ");
+        print_dec(stats.used_size / 1024);
+        vga_writestring(" KB\n");
+        vga_writestring("  Free: ");
+        print_dec(stats.free_size / 1024);
+        vga_writestring(" KB\n");
+        
+    } else if (strcmp(command, "heap") == 0) {
+        heap_print_stats();
+        
+    } else if (strcmp(command, "disk") == 0) {
+        disk_list_disks();
+        
+    } else if (strcmp(command, "ls") == 0) {
+        fat32_list_files();
+        
+    } else if (strncmp(command, "cat ", 4) == 0) {
+        const char *filename = command + 4;
+        
+        /* Skip whitespace */
+        while (*filename == ' ') filename++;
+        
+        if (*filename == '\0') {
+            vga_writestring("Usage: cat <filename>\n");
+            return;
+        }
+        
+        if (!fat32_exists(filename)) {
+            vga_writestring("File not found: ");
+            vga_writestring(filename);
+            vga_putchar('\n');
+            return;
+        }
+        
+        uint32_t size = fat32_get_file_size(filename);
+        if (size == 0) {
+            vga_writestring("File is empty or cannot be read\n");
+            return;
+        }
+        
+        if (size > 4096) {
+            vga_writestring("File too large (max 4KB for display)\n");
+            return;
+        }
+        
+        void *buffer = kmalloc(size + 1);
+        if (!buffer) {
+            vga_writestring("Out of memory\n");
+            return;
+        }
+        
+        struct fat32_file *file = fat32_fopen(filename, "r");
+        if (!file) {
+            vga_writestring("Failed to open file\n");
+            kfree(buffer);
+            return;
+        }
+        
+        size_t read = fat32_fread(buffer, 1, size, file);
+        fat32_fclose(file);
+        
+        if (read > 0) {
+            ((char*)buffer)[read] = '\0';
+            vga_writestring((char*)buffer);
+            vga_putchar('\n');
+        } else {
+            vga_writestring("Failed to read file\n");
+        }
+        
+        kfree(buffer);
+        
+    } else if (strncmp(command, "write ", 6) == 0) {
+        const char *args = command + 6;
+        
+        /* Skip whitespace */
+        while (*args == ' ') args++;
+        
+        /* Find filename end */
+        const char *filename_end = args;
+        while (*filename_end && *filename_end != ' ') filename_end++;
+        
+        if (*filename_end == '\0') {
+            vga_writestring("Usage: write <filename> <text>\n");
+            return;
+        }
+        
+        /* Extract filename */
+        size_t filename_len = filename_end - args;
+        char filename[256];
+        if (filename_len >= sizeof(filename)) {
+            vga_writestring("Filename too long\n");
+            return;
+        }
+        
+        strncpy(filename, args, filename_len);
+        filename[filename_len] = '\0';
+        
+        /* Get text */
+        const char *text = filename_end + 1;
+        while (*text == ' ') text++;
+        
+        if (*text == '\0') {
+            vga_writestring("No text to write\n");
+            return;
+        }
+        
+        /* Write to file */
+        struct fat32_file *file = fat32_fopen(filename, "w");
+        if (!file) {
+            vga_writestring("Failed to create file\n");
+            return;
+        }
+        
+        size_t written = fat32_fwrite(text, 1, strlen(text), file);
+        fat32_fclose(file);
+        
+        if (written > 0) {
+            vga_writestring("Wrote ");
+            print_dec(written);
+            vga_writestring(" bytes to ");
+            vga_writestring(filename);
+            vga_putchar('\n');
+        } else {
+            vga_writestring("Failed to write to file\n");
+        }
+        
+    } else if (strcmp(command, "shutdown") == 0) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        vga_writestring("Shutting down...\n");
+        
+        /* Flush disk caches */
+        disk_shutdown();
+        fat32_unmount();
+        
+        vga_writestring("System halted. You can power off now.\n");
+        hang();
+        
+    } else if (strcmp(command, "reboot") == 0) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        vga_writestring("Rebooting...\n");
+        
+        /* Flush disk caches */
+        disk_shutdown();
+        fat32_unmount();
+        
+        /* Wait a bit */
+        timer_sleep(1000);
+        
+        /* Triple fault to reboot */
+        uint8_t good = 0x02;
+        while (good & 0x02) {
+            good = inb(0x64);
+        }
+        outb(0x64, 0xFE);
+        
+        /* If that didn't work, hang */
+        hang();
+        
+    } else if (command[0] == '\0') {
+        /* Empty command, do nothing */
+        
+    } else {
+        vga_writestring("Unknown command: ");
+        vga_writestring(command);
+        vga_writestring("\n");
+        vga_writestring("Type 'help' for available commands\n");
     }
 }

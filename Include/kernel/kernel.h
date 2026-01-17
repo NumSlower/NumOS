@@ -59,12 +59,19 @@ void print_dec(uint64_t value);
 void print_dec32(uint32_t value);
 void print_memory(const void *ptr, size_t size);
 
+/* Checksum */
+uint32_t calculate_checksum(const void *data, size_t size);
+
+/* Printf-like function */
+void kprintf(const char *format, ...);
+
 /* Timer functions */
 uint64_t timer_get_ticks(void);
 uint64_t timer_get_uptime_ms(void);
+uint64_t timer_get_uptime_seconds(void);
 void timer_sleep(uint32_t ms);
 
-/* I/O port functions - implementations in kernel.c */
+/* I/O port functions */
 uint8_t inb(uint16_t port);
 void outb(uint16_t port, uint8_t val);
 uint16_t inw(uint16_t port);
