@@ -40,10 +40,29 @@ void vga_newline(void);
 uint8_t vga_entry_color(vga_color_t fg, vga_color_t bg);
 uint16_t vga_entry(unsigned char uc, uint8_t color);
 
+/* Scrolling functions */
+void vga_scroll_up(void);
+void vga_scroll_down(void);
+void vga_enter_scroll_mode(void);
+void vga_save_screen_to_scrollback(void);
+
 /* Cursor functions */
 void vga_update_cursor(int x, int y);
 void vga_enable_cursor(uint8_t cursor_start, uint8_t cursor_end);
 void vga_disable_cursor(void);
+void vga_get_cursor(int *x, int *y);
+void vga_set_cursor(int x, int y);
+
+/* Advanced display functions */
+void vga_putchar_at(char c, uint8_t color, int x, int y);
+void vga_write_at(const char *str, uint8_t color, int x, int y);
+void vga_fill_rect(char c, uint8_t color, int x, int y, int width, int height);
+void vga_draw_box(int x, int y, int width, int height, uint8_t color);
+void vga_print_progress(int percentage, int x, int y, int width);
+
+/* Color stack */
+void vga_push_color(void);
+void vga_pop_color(void);
 
 /* I/O port functions */
 uint8_t inb(uint16_t port);

@@ -1,14 +1,9 @@
 /*
- * vga.c - Improved VGA text mode driver
- * 
- * IMPROVEMENTS:
- * 1. Better scrolling performance
- * 2. Color stack for nested coloring
- * 3. Improved cursor management
- * 4. Double buffering option
+ * vga.c - VGA text mode driver with scrollback buffer
  */
 
 #include "drivers/vga.h"
+#include "drivers/keyboard.h"
 #include "lib/string.h"
 #include "kernel/kernel.h"
 
@@ -16,6 +11,13 @@ static size_t vga_row;
 static size_t vga_column;
 static uint8_t vga_text_color;
 static uint16_t* vga_buffer;
+
+/* Scrollback buffer */
+#define SCROLLBACK_LINES 200
+static uint16_t scrollback_buffer[SCROLLBACK_LINES * VGA_WIDTH];
+static size_t scrollback_current_line = 0;
+static int scroll_offset = 0;
+static int scroll_mode_active = 0;
 
 /* Color stack for nested color changes */
 #define COLOR_STACK_SIZE 8
@@ -36,6 +38,16 @@ void vga_init(void) {
     vga_text_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
     vga_buffer = (uint16_t*) VGA_MEMORY;
     color_stack_top = -1;
+    scrollback_current_line = 0;
+    scroll_offset = 0;
+    scroll_mode_active = 0;
+    
+    /* Clear scrollback buffer */
+    uint16_t blank = vga_entry(' ', vga_text_color);
+    for (size_t i = 0; i < SCROLLBACK_LINES * VGA_WIDTH; i++) {
+        scrollback_buffer[i] = blank;
+    }
+    
     vga_clear();
     vga_enable_cursor(14, 15);
 }
@@ -130,10 +142,24 @@ void vga_newline(void) {
     vga_update_cursor(vga_column, vga_row);
 }
 
-/* IMPROVED: More efficient scrolling using memmove */
+/* Save current screen line to scrollback buffer */
+static void save_line_to_scrollback(size_t line_num) {
+    size_t scrollback_line = scrollback_current_line % SCROLLBACK_LINES;
+    size_t src_offset = line_num * VGA_WIDTH;
+    size_t dst_offset = scrollback_line * VGA_WIDTH;
+    
+    for (size_t i = 0; i < VGA_WIDTH; i++) {
+        scrollback_buffer[dst_offset + i] = vga_buffer[src_offset + i];
+    }
+    
+    scrollback_current_line++;
+}
+
 void vga_scroll(void) {
+    /* Save the top line to scrollback before scrolling */
+    save_line_to_scrollback(0);
+    
     /* Use memmove for efficient block copy */
-    /* Copy all lines except the first one, one line up */
     size_t bytes_to_move = (VGA_HEIGHT - 1) * VGA_WIDTH * sizeof(uint16_t);
     memmove(vga_buffer, vga_buffer + VGA_WIDTH, bytes_to_move);
     
@@ -144,11 +170,227 @@ void vga_scroll(void) {
     }
 }
 
-/* Alternative: Hardware scrolling (faster but more complex) */
-void vga_scroll_hardware(void) {
-    /* This would use VGA hardware scrolling if available */
-    /* For now, fall back to software scrolling */
-    vga_scroll();
+/* Force save current screen to scrollback */
+void vga_save_screen_to_scrollback(void) {
+    /* Save all visible lines to scrollback */
+    for (size_t y = 0; y < VGA_HEIGHT; y++) {
+        size_t scrollback_line = scrollback_current_line % SCROLLBACK_LINES;
+        size_t src_offset = y * VGA_WIDTH;
+        size_t dst_offset = scrollback_line * VGA_WIDTH;
+        
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            scrollback_buffer[dst_offset + x] = vga_buffer[src_offset + x];
+        }
+        
+        scrollback_current_line++;
+    }
+}
+
+/* Redraw screen from scrollback buffer */
+static void vga_redraw_from_scrollback(void) {
+    if (scrollback_current_line < VGA_HEIGHT) {
+        /* Not enough history yet, just show what we have */
+        for (size_t y = 0; y < VGA_HEIGHT; y++) {
+            for (size_t x = 0; x < VGA_WIDTH; x++) {
+                size_t scrollback_line = (y < scrollback_current_line) ? y : scrollback_current_line - 1;
+                if (scrollback_line >= SCROLLBACK_LINES) scrollback_line = SCROLLBACK_LINES - 1;
+                
+                size_t src_offset = (scrollback_line % SCROLLBACK_LINES) * VGA_WIDTH;
+                vga_buffer[y * VGA_WIDTH + x] = scrollback_buffer[src_offset + x];
+            }
+        }
+        return;
+    }
+    
+    /* Calculate which lines to display based on scroll offset */
+    /* When scroll_offset is 0, we show the most recent lines (bottom of scrollback) */
+    /* When scroll_offset increases, we go backwards in time */
+    size_t total_lines = scrollback_current_line;
+    
+    /* Calculate the starting line to display */
+    /* We want to show lines from (total_lines - VGA_HEIGHT - scroll_offset) onwards */
+    size_t display_start;
+    if (scroll_offset == 0) {
+        /* Show the most recent VGA_HEIGHT lines */
+        display_start = total_lines - VGA_HEIGHT;
+    } else {
+        display_start = total_lines - VGA_HEIGHT - scroll_offset;
+    }
+    
+    for (size_t y = 0; y < VGA_HEIGHT; y++) {
+        size_t line_to_show = display_start + y;
+        size_t scrollback_line = line_to_show % SCROLLBACK_LINES;
+        size_t src_offset = scrollback_line * VGA_WIDTH;
+        size_t dst_offset = y * VGA_WIDTH;
+        
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            vga_buffer[dst_offset + x] = scrollback_buffer[src_offset + x];
+        }
+    }
+    
+    /* Show scroll indicator in top-right corner */
+    if (scroll_offset > 0) {
+        uint8_t indicator_color = vga_entry_color(VGA_COLOR_BLACK, VGA_COLOR_LIGHT_GREY);
+        char indicator[24];  /* Increased size for safety */
+        /* Show current position */
+        const char* prefix = " SCROLL ";
+        int pos = 0;
+        for (int i = 0; prefix[i] && pos < 23; i++) {
+            indicator[pos++] = prefix[i];
+        }
+        
+        /* Add line numbers */
+        size_t current_top_line = total_lines - VGA_HEIGHT - scroll_offset + 1;
+        
+        /* Simple number to string */
+        char num_buf[10];
+        int num_pos = 0;
+        size_t temp = current_top_line;
+        if (temp == 0) {
+            num_buf[num_pos++] = '0';
+        } else {
+            char reverse[10];
+            int rev_pos = 0;
+            while (temp > 0 && rev_pos < 9) {
+                reverse[rev_pos++] = '0' + (temp % 10);
+                temp /= 10;
+            }
+            for (int i = rev_pos - 1; i >= 0 && num_pos < 9; i--) {
+                num_buf[num_pos++] = reverse[i];
+            }
+        }
+        num_buf[num_pos] = '\0';
+        
+        for (int i = 0; i < num_pos && pos < 22; i++) {
+            indicator[pos++] = num_buf[i];
+        }
+        
+        if (pos < 23) {
+            indicator[pos++] = ' ';
+        }
+        indicator[pos] = '\0';
+        
+        /* Display indicator */
+        for (size_t i = 0; i < (size_t)pos && i < VGA_WIDTH; i++) {
+            vga_buffer[VGA_WIDTH - pos + i] = vga_entry(indicator[i], indicator_color);
+        }
+    }
+}
+
+void vga_scroll_up(void) {
+    /* Maximum scroll is to see the oldest lines */
+    int max_scroll = (int)scrollback_current_line - VGA_HEIGHT;
+    if (max_scroll < 0) max_scroll = 0;
+    
+    if (scroll_offset < max_scroll) {
+        scroll_offset++;
+        vga_redraw_from_scrollback();
+    }
+}
+
+void vga_scroll_down(void) {
+    if (scroll_offset > 0) {
+        scroll_offset--;
+        vga_redraw_from_scrollback();
+        
+        /* If we're back at the bottom, restore the live view */
+        if (scroll_offset == 0) {
+            /* Copy the current screen content back */
+            for (size_t y = 0; y < VGA_HEIGHT; y++) {
+                size_t line_num = scrollback_current_line - VGA_HEIGHT + y;
+                size_t scrollback_line = line_num % SCROLLBACK_LINES;
+                size_t src_offset = scrollback_line * VGA_WIDTH;
+                size_t dst_offset = y * VGA_WIDTH;
+                
+                for (size_t x = 0; x < VGA_WIDTH; x++) {
+                    vga_buffer[dst_offset + x] = scrollback_buffer[src_offset + x];
+                }
+            }
+        }
+    }
+}
+
+void vga_enter_scroll_mode(void) {
+    /* First, save the current visible screen to scrollback */
+    /* This ensures we don't lose the last screen of content */
+    for (size_t y = 0; y < VGA_HEIGHT; y++) {
+        size_t scrollback_line = scrollback_current_line % SCROLLBACK_LINES;
+        size_t src_offset = y * VGA_WIDTH;
+        size_t dst_offset = scrollback_line * VGA_WIDTH;
+        
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            scrollback_buffer[dst_offset + x] = vga_buffer[src_offset + x];
+        }
+        
+        scrollback_current_line++;
+    }
+    
+    /* Start scrolled all the way to the bottom */
+    scroll_offset = 0;
+    
+    scroll_mode_active = 1;
+    vga_disable_cursor();
+    
+    /* Show instructions at bottom */
+    uint8_t help_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLUE);
+    const char* help_text = " UP/DOWN Arrows: Scroll | Q: Quit ";
+    size_t help_len = strlen(help_text);
+    size_t start_x = (VGA_WIDTH - help_len) / 2;
+    
+    for (size_t i = 0; i < help_len && (start_x + i) < VGA_WIDTH; i++) {
+        vga_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + start_x + i] = 
+            vga_entry(help_text[i], help_color);
+    }
+    
+    /* Main scroll loop */
+    while (scroll_mode_active) {
+        uint8_t scan_code = keyboard_read_scan_code();
+        
+        /* Check for extended scan codes (arrow keys start with 0xE0) */
+        if (scan_code == 0xE0) {
+            /* Read the next byte for the actual arrow key code */
+            scan_code = keyboard_read_scan_code();
+            
+            /* Arrow key scan codes:
+             * Up arrow: 0x48
+             * Down arrow: 0x50
+             * Left arrow: 0x4B
+             * Right arrow: 0x4D
+             */
+            if (scan_code == 0x48) {  /* Up arrow */
+                vga_scroll_up();
+            } else if (scan_code == 0x50) {  /* Down arrow */
+                vga_scroll_down();
+            }
+            continue;
+        }
+        
+        /* Convert scan code to ASCII for regular keys */
+        char c = scan_code_to_ascii(scan_code);
+        
+        if (c == 0) {
+            continue;
+        }
+        
+        /* Handle regular keys */
+        if (c == 'q' || c == 'Q') {
+            scroll_mode_active = 0;
+            break;
+        }
+        
+        /* Also support WASD as alternative */
+        if (c == 'w' || c == 'W') {
+            vga_scroll_up();
+        } else if (c == 's' || c == 'S') {
+            vga_scroll_down();
+        }
+    }
+    
+    /* Restore normal display */
+    scroll_offset = 0;
+    vga_enable_cursor(14, 15);
+    vga_clear();
+    vga_writestring("Exited scroll mode\n");
 }
 
 void vga_enable_cursor(uint8_t cursor_start, uint8_t cursor_end) {
