@@ -1,6 +1,6 @@
 # NumOS
 
-A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, FAT32 filesystem, and hardware drivers.
+A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, FAT32 filesystem, hardware drivers, and an interactive scrollback system.
 
 ![NumOS Version](https://img.shields.io/badge/version-2.5-blue)
 ![Architecture](https://img.shields.io/badge/architecture-x86__64-green)
@@ -22,13 +22,21 @@ A 64-bit operating system kernel written from scratch in C and Assembly, featuri
 - **GDT**: Proper segmentation for kernel code and data
 
 ### Drivers
-- **VGA Text Mode**: 80x25 color text display with cursor support
-- **Keyboard**: PS/2 keyboard with scan code translation and buffer
+- **VGA Text Mode**: 
+  - 80x25 color text display with cursor support
+  - **200-line scrollback buffer** for reviewing output
+  - Interactive scroll mode with arrow key navigation
+  - Real-time scroll position indicator
+- **Keyboard**: 
+  - PS/2 keyboard with scan code translation
+  - Arrow key support for navigation
+  - Buffered input system
 - **Timer**: PIT-based timer with configurable frequency (18Hz - 1000Hz)
 - **Disk**: ATA/IDE PIO driver with sector caching
   - Read/write support
   - Multi-sector operations
   - Cache management
+  - Hardware flush on shutdown
 
 ### Filesystem
 - **FAT32**: Full FAT32 implementation
@@ -38,11 +46,12 @@ A 64-bit operating system kernel written from scratch in C and Assembly, featuri
   - Cluster chain management
   - Automatic filesystem creation if needed
 
-### Kernel Shell
-- **Interactive Command Line**: Built-in kernel shell
-  - File operations (cat, write, ls)
-  - System information (sysinfo, heap, disk)
-  - System control (shutdown, reboot)
+### User Interface
+- **Interactive Scrollback System**: 
+  - Browse through 200 lines of kernel output
+  - Arrow key navigation (UP/DOWN or W/S)
+  - Visual scroll position indicator
+  - Smooth scrolling through boot messages and logs
 
 ## 🏗️ Architecture
 
@@ -50,9 +59,10 @@ A 64-bit operating system kernel written from scratch in C and Assembly, featuri
 ┌─────────────────────────────────────┐
 │         Kernel (Ring 0)             │
 │  ┌──────────────────────────────┐   │
-│  │   Command Shell              │   │
-│  │  - Built-in kernel commands  │   │
-│  │  - File operations           │   │
+│  │   Scrollback System          │   │
+│  │  - 200-line history buffer   │   │
+│  │  - Arrow key navigation      │   │
+│  │  - Position tracking         │   │
 │  └──────────────────────────────┘   │
 │  ┌──────────────────────────────┐   │
 │  │   Memory Management          │   │
@@ -134,8 +144,8 @@ brew install x86_64-elf-gcc x86_64-elf-binutils
 # Build kernel
 make all
 
-# Create bootable disk image (Linux only)
-make disk
+# Create bootable ISO image
+make iso
 
 # Build and run in QEMU
 make run
@@ -186,49 +196,40 @@ gdb build/kernel.bin
 1. Create a new VM with:
    - Type: Other/Unknown (64-bit)
    - Memory: 128MB minimum
-   - Storage: Attach `NumOS.img` as hard disk
+   - Storage: Attach `NumOS.iso` as optical drive
 2. Boot the VM
 
 ### Real Hardware (Advanced)
 ⚠️ **Use at your own risk!**
 
 ```bash
-# Write to USB drive (replace /dev/sdX with your device)
-sudo dd if=NumOS.img of=/dev/sdX bs=4M status=progress
+# Write ISO to USB drive (replace /dev/sdX with your device)
+sudo dd if=NumOS.iso of=/dev/sdX bs=4M status=progress
 sudo sync
 ```
 
-## 🎮 Kernel Shell Commands
+## 🎮 Using the Scrollback System
 
-```
-help        - Show available commands
-clear       - Clear the screen
-ls          - List files in current directory
-cat <file>  - Display file contents
-write <file> <text> - Write text to file
-sysinfo     - Show system information
-heap        - Display heap statistics
-disk        - Show disk information
-reboot      - Reboot the system
-shutdown    - Shutdown the system
-```
+When NumOS boots, it automatically enters scroll mode after displaying initialization messages and test output.
 
-## 🔧 Development
+### Navigation Controls
+- **↑ (Up Arrow)** or **W**: Scroll backward in history (see older lines)
+- **↓ (Down Arrow)** or **S**: Scroll forward toward present (see newer lines)
+- **Q**: Exit scroll mode
 
-### Adding a New Driver
+### Features
+- **200-line buffer**: Stores all kernel output for later review
+- **Position indicator**: Top-right corner shows "SCROLL" with current line number
+- **Smooth navigation**: Browse through boot messages, initialization logs, and test output
+- **Help bar**: Bottom of screen shows navigation instructions
 
-1. Create header in `Include/drivers/mydriver.h`
-2. Implement in `src/drivers/mydriver.c`
-3. Initialize in `kernel_init()` in `src/kernel/kmain.c`
-4. Makefile will automatically pick it up
-
-### Debugging Tips
-
-- Use `vga_writestring()` for kernel debugging
-- Enable serial output in QEMU: `-serial stdio`
-- Use GDB with `make debug` for step-through debugging
-- Check memory with `print_memory()` utility
-- Monitor heap with `heap_print_stats()`
+### Example Usage
+1. Boot NumOS - it generates 50 numbered test lines
+2. Only the last ~23 lines fit on screen
+3. Press **↑** repeatedly to scroll back and see line [01]
+4. Press **↓** to scroll forward and see line [50]
+5. The indicator shows your current position
+6. Press **Q** when finished browsing
 
 ## 📊 Memory Map
 
@@ -259,6 +260,39 @@ shutdown    - Shutdown the system
 - [ ] Graphics mode (VESA/GOP)
 - [ ] SMP support
 - [ ] ACPI implementation
+- [x] Scrollback buffer for kernel output
+- [x] Arrow key support for navigation
+
+## 🔧 Development
+
+### Adding a New Driver
+
+1. Create header in `Include/drivers/mydriver.h`
+2. Implement in `src/drivers/mydriver.c`
+3. Initialize in `kernel_init()` in `src/kernel/kmain.c`
+4. Makefile will automatically pick it up
+
+### Debugging Tips
+
+- Use `vga_writestring()` for kernel debugging output
+- Enable serial output in QEMU: `-serial stdio`
+- Use GDB with `make debug` for step-through debugging
+- Check memory with `print_memory()` utility
+- Monitor heap with `heap_print_stats()`
+- Use scrollback (↑/↓) to review earlier debug messages
+
+### Configuring Scrollback Buffer
+
+Edit `src/drivers/vga.c`:
+```c
+#define SCROLLBACK_LINES 200  // Adjust buffer size
+```
+
+Recommended values:
+- `100` = ~16 KB buffer
+- `200` = ~32 KB buffer (default)
+- `500` = ~80 KB buffer
+- `1000` = ~160 KB buffer
 
 ## 📖 Resources
 
