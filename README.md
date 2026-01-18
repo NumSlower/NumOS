@@ -223,14 +223,6 @@ When NumOS boots, it automatically enters scroll mode after displaying initializ
 - **Smooth navigation**: Browse through boot messages, initialization logs, and test output
 - **Help bar**: Bottom of screen shows navigation instructions
 
-### Example Usage
-1. Boot NumOS - it generates 50 numbered test lines
-2. Only the last ~23 lines fit on screen
-3. Press **↑** repeatedly to scroll back and see line [01]
-4. Press **↓** to scroll forward and see line [50]
-5. The indicator shows your current position
-6. Press **Q** when finished browsing
-
 ## 📊 Memory Map
 
 ```
@@ -242,18 +234,15 @@ When NumOS boots, it automatically enters scroll mode after displaying initializ
 
 ## 🐛 Known Issues
 
-- Limited to 128MB RAM in current configuration
 - No networking support
 - Basic single-core only (no SMP)
-- Limited error recovery in some drivers
-- FAT32 long filename support incomplete
 
 ## 🗺️ Roadmap
 
 - [ ] Multi-tasking and scheduling
 - [ ] User space support
 - [ ] System calls and IPC
-- [ ] Virtual filesystem layer (VFS)
+- [x] Virtual filesystem layer (VFS)
 - [ ] Additional filesystems (ext2)
 - [ ] Network stack (TCP/IP)
 - [ ] USB support

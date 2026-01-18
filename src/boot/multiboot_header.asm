@@ -14,7 +14,20 @@ multiboot_start:
     ; Information request tag
     dw 1                         ; type = information request
     dw 0                         ; flags
-    dd 8                         ; size
+    dd 20                        ; size
+    dd 6                         ; request MEMORY_MAP
+    dd 8                         ; request BOOTLOADER_NAME
+    dd 9                         ; request VBE_INFO (VESA)
+    dd 10                        ; request FRAMEBUFFER_INFO
+    
+    ; Framebuffer tag (request graphics mode)
+    dw 5                         ; type = framebuffer
+    dw 0                         ; flags
+    dd 20                        ; size
+    dd 1024                      ; preferred width
+    dd 768                       ; preferred height
+    dd 32                        ; preferred bits per pixel
+    dd 0                         ; padding to 8-byte align
     
     ; End tag
     dw 0                         ; type = end

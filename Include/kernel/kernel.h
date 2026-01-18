@@ -19,6 +19,12 @@ int fat32_init(void);
 int fat32_mount(void);
 void fat32_unmount(void);
 
+/* Graphics mode initialization */
+int graphics_init(void);
+int graphics_set_mode(uint16_t width, uint16_t height, uint8_t bpp);
+int graphics_switch_to_graphics(uint16_t width, uint16_t height, uint8_t bpp);
+int graphics_switch_to_text(void);
+
 /* Memory management */
 void *memset(void *dest, int val, size_t len);
 void *memcpy(void *dest, const void *src, size_t len);
