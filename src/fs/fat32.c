@@ -5,7 +5,7 @@
 #include "drivers/disk.h"
 
 /* Single, consistent global state */
-static struct {
+struct {
     uint8_t initialized;
     uint8_t mounted;
     struct disk_handle *disk;
