@@ -97,36 +97,17 @@ void kernel_main(void) {
     
     vga_writestring("\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("NumOS Kernel - Scrolling Demo\n");
-    vga_writestring("==============================\n");
-    vga_writestring("Use UP/DOWN arrow keys (or W/S) to scroll\n");
+    vga_writestring("NumOS Kernel Ready\n");
+    vga_writestring("===================\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    vga_writestring("Use UP/DOWN arrow keys (or W/S) to scroll through output\n");
     vga_writestring("Press 'Q' to exit scroll mode\n\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     
-    /* Display some test output to demonstrate scrolling */
-    vga_writestring("Generating 50 test lines...\n\n");
-    
-    for (int i = 0; i < 50; i++) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("[");
-        if (i + 1 < 10) vga_putchar('0');  // Pad with zero for alignment
-        print_dec(i + 1);
-        vga_writestring("]");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        vga_writestring(" This is test line number ");
-        print_dec(i + 1);
-        vga_writestring(" of 50 to demonstrate scrolling.\n");
-    }
-    
-    vga_writestring("\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("=== All 50 lines generated ===\n");
-    vga_writestring("Scroll UP to see line [01], DOWN to see line [50]\n");
-    vga_writestring("Entering scroll mode...\n\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    
-    /* Enter scroll mode */
+    /* Enter scroll mode for user to review boot messages */
     vga_enter_scroll_mode();
+    
+    /* After exiting scroll mode, idle */
+    vga_writestring("System idle - Press Ctrl+Alt+Del to reboot\n");
     
     /* Idle loop */
     while (1) {
