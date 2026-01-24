@@ -39,6 +39,7 @@ struct heap_stats {
     uint32_t free_blocks;          /* Number of free blocks */
     uint32_t allocations;          /* Total allocation count */
     uint32_t deallocations;        /* Total deallocation count */
+    uint32_t allocation_failures;  /* Failed allocation attempts */
     uint32_t corruptions;          /* Detected corruption count */
     uint64_t largest_free;         /* Largest free block size */
     uint64_t smallest_free;        /* Smallest free block size */

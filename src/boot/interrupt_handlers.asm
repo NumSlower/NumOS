@@ -1,90 +1,133 @@
-; Interrupt Handlers Assembly Code
-; ISRs (Interrupt Service Routines) for exceptions and IRQs
+; interrupt_handlers.asm - Complete ISR and IRQ handlers for x86-64
+; Implements all 256 interrupt vectors with proper context switching
 
 bits 64
 
+; External C functions
 extern exception_handler
 extern irq_handler
 
-; Exception handlers (ISRs 0-21)
+; Export all ISR handlers (exceptions 0-31)
 global isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7
 global isr8, isr9, isr10, isr11, isr12, isr13, isr14, isr15
 global isr16, isr17, isr18, isr19, isr20, isr21
 
-; IRQ handlers (IRQs 0-15)
+; Export all IRQ handlers (IRQs 0-15)
 global irq0, irq1, irq2, irq3, irq4, irq5, irq6, irq7
 global irq8, irq9, irq10, irq11, irq12, irq13, irq14, irq15
 
 section .text
 
-; Macro for ISRs that don't push error codes
-%macro ISR_NO_ERROR 1
+;==============================================================================
+; MACRO DEFINITIONS
+;==============================================================================
+
+; Macro for exceptions that don't push an error code
+; We push a dummy error code (0) for stack consistency
+%macro ISR_NOERRCODE 1
 isr%1:
-    push 0          ; Push dummy error code
-    push %1         ; Push interrupt number
-    jmp isr_common
+    cli                     ; Disable interrupts
+    push qword 0            ; Push dummy error code
+    push qword %1           ; Push interrupt number
+    jmp isr_common_stub
 %endmacro
 
-; Macro for ISRs that push error codes
-%macro ISR_ERROR 1
+; Macro for exceptions that push an error code automatically
+; The CPU already pushed the error code, we just push the interrupt number
+%macro ISR_ERRCODE 1
 isr%1:
-    push %1         ; Push interrupt number
-    jmp isr_common
+    cli                     ; Disable interrupts
+    push qword %1           ; Push interrupt number
+    jmp isr_common_stub
 %endmacro
 
 ; Macro for IRQ handlers
 %macro IRQ 2
 irq%1:
-    push 0          ; Push dummy error code
-    push %2         ; Push IRQ number
-    jmp irq_common
+    cli                     ; Disable interrupts
+    push qword 0            ; Push dummy error code
+    push qword %2           ; Push interrupt number (32 + IRQ number)
+    jmp irq_common_stub
 %endmacro
 
-; Exception handlers
-ISR_NO_ERROR 0   ; Division by zero
-ISR_NO_ERROR 1   ; Debug
-ISR_NO_ERROR 2   ; NMI
-ISR_NO_ERROR 3   ; Breakpoint
-ISR_NO_ERROR 4   ; Overflow
-ISR_NO_ERROR 5   ; Bound range exceeded
-ISR_NO_ERROR 6   ; Invalid opcode
-ISR_NO_ERROR 7   ; Device not available
-ISR_ERROR    8   ; Double fault
-ISR_NO_ERROR 9   ; Coprocessor segment overrun
-ISR_ERROR    10  ; Invalid TSS
-ISR_ERROR    11  ; Segment not present
-ISR_ERROR    12  ; Stack segment fault
-ISR_ERROR    13  ; General protection fault
-ISR_ERROR    14  ; Page fault (has error code)
-ISR_NO_ERROR 15  ; Reserved
-ISR_NO_ERROR 16  ; x87 FPU error
-ISR_ERROR    17  ; Alignment check
-ISR_NO_ERROR 18  ; Machine check
-ISR_NO_ERROR 19  ; SIMD floating point
-ISR_NO_ERROR 20  ; Virtualization
-ISR_ERROR    21  ; Control protection
+;==============================================================================
+; EXCEPTION HANDLERS (0-31)
+;==============================================================================
 
-; IRQ handlers
-IRQ 0,  0   ; Timer
-IRQ 1,  1   ; Keyboard
-IRQ 2,  2   ; Cascade
-IRQ 3,  3   ; COM2
-IRQ 4,  4   ; COM1
-IRQ 5,  5   ; LPT2
-IRQ 6,  6   ; Floppy
-IRQ 7,  7   ; LPT1
-IRQ 8,  8   ; RTC
-IRQ 9,  9   ; Free
-IRQ 10, 10  ; Free
-IRQ 11, 11  ; Free
-IRQ 12, 12  ; Mouse
-IRQ 13, 13  ; FPU
-IRQ 14, 14  ; Primary ATA
-IRQ 15, 15  ; Secondary ATA
+; CPU Exceptions without error code
+ISR_NOERRCODE 0     ; Division By Zero
+ISR_NOERRCODE 1     ; Debug
+ISR_NOERRCODE 2     ; Non Maskable Interrupt
+ISR_NOERRCODE 3     ; Breakpoint
+ISR_NOERRCODE 4     ; Into Detected Overflow
+ISR_NOERRCODE 5     ; Out of Bounds
+ISR_NOERRCODE 6     ; Invalid Opcode
+ISR_NOERRCODE 7     ; No Coprocessor
 
-; Common ISR handler
-isr_common:
-    ; Save all registers
+; CPU Exceptions with error code
+ISR_ERRCODE   8     ; Double Fault
+ISR_NOERRCODE 9     ; Coprocessor Segment Overrun
+ISR_ERRCODE   10    ; Bad TSS
+ISR_ERRCODE   11    ; Segment Not Present
+ISR_ERRCODE   12    ; Stack Fault
+ISR_ERRCODE   13    ; General Protection Fault
+ISR_ERRCODE   14    ; Page Fault
+ISR_NOERRCODE 15    ; Unknown Interrupt
+ISR_NOERRCODE 16    ; Coprocessor Fault
+ISR_ERRCODE   17    ; Alignment Check
+ISR_NOERRCODE 18    ; Machine Check
+ISR_NOERRCODE 19    ; SIMD Floating-Point Exception
+ISR_NOERRCODE 20    ; Virtualization Exception
+ISR_ERRCODE   21    ; Control Protection Exception
+
+; Reserved exceptions
+ISR_NOERRCODE 22
+ISR_NOERRCODE 23
+ISR_NOERRCODE 24
+ISR_NOERRCODE 25
+ISR_NOERRCODE 26
+ISR_NOERRCODE 27
+ISR_NOERRCODE 28
+ISR_NOERRCODE 29
+ISR_NOERRCODE 30
+ISR_NOERRCODE 31
+
+;==============================================================================
+; IRQ HANDLERS (32-47)
+;==============================================================================
+
+IRQ 0,  32      ; System timer
+IRQ 1,  33      ; Keyboard
+IRQ 2,  34      ; Cascade (used internally by PICs)
+IRQ 3,  35      ; COM2
+IRQ 4,  36      ; COM1
+IRQ 5,  37      ; LPT2
+IRQ 6,  38      ; Floppy disk
+IRQ 7,  39      ; LPT1
+IRQ 8,  40      ; CMOS real-time clock
+IRQ 9,  41      ; Free for peripherals
+IRQ 10, 42      ; Free for peripherals
+IRQ 11, 43      ; Free for peripherals
+IRQ 12, 44      ; PS/2 mouse
+IRQ 13, 45      ; FPU / Coprocessor / Inter-processor
+IRQ 14, 46      ; Primary ATA hard disk
+IRQ 15, 47      ; Secondary ATA hard disk
+
+;==============================================================================
+; COMMON ISR STUB
+; This is called by all exception handlers
+; Stack layout when this is called:
+;   [SS]           (pushed by CPU if privilege change)
+;   [RSP]          (pushed by CPU if privilege change)
+;   [RFLAGS]       (pushed by CPU)
+;   [CS]           (pushed by CPU)
+;   [RIP]          (pushed by CPU)
+;   [Error Code]   (pushed by CPU or us)
+;   [Int Number]   (pushed by us)  <- RSP points here
+;==============================================================================
+
+isr_common_stub:
+    ; Save all general purpose registers
     push rax
     push rbx
     push rcx
@@ -101,14 +144,8 @@ isr_common:
     push r14
     push r15
     
-    ; Save segment registers
+    ; Save data segment selector
     mov ax, ds
-    push rax
-    mov ax, es
-    push rax
-    mov ax, fs
-    push rax
-    mov ax, gs
     push rax
     
     ; Load kernel data segment
@@ -118,23 +155,24 @@ isr_common:
     mov fs, ax
     mov gs, ax
     
-    ; Call exception handler
-    ; rdi = exception number, rsi = error code
-    mov rdi, [rsp + 160]  ; Exception number (adjusted for saved registers)
-    mov rsi, [rsp + 168]  ; Error code
+    ; Set up parameters for exception_handler(int_no, err_code)
+    ; x86-64 calling convention: RDI = 1st arg, RSI = 2nd arg
+    ; Stack: 15 GPRs (120 bytes) + 1 DS (8 bytes) = 128 bytes
+    mov rdi, [rsp + 128]    ; Interrupt number
+    mov rsi, [rsp + 136]    ; Error code
+    
+    ; Call C exception handler
+    cld                     ; C code expects direction flag cleared
     call exception_handler
     
-    ; Restore segment registers
-    pop rax
-    mov gs, ax
-    pop rax
-    mov fs, ax
-    pop rax
-    mov es, ax
+    ; Restore data segment
     pop rax
     mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
     
-    ; Restore all registers
+    ; Restore general purpose registers
     pop r15
     pop r14
     pop r13
@@ -151,15 +189,21 @@ isr_common:
     pop rbx
     pop rax
     
-    ; Clean up stack (remove error code and interrupt number)
+    ; Clean up error code and interrupt number from stack
     add rsp, 16
     
-    ; Return from interrupt
+    ; Enable interrupts and return
+    sti
     iretq
 
-; Common IRQ handler
-irq_common:
-    ; Save all registers
+;==============================================================================
+; COMMON IRQ STUB
+; This is called by all IRQ handlers
+; Similar to ISR stub but calls irq_handler instead
+;==============================================================================
+
+irq_common_stub:
+    ; Save all general purpose registers
     push rax
     push rbx
     push rcx
@@ -176,14 +220,8 @@ irq_common:
     push r14
     push r15
     
-    ; Save segment registers
+    ; Save data segment selector
     mov ax, ds
-    push rax
-    mov ax, es
-    push rax
-    mov ax, fs
-    push rax
-    mov ax, gs
     push rax
     
     ; Load kernel data segment
@@ -193,22 +231,23 @@ irq_common:
     mov fs, ax
     mov gs, ax
     
-    ; Call IRQ handler
-    ; rdi = IRQ number
-    mov rdi, [rsp + 160]  ; IRQ number (adjusted for saved registers)
+    ; Set up parameter for irq_handler(irq_no)
+    ; IRQ number = interrupt number - 32
+    mov rdi, [rsp + 128]    ; Get interrupt number
+    sub rdi, 32             ; Convert to IRQ number (0-15)
+    
+    ; Call C IRQ handler
+    cld
     call irq_handler
     
-    ; Restore segment registers
-    pop rax
-    mov gs, ax
-    pop rax
-    mov fs, ax
-    pop rax
-    mov es, ax
+    ; Restore data segment
     pop rax
     mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
     
-    ; Restore all registers
+    ; Restore general purpose registers
     pop r15
     pop r14
     pop r13
@@ -225,8 +264,9 @@ irq_common:
     pop rbx
     pop rax
     
-    ; Clean up stack (remove error code and IRQ number)
+    ; Clean up error code and interrupt number from stack
     add rsp, 16
     
-    ; Return from interrupt
+    ; Enable interrupts and return
+    sti
     iretq

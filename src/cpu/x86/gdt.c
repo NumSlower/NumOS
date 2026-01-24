@@ -1,163 +1,192 @@
 /*
- * gdt.c - Enhanced Global Descriptor Table for 64-bit mode
- * Provides proper segmentation setup for long mode
+ * gdt.c - Global Descriptor Table for x86-64
+ * Implements proper segmentation for 64-bit long mode
  */
 
 #include "cpu/gdt.h"
 #include "kernel/kernel.h"
 #include "drivers/vga.h"
 
-/* GDT entries - 5 standard entries for 64-bit mode */
+/* Number of GDT entries */
 #define GDT_ENTRIES 5
 
-/* Aligned GDT structure */
+/* GDT and TSS structures */
 static struct gdt_entry gdt[GDT_ENTRIES] __attribute__((aligned(16)));
 static struct gdt_ptr gdt_pointer __attribute__((aligned(16)));
+static struct tss_entry tss_descriptor __attribute__((aligned(16)));
 
-/* External assembly function to flush GDT */
-extern void gdt_flush_asm(uint64_t);
+/* Task State Segment structure for 64-bit mode */
+struct tss {
+    uint32_t reserved0;
+    uint64_t rsp0;      /* Stack pointer for ring 0 */
+    uint64_t rsp1;      /* Stack pointer for ring 1 */
+    uint64_t rsp2;      /* Stack pointer for ring 2 */
+    uint64_t reserved1;
+    uint64_t ist[7];    /* Interrupt Stack Table pointers */
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iopb;      /* I/O permission bitmap offset */
+} __attribute__((packed));
+
+static struct tss kernel_tss __attribute__((aligned(16)));
+
+/* External assembly function to load GDT */
+extern void gdt_flush_asm(uint64_t gdt_ptr);
 
 /*
  * Set a GDT entry
- * In 64-bit mode, base and limit are ignored for code/data segments
- * but still used for system segments (TSS)
  */
 void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
     if (num >= GDT_ENTRIES) {
-        vga_writestring("GDT: Warning - Invalid entry number\n");
         return;
     }
     
-    /* Set base address */
+    /* Base address */
     gdt[num].base_low = (base & 0xFFFF);
     gdt[num].base_middle = (base >> 16) & 0xFF;
     gdt[num].base_high = (base >> 24) & 0xFF;
     
-    /* Set limit */
+    /* Limit */
     gdt[num].limit_low = (limit & 0xFFFF);
-    
-    /* Set granularity (contains upper 4 bits of limit) */
     gdt[num].granularity = ((limit >> 16) & 0x0F) | (gran & 0xF0);
     
-    /* Set access flags */
+    /* Access flags */
     gdt[num].access = access;
 }
 
 /*
- * Initialize the GDT for 64-bit long mode
+ * Set up TSS descriptor (takes 16 bytes in 64-bit mode)
+ */
+static void gdt_set_tss(uint64_t tss_base, uint32_t tss_limit) {
+    /* Lower 8 bytes */
+    tss_descriptor.length = tss_limit & 0xFFFF;
+    tss_descriptor.base_low16 = tss_base & 0xFFFF;
+    tss_descriptor.base_mid8 = (tss_base >> 16) & 0xFF;
+    tss_descriptor.flags1 = 0x89;  /* Present, available 64-bit TSS */
+    tss_descriptor.flags2 = 0x00;
+    tss_descriptor.base_high8 = (tss_base >> 24) & 0xFF;
+    
+    /* Upper 8 bytes */
+    tss_descriptor.base_upper32 = (tss_base >> 32) & 0xFFFFFFFF;
+    tss_descriptor.reserved = 0;
+}
+
+/*
+ * Initialize TSS
+ */
+static void tss_init(void) {
+    uint64_t tss_base = (uint64_t)&kernel_tss;
+    uint32_t tss_limit = sizeof(struct tss) - 1;
+    
+    /* Clear TSS */
+    memset(&kernel_tss, 0, sizeof(struct tss));
+    
+    /* Set stack pointer for ring 0 (will be updated when switching tasks) */
+    kernel_tss.rsp0 = 0;
+    
+    /* Set I/O permission bitmap to end of TSS (no I/O bitmap) */
+    kernel_tss.iopb = sizeof(struct tss);
+    
+    /* Set up TSS descriptor */
+    gdt_set_tss(tss_base, tss_limit);
+}
+
+/*
+ * Load TSS into task register
+ */
+static void tss_load(void) {
+    /* TSS selector is 0x28 (5th entry, index 5 * 8 = 40 = 0x28) */
+    __asm__ volatile("ltr %0" : : "r"((uint16_t)0x28));
+}
+
+/*
+ * Initialize GDT
  */
 void gdt_init(void) {
-    /* Set up GDT pointer structure */
+    vga_writestring("GDT: Starting initialization...\n");
+    
+    /* Set up GDT pointer */
     gdt_pointer.limit = (sizeof(struct gdt_entry) * GDT_ENTRIES) - 1;
     gdt_pointer.base = (uint64_t)&gdt;
     
-    /* Clear entire GDT */
+    vga_writestring("GDT: Pointer set, clearing GDT...\n");
+    
+    /* Clear GDT */
     memset(&gdt, 0, sizeof(struct gdt_entry) * GDT_ENTRIES);
     
+    vga_writestring("GDT: Setting up descriptors...\n");
+    
     /*
-     * Entry 0: NULL Descriptor (Required by x86/x64 architecture)
-     * Must be all zeros
+     * Entry 0: NULL descriptor (required by x86 architecture)
      */
     gdt_set_gate(0, 0, 0, 0, 0);
     
     /*
-     * Entry 1: Kernel Code Segment (64-bit)
-     * 
-     * Base: 0x00000000 (ignored in 64-bit mode)
-     * Limit: 0xFFFFF (ignored in 64-bit mode)
-     * 
-     * Access byte (0x9A = 10011010b):
-     *   Bit 7 (P):  1 = Present
-     *   Bit 6-5 (DPL): 00 = Ring 0 (kernel privilege)
-     *   Bit 4 (S):  1 = Code/Data segment
-     *   Bit 3 (E):  1 = Executable (code segment)
-     *   Bit 2 (DC): 0 = Grows up
-     *   Bit 1 (RW): 1 = Readable
-     *   Bit 0 (A):  0 = Not accessed yet
-     * 
-     * Granularity byte (0xA0 = 10100000b):
-     *   Bit 7 (G):  1 = 4KB granularity (ignored)
-     *   Bit 6 (D/B): 0 = Must be 0 for 64-bit
-     *   Bit 5 (L):  1 = 64-bit code segment (Long mode)
-     *   Bit 4 (AVL): 0 = Available for system use
-     *   Bits 3-0:   0000 = Upper 4 bits of limit (ignored)
+     * Entry 1: Kernel Code Segment (selector 0x08)
+     * Base: 0, Limit: 0xFFFFF (ignored in 64-bit)
+     * Access: 0x9A = Present, Ring 0, Code, Executable, Readable
+     * Granularity: 0xA0 = 4KB granularity, 64-bit code segment
      */
     gdt_set_gate(1, 0, 0xFFFFF,
-                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL0 | GDT_ACCESS_SYSTEM |
-                 GDT_ACCESS_CODE | GDT_ACCESS_READABLE,
+                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL0 | 
+                 GDT_ACCESS_SYSTEM | GDT_ACCESS_CODE | GDT_ACCESS_READABLE,
                  GDT_GRAN_4K | GDT_GRAN_64BIT);
     
     /*
-     * Entry 2: Kernel Data Segment
-     * 
-     * Access byte (0x92 = 10010010b):
-     *   Bit 7 (P):  1 = Present
-     *   Bit 6-5 (DPL): 00 = Ring 0 (kernel privilege)
-     *   Bit 4 (S):  1 = Code/Data segment
-     *   Bit 3 (E):  0 = Not executable (data segment)
-     *   Bit 2 (DC): 0 = Grows up
-     *   Bit 1 (RW): 1 = Writable
-     *   Bit 0 (A):  0 = Not accessed yet
-     * 
-     * Granularity byte (0xC0 = 11000000b):
-     *   Bit 7 (G):  1 = 4KB granularity
-     *   Bit 6 (D/B): 1 = 32-bit operands
-     *   Bit 5 (L):  0 = Not 64-bit (data segments are always 32-bit mode)
-     *   Bit 4 (AVL): 0 = Available for system use
+     * Entry 2: Kernel Data Segment (selector 0x10)
+     * Access: 0x92 = Present, Ring 0, Data, Writable
+     * Granularity: 0xC0 = 4KB granularity, 32-bit
      */
     gdt_set_gate(2, 0, 0xFFFFF,
-                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL0 | GDT_ACCESS_SYSTEM |
-                 GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
+                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL0 | 
+                 GDT_ACCESS_SYSTEM | GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
                  GDT_GRAN_4K | GDT_GRAN_32BIT);
     
     /*
-     * Entry 3: User Code Segment (64-bit)
-     * 
-     * Access byte (0xFA = 11111010b):
-     *   Bit 7 (P):  1 = Present
-     *   Bit 6-5 (DPL): 11 = Ring 3 (user privilege)
-     *   Bit 4 (S):  1 = Code/Data segment
-     *   Bit 3 (E):  1 = Executable (code segment)
-     *   Bit 2 (DC): 0 = Grows up
-     *   Bit 1 (RW): 1 = Readable
-     *   Bit 0 (A):  0 = Not accessed yet
+     * Entry 3: User Code Segment (selector 0x18 | 3 = 0x1B)
+     * Access: 0xFA = Present, Ring 3, Code, Executable, Readable
      */
     gdt_set_gate(3, 0, 0xFFFFF,
-                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SYSTEM |
-                 GDT_ACCESS_CODE | GDT_ACCESS_READABLE,
+                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | 
+                 GDT_ACCESS_SYSTEM | GDT_ACCESS_CODE | GDT_ACCESS_READABLE,
                  GDT_GRAN_4K | GDT_GRAN_64BIT);
     
     /*
-     * Entry 4: User Data Segment
-     * 
-     * Access byte (0xF2 = 11110010b):
-     *   Bit 7 (P):  1 = Present
-     *   Bit 6-5 (DPL): 11 = Ring 3 (user privilege)
-     *   Bit 4 (S):  1 = Code/Data segment
-     *   Bit 3 (E):  0 = Not executable (data segment)
-     *   Bit 2 (DC): 0 = Grows up
-     *   Bit 1 (RW): 1 = Writable
-     *   Bit 0 (A):  0 = Not accessed yet
+     * Entry 4: User Data Segment (selector 0x20 | 3 = 0x23)
+     * Access: 0xF2 = Present, Ring 3, Data, Writable
      */
     gdt_set_gate(4, 0, 0xFFFFF,
-                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | GDT_ACCESS_SYSTEM |
-                 GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
+                 GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | 
+                 GDT_ACCESS_SYSTEM | GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
                  GDT_GRAN_4K | GDT_GRAN_32BIT);
     
-    /* Load the new GDT */
+    vga_writestring("GDT: Descriptors configured\n");
+    
+    /* DON'T initialize TSS yet - do it later after paging is set up */
+    vga_writestring("GDT: Loading new GDT...\n");
+    
+    /* Load new GDT */
     gdt_flush_asm((uint64_t)&gdt_pointer);
     
-    vga_writestring("GDT: Loaded with ");
+    vga_writestring("GDT: New GDT loaded successfully\n");
+    vga_writestring("GDT: Initialized with ");
     print_dec(GDT_ENTRIES);
-    vga_writestring(" entries\n");
+    vga_writestring(" entries (TSS deferred)\n");
+}
+
+/*
+ * Update kernel stack in TSS (for task switching)
+ */
+void tss_set_kernel_stack(uint64_t stack) {
+    kernel_tss.rsp0 = stack;
 }
 
 /*
  * Print GDT information for debugging
  */
 void gdt_print_info(void) {
-    vga_writestring("GDT Information:\n");
-    vga_writestring("  Base: 0x");
+    vga_writestring("\nGDT Information:\n");
+    vga_writestring("  Base Address: 0x");
     print_hex(gdt_pointer.base);
     vga_writestring("\n  Limit: ");
     print_dec(gdt_pointer.limit + 1);
@@ -166,24 +195,29 @@ void gdt_print_info(void) {
     print_dec(GDT_ENTRIES);
     vga_writestring("\n\n");
     
+    const char *names[] = {
+        "NULL Descriptor",
+        "Kernel Code (0x08)",
+        "Kernel Data (0x10)",
+        "User Code (0x18)",
+        "User Data (0x20)"
+    };
+    
     for (int i = 0; i < GDT_ENTRIES; i++) {
         vga_writestring("  Entry ");
         print_dec(i);
         vga_writestring(": ");
-        
-        switch(i) {
-            case 0: vga_writestring("NULL Descriptor"); break;
-            case 1: vga_writestring("Kernel Code (64-bit)"); break;
-            case 2: vga_writestring("Kernel Data"); break;
-            case 3: vga_writestring("User Code (64-bit)"); break;
-            case 4: vga_writestring("User Data"); break;
-            default: vga_writestring("Unknown"); break;
-        }
-        
-        vga_writestring("\n    Access: 0x");
-        print_hex32(gdt[i].access);
-        vga_writestring(", Granularity: 0x");
-        print_hex32(gdt[i].granularity);
+        vga_writestring(names[i]);
         vga_writestring("\n");
     }
+    
+    vga_writestring("\nTSS Information:\n");
+    vga_writestring("  Base: 0x");
+    print_hex((uint64_t)&kernel_tss);
+    vga_writestring("\n  Size: ");
+    print_dec(sizeof(struct tss));
+    vga_writestring(" bytes\n");
+    vga_writestring("  RSP0: 0x");
+    print_hex(kernel_tss.rsp0);
+    vga_writestring("\n");
 }

@@ -1,23 +1,20 @@
 ; NumOS Multiboot2 Header
-; This file defines the multiboot2 header for GRUB to recognize our kernel
+; Must be in the first 32KB of the kernel file
 
 section .multiboot
 align 8
 
-; Multiboot2 header
-multiboot_start:
+header_start:
     dd 0xe85250d6                ; magic number
-    dd 0                         ; architecture (i386)
-    dd multiboot_end - multiboot_start ; header length
-    dd 0x100000000 - (0xe85250d6 + 0 + (multiboot_end - multiboot_start)) ; checksum
-
-    ; Information request tag
-    dw 1                         ; type = information request
-    dw 0                         ; flags
-    dd 8                         ; size
+    dd 0                         ; architecture 0 (protected mode i386)
+    dd header_end - header_start ; header length
     
-    ; End tag
-    dw 0                         ; type = end
-    dw 0                         ; flags
-    dd 8                         ; size
-multiboot_end:
+    ; checksum
+    dd 0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
+
+align 8
+    ; end tag
+    dw 0    ; type
+    dw 0    ; flags
+    dd 8    ; size
+header_end:
