@@ -14,17 +14,6 @@ void paging_init(void);
 void timer_init(uint32_t frequency);
 void heap_init(void);
 
-/* FAT32 filesystem initialization */
-int fat32_init(void);
-int fat32_mount(void);
-void fat32_unmount(void);
-
-/* Graphics mode initialization */
-int graphics_init(void);
-int graphics_set_mode(uint16_t width, uint16_t height, uint8_t bpp);
-int graphics_switch_to_graphics(uint16_t width, uint16_t height, uint8_t bpp);
-int graphics_switch_to_text(void);
-
 /* Memory management */
 void *memset(void *dest, int val, size_t len);
 void *memcpy(void *dest, const void *src, size_t len);
@@ -53,10 +42,6 @@ long strtol(const char *str, char **endptr, int base);
 /* System functions */
 void panic(const char *message);
 void hang(void);
-
-/* Command processing */
-void process_command(const char *command);
-void print_prompt(void);
 
 /* Utility functions */
 void print_hex(uint64_t value);

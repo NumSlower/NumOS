@@ -1,6 +1,6 @@
 # NumOS
 
-A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, FAT32 filesystem, hardware drivers, and an interactive scrollback system.
+A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, hardware drivers, and an interactive scrollback system.
 
 ![NumOS Version](https://img.shields.io/badge/version-2.5-blue)
 ![Architecture](https://img.shields.io/badge/architecture-x86__64-green)
@@ -32,19 +32,6 @@ A 64-bit operating system kernel written from scratch in C and Assembly, featuri
   - Arrow key support for navigation
   - Buffered input system
 - **Timer**: PIT-based timer with configurable frequency (18Hz - 1000Hz)
-- **Disk**: ATA/IDE PIO driver with sector caching
-  - Read/write support
-  - Multi-sector operations
-  - Cache management
-  - Hardware flush on shutdown
-
-### Filesystem
-- **FAT32**: Full FAT32 implementation
-  - Mount/unmount operations
-  - File creation, reading, writing
-  - Directory listing
-  - Cluster chain management
-  - Automatic filesystem creation if needed
 
 ### User Interface
 - **Interactive Scrollback System**: 
@@ -71,14 +58,8 @@ A 64-bit operating system kernel written from scratch in C and Assembly, featuri
 │  │  - Physical memory manager   │   │
 │  └──────────────────────────────┘   │
 │  ┌──────────────────────────────┐   │
-│  │   Filesystem (FAT32)         │   │
-│  │  - File I/O operations       │   │
-│  │  - Directory management      │   │
-│  └──────────────────────────────┘   │
-│  ┌──────────────────────────────┐   │
 │  │   Device Drivers             │   │
 │  │  - VGA, Keyboard, Timer      │   │
-│  │  - ATA/IDE Disk              │   │
 │  └──────────────────────────────┘   │
 │  ┌──────────────────────────────┐   │
 │  │   Hardware Abstraction       │   │
@@ -161,14 +142,12 @@ NumOS/
 ├── Include/              # Header files
 │   ├── cpu/             # CPU-related (GDT, IDT, paging, heap)
 │   ├── drivers/         # Device drivers
-│   ├── fs/              # Filesystem headers
 │   ├── kernel/          # Kernel core
 │   └── lib/             # Standard library implementations
 ├── src/                 # Source files
 │   ├── boot/            # Boot code (assembly)
 │   ├── cpu/x86/         # x86-64 specific code
 │   ├── drivers/         # Device drivers
-│   ├── fs/              # FAT32 implementation
 │   └── kernel/          # Kernel main and utilities
 ├── preboot/             # GRUB configuration
 ├── build/               # Build output directory
@@ -210,7 +189,7 @@ sudo sync
 
 ## 🎮 Using the Scrollback System
 
-When NumOS boots, it automatically enters scroll mode after displaying initialization messages and test output.
+When NumOS boots, it automatically displays system tests and then enters scroll mode.
 
 ### Navigation Controls
 - **↑ (Up Arrow)** or **W**: Scroll backward in history (see older lines)
@@ -232,18 +211,26 @@ When NumOS boots, it automatically enters scroll mode after displaying initializ
 0xFFFFFFFF90000000 - 0xFFFFFFFF93FFFFFF  Kernel heap (64MB)
 ```
 
+## 🧪 System Tests
+
+NumOS includes built-in tests for:
+- **Memory Allocation**: kmalloc, kzalloc, kcalloc
+- **Paging System**: Virtual memory allocation and management
+- **Timer**: Delay accuracy and uptime tracking
+- **Keyboard**: Interactive input testing
+
 ## 🐛 Known Issues
 
 - No networking support
 - Basic single-core only (no SMP)
+- No persistent storage
 
 ## 🗺️ Roadmap
 
 - [ ] Multi-tasking and scheduling
 - [ ] User space support
 - [ ] System calls and IPC
-- [x] Virtual filesystem layer (VFS)
-- [ ] Additional filesystems (ext2)
+- [ ] Filesystem support (FAT32, ext2)
 - [ ] Network stack (TCP/IP)
 - [ ] USB support
 - [ ] Graphics mode (VESA/GOP)
@@ -259,7 +246,7 @@ When NumOS boots, it automatically enters scroll mode after displaying initializ
 1. Create header in `Include/drivers/mydriver.h`
 2. Implement in `src/drivers/mydriver.c`
 3. Initialize in `kernel_init()` in `src/kernel/kmain.c`
-4. Makefile will automatically pick it up
+4. Add to `KERNEL_C_SOURCES` in Makefile
 
 ### Debugging Tips
 
@@ -288,7 +275,7 @@ Recommended values:
 - [OSDev Wiki](https://wiki.osdev.org/)
 - [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 - [AMD64 Architecture Programmer's Manual](https://www.amd.com/en/support/tech-docs)
-- [FAT32 Specification](https://www.win.tue.nl/~aeb/linux/fs/fat/fat-1.html)
+- [X86-64 Overview](https://wiki.osdev.org/X86-64)
 
 ## 🤝 Contributing
 
