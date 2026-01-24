@@ -1,19 +1,25 @@
 /*
  * gdt.c - Global Descriptor Table for x86-64
- * Implements proper segmentation for 64-bit long mode
+ * Implements proper segmentation for 64-bit long mode with TSS
  */
 
 #include "cpu/gdt.h"
 #include "kernel/kernel.h"
 #include "drivers/vga.h"
 
-/* Number of GDT entries */
-#define GDT_ENTRIES 5
+/* Number of GDT entries
+ * 0: NULL descriptor
+ * 1: Kernel Code
+ * 2: Kernel Data
+ * 3: User Code
+ * 4: User Data
+ * 5-6: TSS (takes 2 entries = 16 bytes in 64-bit mode)
+ */
+#define GDT_ENTRIES 7
 
-/* GDT and TSS structures */
+/* GDT structure - now includes space for TSS */
 static struct gdt_entry gdt[GDT_ENTRIES] __attribute__((aligned(16)));
 static struct gdt_ptr gdt_pointer __attribute__((aligned(16)));
-static struct tss_entry tss_descriptor __attribute__((aligned(16)));
 
 /* Task State Segment structure for 64-bit mode */
 struct tss {
@@ -55,20 +61,26 @@ void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_
 }
 
 /*
- * Set up TSS descriptor (takes 16 bytes in 64-bit mode)
+ * Set up TSS descriptor in GDT (takes entries 5 and 6)
  */
 static void gdt_set_tss(uint64_t tss_base, uint32_t tss_limit) {
-    /* Lower 8 bytes */
-    tss_descriptor.length = tss_limit & 0xFFFF;
-    tss_descriptor.base_low16 = tss_base & 0xFFFF;
-    tss_descriptor.base_mid8 = (tss_base >> 16) & 0xFF;
-    tss_descriptor.flags1 = 0x89;  /* Present, available 64-bit TSS */
-    tss_descriptor.flags2 = 0x00;
-    tss_descriptor.base_high8 = (tss_base >> 24) & 0xFF;
+    /* TSS descriptor is 16 bytes in 64-bit mode, spanning entries 5 and 6 */
     
-    /* Upper 8 bytes */
-    tss_descriptor.base_upper32 = (tss_base >> 32) & 0xFFFFFFFF;
-    tss_descriptor.reserved = 0;
+    /* Lower 8 bytes (entry 5) */
+    gdt[5].limit_low = tss_limit & 0xFFFF;
+    gdt[5].base_low = tss_base & 0xFFFF;
+    gdt[5].base_middle = (tss_base >> 16) & 0xFF;
+    gdt[5].access = 0x89;  /* Present, available 64-bit TSS */
+    gdt[5].granularity = 0x00;
+    gdt[5].base_high = (tss_base >> 24) & 0xFF;
+    
+    /* Upper 8 bytes (entry 6) */
+    gdt[6].limit_low = (tss_base >> 32) & 0xFFFF;
+    gdt[6].base_low = (tss_base >> 48) & 0xFFFF;
+    gdt[6].base_middle = 0;
+    gdt[6].access = 0;
+    gdt[6].granularity = 0;
+    gdt[6].base_high = 0;
 }
 
 /*
@@ -77,6 +89,8 @@ static void gdt_set_tss(uint64_t tss_base, uint32_t tss_limit) {
 static void tss_init(void) {
     uint64_t tss_base = (uint64_t)&kernel_tss;
     uint32_t tss_limit = sizeof(struct tss) - 1;
+    
+    vga_writestring("GDT: Initializing TSS...\n");
     
     /* Clear TSS */
     memset(&kernel_tss, 0, sizeof(struct tss));
@@ -87,16 +101,22 @@ static void tss_init(void) {
     /* Set I/O permission bitmap to end of TSS (no I/O bitmap) */
     kernel_tss.iopb = sizeof(struct tss);
     
-    /* Set up TSS descriptor */
+    /* Set up TSS descriptor in GDT */
     gdt_set_tss(tss_base, tss_limit);
+    
+    vga_writestring("GDT: TSS configured at 0x");
+    print_hex(tss_base);
+    vga_writestring("\n");
 }
 
 /*
  * Load TSS into task register
  */
 static void tss_load(void) {
-    /* TSS selector is 0x28 (5th entry, index 5 * 8 = 40 = 0x28) */
+    /* TSS selector is 0x28 (entry 5, index 5 * 8 = 40 = 0x28) */
+    vga_writestring("GDT: Loading TSS (selector 0x28)...\n");
     __asm__ volatile("ltr %0" : : "r"((uint16_t)0x28));
+    vga_writestring("GDT: TSS loaded successfully\n");
 }
 
 /*
@@ -109,7 +129,9 @@ void gdt_init(void) {
     gdt_pointer.limit = (sizeof(struct gdt_entry) * GDT_ENTRIES) - 1;
     gdt_pointer.base = (uint64_t)&gdt;
     
-    vga_writestring("GDT: Pointer set, clearing GDT...\n");
+    vga_writestring("GDT: Clearing GDT array (");
+    print_dec(GDT_ENTRIES);
+    vga_writestring(" entries)...\n");
     
     /* Clear GDT */
     memset(&gdt, 0, sizeof(struct gdt_entry) * GDT_ENTRIES);
@@ -160,18 +182,23 @@ void gdt_init(void) {
                  GDT_ACCESS_SYSTEM | GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
                  GDT_GRAN_4K | GDT_GRAN_32BIT);
     
-    vga_writestring("GDT: Descriptors configured\n");
+    /* Entries 5-6: TSS (initialized by tss_init) */
     
-    /* DON'T initialize TSS yet - do it later after paging is set up */
+    vga_writestring("GDT: Descriptors configured\n");
     vga_writestring("GDT: Loading new GDT...\n");
     
     /* Load new GDT */
     gdt_flush_asm((uint64_t)&gdt_pointer);
     
     vga_writestring("GDT: New GDT loaded successfully\n");
+    
+    /* Initialize and load TSS */
+    tss_init();
+    tss_load();
+    
     vga_writestring("GDT: Initialized with ");
     print_dec(GDT_ENTRIES);
-    vga_writestring(" entries (TSS deferred)\n");
+    vga_writestring(" entries (including TSS)\n");
 }
 
 /*
@@ -200,7 +227,9 @@ void gdt_print_info(void) {
         "Kernel Code (0x08)",
         "Kernel Data (0x10)",
         "User Code (0x18)",
-        "User Data (0x20)"
+        "User Data (0x20)",
+        "TSS Lower (0x28)",
+        "TSS Upper"
     };
     
     for (int i = 0; i < GDT_ENTRIES; i++) {
@@ -219,5 +248,5 @@ void gdt_print_info(void) {
     vga_writestring(" bytes\n");
     vga_writestring("  RSP0: 0x");
     print_hex(kernel_tss.rsp0);
-    vga_writestring("\n");
+    vga_writestring("\n  Selector: 0x28\n");
 }
