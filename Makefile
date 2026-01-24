@@ -44,12 +44,8 @@ LDFLAGS := -T linker.ld -nostdlib --nmagic
 # ==============================
 ASM_SOURCES := $(wildcard $(SRC_DIR)/boot/*.asm)
 
-KERNEL_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/kmain.c) \
-                    $(wildcard $(SRC_DIR)/kernel/kernel.c) \
-                    $(wildcard $(SRC_DIR)/drivers/vga.c) \
-                    $(wildcard $(SRC_DIR)/drivers/keyboard.c) \
-                    $(wildcard $(SRC_DIR)/drivers/pic.c) \
-                    $(wildcard $(SRC_DIR)/drivers/timer.c) \
+KERNEL_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/*.c) \
+                    $(wildcard $(SRC_DIR)/drivers/*.c) \
                     $(wildcard $(SRC_DIR)/cpu/x86/*.c)
 
 ASM_OBJECTS := $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_KERNEL)/boot/%.o,$(ASM_SOURCES))
