@@ -31,18 +31,18 @@ information_request_tag_start:
 information_request_tag_end:
     ; Framebuffer tag (helps avoid video mode issues)
     align 8
-    
-framebuffer_tag_start:
-    dw 5        ; type = framebuffer
-    dw 1        ; flags = optional
-    dd framebuffer_tag_end - framebuffer_tag_start  ; size
-    dd 0        ; width (0 = no preference)
-    dd 0        ; height (0 = no preference)
-    dd 0        ; depth (0 = no preference)
-framebuffer_tag_end:
 
-    ; Module alignment tag
-    align 8
+;framebuffer_tag_start:
+;    dw 5        ; type = framebuffer
+;    dw 1        ; flags = optional
+;    dd framebuffer_tag_end - framebuffer_tag_start  ; size
+;    dd 0        ; width (0 = no preference)
+;    dd 0        ; height (0 = no preference)
+;    dd 0        ; depth (0 = no preference)
+;framebuffer_tag_end:
+;
+;    ; Module alignment tag
+;    align 8
 module_align_tag_start:
     dw 6        ; type = module alignment
     dw 0        ; flags

@@ -152,82 +152,6 @@ void test_paging(void) {
     paging_print_vm_regions();
 }
 
-void test_timer(void) {
-    vga_writestring("\n=== Timer Test ===\n");
-    
-    struct timer_stats stats = timer_get_stats();
-    
-    vga_writestring("Timer frequency: ");
-    print_dec(stats.frequency);
-    vga_writestring(" Hz\n");
-    
-    vga_writestring("Current ticks: ");
-    print_dec(stats.ticks);
-    vga_putchar('\n');
-    
-    vga_writestring("Uptime: ");
-    print_dec(stats.seconds);
-    vga_writestring(" seconds (");
-    print_dec(stats.uptime_ms);
-    vga_writestring(" ms)\n");
-    
-    /* Test timer delay */
-    vga_writestring("\nTesting 1 second delay... ");
-    uint64_t start = timer_get_uptime_ms();
-    timer_sleep(1000);
-    uint64_t end = timer_get_uptime_ms();
-    uint64_t elapsed = end - start;
-    
-    vga_writestring("Elapsed: ");
-    print_dec(elapsed);
-    vga_writestring(" ms ");
-    
-    if (elapsed >= 990 && elapsed <= 1010) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("OK\n");
-    } else {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("FAILED\n");
-    }
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-}
-
-void test_keyboard(void) {
-    vga_writestring("\n=== Keyboard Test ===\n");
-    vga_writestring("Type some characters (press Enter to finish):\n> ");
-    
-    char buffer[128];
-    int pos = 0;
-    
-    while (pos < 127) {
-        char c = keyboard_getchar();
-        
-        if (c == '\n' || c == '\r') {
-            buffer[pos] = '\0';
-            vga_putchar('\n');
-            break;
-        } else if (c == '\b') {
-            if (pos > 0) {
-                pos--;
-                vga_putchar('\b');
-            }
-        } else if (c >= 32 && c <= 126) {
-            buffer[pos++] = c;
-            vga_putchar(c);
-        }
-    }
-    
-    if (pos >= 127) {
-        buffer[127] = '\0';
-    }
-    
-    vga_writestring("\nYou typed: \"");
-    vga_writestring(buffer);
-    vga_writestring("\" (");
-    print_dec(pos);
-    vga_writestring(" characters)\n");
-}
-
 void run_system_tests(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("\n");
@@ -239,8 +163,6 @@ void run_system_tests(void) {
     /* Run tests */
     test_memory_allocation();
     test_paging();
-    test_timer();
-    test_keyboard();
     
     /* Final summary */
     vga_putchar('\n');
@@ -268,17 +190,9 @@ void kernel_main(void) {
     vga_writestring("\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
     vga_writestring("All tests completed! Use arrow keys to scroll.\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    vga_writestring("Press any key to enter scroll mode...\n");
-    
-    /* Wait for keypress */
-    keyboard_getchar();
-    
+
     /* Enter scroll mode for user to review output */
     vga_enter_scroll_mode();
-    
-    /* After exiting scroll mode, idle */
-    vga_writestring("\nSystem idle - Press Ctrl+Alt+Del to reboot\n");
     
     /* Idle loop */
     while (1) {
