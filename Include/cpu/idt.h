@@ -3,14 +3,14 @@
 
 #include "lib/base.h"
 
-/* IDT Entry Structure */
+/* IDT Entry Structure for 64-bit mode */
 struct idt_entry {
-    uint16_t offset_low;    // Lower 16 bits of handler address
+    uint16_t offset_low;    // Lower 16 bits of handler address (bits 0-15)
     uint16_t selector;      // Segment selector (kernel code segment)
-    uint8_t ist;            // Interrupt Stack Table offset (0 for now)
+    uint8_t ist;            // Interrupt Stack Table offset (0-7, 0 = don't switch)
     uint8_t type_attr;      // Type and attributes
-    uint16_t offset_mid;    // Middle 16 bits of handler address
-    uint32_t offset_high;   // Upper 32 bits of handler address
+    uint16_t offset_mid;    // Middle 16 bits of handler address (bits 16-31)
+    uint32_t offset_high;   // Upper 32 bits of handler address (bits 32-63)
     uint32_t reserved;      // Reserved (must be zero)
 } __attribute__((packed));
 
@@ -21,62 +21,64 @@ struct idt_ptr {
 } __attribute__((packed));
 
 /* IDT Type and Attribute Flags */
-#define IDT_TYPE_TASK_GATE     0x05
-#define IDT_TYPE_INTERRUPT     0x0E  // Interrupt gate
-#define IDT_TYPE_TRAP          0x0F  // Trap gate
+#define IDT_TYPE_TASK_GATE     0x05  // Task gate (not used in 64-bit)
+#define IDT_TYPE_INTERRUPT     0x0E  // 64-bit interrupt gate
+#define IDT_TYPE_TRAP          0x0F  // 64-bit trap gate
 
-#define IDT_ATTR_PRESENT       0x80  // Present bit
-#define IDT_ATTR_DPL0          0x00  // Ring 0 (kernel)
-#define IDT_ATTR_DPL1          0x20  // Ring 1
-#define IDT_ATTR_DPL2          0x40  // Ring 2
-#define IDT_ATTR_DPL3          0x60  // Ring 3 (user)
+#define IDT_ATTR_PRESENT       0x80  // Present bit (bit 7)
+#define IDT_ATTR_DPL0          0x00  // Ring 0 (kernel) - bits 6-5 = 00
+#define IDT_ATTR_DPL1          0x20  // Ring 1 - bits 6-5 = 01
+#define IDT_ATTR_DPL2          0x40  // Ring 2 - bits 6-5 = 10
+#define IDT_ATTR_DPL3          0x60  // Ring 3 (user) - bits 6-5 = 11
 
-/* Exception numbers */
-#define EXCEPTION_DIVIDE_ERROR          0
-#define EXCEPTION_DEBUG                 1
-#define EXCEPTION_NMI                   2
-#define EXCEPTION_BREAKPOINT            3
-#define EXCEPTION_OVERFLOW              4
-#define EXCEPTION_BOUND_RANGE           5
-#define EXCEPTION_INVALID_OPCODE        6
-#define EXCEPTION_DEVICE_NOT_AVAILABLE  7
-#define EXCEPTION_DOUBLE_FAULT          8
-#define EXCEPTION_COPROCESSOR_SEGMENT   9
-#define EXCEPTION_INVALID_TSS           10
-#define EXCEPTION_SEGMENT_NOT_PRESENT   11
-#define EXCEPTION_STACK_SEGMENT         12
-#define EXCEPTION_GENERAL_PROTECTION    13
-#define EXCEPTION_PAGE_FAULT            14
-#define EXCEPTION_RESERVED              15
-#define EXCEPTION_X87_FPU               16
-#define EXCEPTION_ALIGNMENT_CHECK       17
-#define EXCEPTION_MACHINE_CHECK         18
-#define EXCEPTION_SIMD_FP               19
-#define EXCEPTION_VIRTUALIZATION        20
-#define EXCEPTION_CONTROL_PROTECTION    21
+/* CPU Exception Numbers (0-31) */
+#define EXCEPTION_DIVIDE_ERROR          0   // Division by zero
+#define EXCEPTION_DEBUG                 1   // Debug exception
+#define EXCEPTION_NMI                   2   // Non-maskable interrupt
+#define EXCEPTION_BREAKPOINT            3   // Breakpoint (INT3)
+#define EXCEPTION_OVERFLOW              4   // Overflow (INTO)
+#define EXCEPTION_BOUND_RANGE           5   // Bound range exceeded (BOUND)
+#define EXCEPTION_INVALID_OPCODE        6   // Invalid opcode (UD2)
+#define EXCEPTION_DEVICE_NOT_AVAILABLE  7   // Device not available (FPU)
+#define EXCEPTION_DOUBLE_FAULT          8   // Double fault
+#define EXCEPTION_COPROCESSOR_SEGMENT   9   // Coprocessor segment overrun
+#define EXCEPTION_INVALID_TSS           10  // Invalid TSS
+#define EXCEPTION_SEGMENT_NOT_PRESENT   11  // Segment not present
+#define EXCEPTION_STACK_SEGMENT         12  // Stack segment fault
+#define EXCEPTION_GENERAL_PROTECTION    13  // General protection fault
+#define EXCEPTION_PAGE_FAULT            14  // Page fault
+#define EXCEPTION_RESERVED              15  // Reserved
+#define EXCEPTION_X87_FPU               16  // x87 FPU floating point error
+#define EXCEPTION_ALIGNMENT_CHECK       17  // Alignment check
+#define EXCEPTION_MACHINE_CHECK         18  // Machine check
+#define EXCEPTION_SIMD_FP               19  // SIMD floating point exception
+#define EXCEPTION_VIRTUALIZATION        20  // Virtualization exception
+#define EXCEPTION_CONTROL_PROTECTION    21  // Control protection exception
 
-/* IRQ numbers (hardware interrupts) */
-#define IRQ_TIMER                       32
-#define IRQ_KEYBOARD                    33
-#define IRQ_CASCADE                     34
-#define IRQ_COM2                        35
-#define IRQ_COM1                        36
-#define IRQ_LPT2                        37
-#define IRQ_FLOPPY                      38
-#define IRQ_LPT1                        39
-#define IRQ_RTC                         40
-#define IRQ_FREE1                       41
-#define IRQ_FREE2                       42
-#define IRQ_FREE3                       43
-#define IRQ_MOUSE                       44
-#define IRQ_FPU                         45
-#define IRQ_PRIMARY_ATA                 46
-#define IRQ_SECONDARY_ATA               47
+/* Hardware IRQ Numbers (mapped to IDT entries 32-47) */
+#define IRQ_TIMER                       32  // IRQ 0 - PIT timer
+#define IRQ_KEYBOARD                    33  // IRQ 1 - PS/2 keyboard
+#define IRQ_CASCADE                     34  // IRQ 2 - Cascade for slave PIC
+#define IRQ_COM2                        35  // IRQ 3 - COM2
+#define IRQ_COM1                        36  // IRQ 4 - COM1
+#define IRQ_LPT2                        37  // IRQ 5 - LPT2
+#define IRQ_FLOPPY                      38  // IRQ 6 - Floppy disk
+#define IRQ_LPT1                        39  // IRQ 7 - LPT1
+#define IRQ_RTC                         40  // IRQ 8 - Real-time clock
+#define IRQ_FREE1                       41  // IRQ 9 - Free for peripherals
+#define IRQ_FREE2                       42  // IRQ 10 - Free for peripherals
+#define IRQ_FREE3                       43  // IRQ 11 - Free for peripherals
+#define IRQ_MOUSE                       44  // IRQ 12 - PS/2 mouse
+#define IRQ_FPU                         45  // IRQ 13 - FPU / Coprocessor
+#define IRQ_PRIMARY_ATA                 46  // IRQ 14 - Primary ATA channel
+#define IRQ_SECONDARY_ATA               47  // IRQ 15 - Secondary ATA channel
 
 /* Function prototypes */
 void idt_init(void);
 void idt_set_gate(int num, uint64_t handler, uint16_t selector, uint8_t type_attr);
 void idt_flush(uint64_t idt_ptr_addr);
+void idt_print_info(void);
+void idt_print_stats(void);
 
 /* Exception handlers */
 void exception_handler(uint32_t exception_num, uint64_t error_code);
@@ -84,7 +86,7 @@ void exception_handler(uint32_t exception_num, uint64_t error_code);
 /* IRQ handlers */
 void irq_handler(uint32_t irq_num);
 
-/* Assembly interrupt handlers */
+/* Assembly interrupt handlers - CPU Exceptions (ISRs 0-21) */
 extern void isr0(void);   // Division by zero
 extern void isr1(void);   // Debug
 extern void isr2(void);   // NMI
@@ -108,6 +110,7 @@ extern void isr19(void);  // SIMD floating point
 extern void isr20(void);  // Virtualization
 extern void isr21(void);  // Control protection
 
+/* Assembly interrupt handlers - Hardware IRQs (IRQs 0-15) */
 extern void irq0(void);   // Timer
 extern void irq1(void);   // Keyboard
 extern void irq2(void);   // Cascade
