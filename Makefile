@@ -16,8 +16,8 @@ endif
 #  TOOLCHAIN
 # ==============================
 AS := nasm
-CC := $(shell command -v x86_64-elf-gcc || echo /usr/local/cross/bin/x86_64-elf-gcc)
-LD := $(shell command -v x86_64-elf-ld || echo /usr/local/cross/bin/x86_64-elf-ld)
+CC := x86_64-elf-gcc
+LD := x86_64-elf-ld
 
 # ==============================
 #  DIRECTORIES
