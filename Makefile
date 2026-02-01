@@ -1,5 +1,5 @@
 ################################################################################
-#  KERNEL-ONLY MAKEFILE FOR NumOS (No Filesystem/Disk Support)
+#  NUMOS MAKEFILE WITH FAT32 FILESYSTEM SUPPORT + USER SPACE
 ################################################################################
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
@@ -27,6 +27,8 @@ BUILD_DIR := build
 BUILD_KERNEL := $(BUILD_DIR)/kernel
 ISO_DIR := $(BUILD_DIR)/iso
 GRUB_DIR := $(ISO_DIR)/boot/grub
+TOOLS_DIR := tools
+USER_SPACE_DIR := user_space
 
 # ==============================
 #  FLAGS
@@ -40,13 +42,14 @@ KERNEL_CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pic \
 LDFLAGS := -T linker.ld -nostdlib --nmagic
 
 # ==============================
-#  SOURCE FILES (Excluding FS/Disk)
+#  SOURCE FILES
 # ==============================
 ASM_SOURCES := $(wildcard $(SRC_DIR)/boot/*.asm)
 
 KERNEL_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/*.c) \
                     $(wildcard $(SRC_DIR)/drivers/*.c) \
-                    $(wildcard $(SRC_DIR)/cpu/x86/*.c)
+                    $(wildcard $(SRC_DIR)/cpu/x86/*.c) \
+                    $(wildcard $(SRC_DIR)/fs/*.c)
 
 ASM_OBJECTS := $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_KERNEL)/boot/%.o,$(ASM_SOURCES))
 
@@ -59,12 +62,14 @@ ALL_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS)
 # ==============================
 KERNEL := $(BUILD_DIR)/kernel.bin
 ISO_FILE := NumOS.iso
+DISK_IMAGE := $(BUILD_DIR)/disk.img
+USER_ELF := $(USER_SPACE_DIR)/main.elf
 
 # ==============================
 #  DEFAULT TARGET
 # ==============================
 .PHONY: all
-all: kernel
+all: kernel disk
 
 # ==============================
 #  KERNEL BUILD
@@ -88,6 +93,27 @@ $(KERNEL): $(ALL_KERNEL_OBJECTS)
 	@echo "[OK] Kernel built: $(KERNEL)"
 
 # ==============================
+#  USER SPACE BUILD
+# ==============================
+.PHONY: user_space
+user_space:
+	@echo "[USER] Building user_space..."
+	@$(MAKE) -C $(USER_SPACE_DIR)
+
+# ==============================
+#  DISK IMAGE CREATION
+#   Depends on user_space so main.elf is guaranteed to exist.
+#   Always rebuilds the disk image (PHONY) because create_disk_fixed.py
+#   embeds the current main.elf.
+# ==============================
+.PHONY: disk
+disk: user_space
+	@echo "[DISK] Creating FAT32 disk image..."
+	@mkdir -p $(BUILD_DIR)
+	@python3 $(TOOLS_DIR)/create_disk_fixed.py $(DISK_IMAGE) $(USER_ELF)
+	@echo "[OK] Disk image created: $(DISK_IMAGE)"
+
+# ==============================
 #  ISO IMAGE (GRUB)
 # ==============================
 .PHONY: iso
@@ -108,36 +134,54 @@ $(ISO_FILE): $(KERNEL)
 	@echo "[OK] ISO created: $(ISO_FILE)"
 
 # ==============================
-#  RUN IN QEMU
+#  RUN IN QEMU WITH DISK
 # ==============================
 .PHONY: run
-run: iso
-	@echo "[QEMU] Starting NumOS..."
+run: iso disk
+	@echo "[QEMU] Starting NumOS with disk..."
 	@qemu-system-x86_64 -m 128M \
-		-cdrom $(ISO_FILE) \
+		-boot order=dc \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
+		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
 		-serial stdio
+
+# ==============================
+#  RUN WITHOUT GRAPHICS
+# ==============================
+.PHONY: run-nographic
+run-nographic: iso disk
+	@echo "=== Starting NumOS in QEMU (no graphics) with disk ==="
+	qemu-system-x86_64 -m 128M \
+		-boot order=dc \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
+		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
+		-nographic
 
 # ==============================
 #  DEBUG WITH GDB
 # ==============================
 .PHONY: debug
-debug: iso
-	@echo "[QEMU] Starting NumOS with GDB support..."
+debug: iso disk
+	@echo "[QEMU] Starting NumOS with GDB support and disk..."
 	@echo "In another terminal run: gdb build/kernel.bin"
 	@echo "Then: (gdb) target remote localhost:1234"
 	@echo "      (gdb) break kernel_main"
 	@echo "      (gdb) continue"
 	@qemu-system-x86_64 -m 128M \
-		-cdrom $(ISO_FILE) \
+		-boot order=dc \
+		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
+		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
 		-serial stdio \
 		-s -S
 
-.PHONY: run-nographic
-run-nographic: iso
-	@echo "=== Starting NumOS in QEMU (no graphics) ==="
-	qemu-system-x86_64 -m 128M \
-		-cdrom $(ISO_FILE) \
-		-nographic
+# ==============================
+#  RECREATE DISK IMAGE
+# ==============================
+.PHONY: newdisk
+newdisk:
+	@echo "[DISK] Recreating disk image..."
+	@rm -f $(DISK_IMAGE)
+	@$(MAKE) disk
 
 # ==============================
 #  CLEAN
@@ -146,11 +190,13 @@ run-nographic: iso
 clean:
 	@echo "[CLEAN] Removing build artifacts..."
 	@rm -rf $(BUILD_DIR)
+	@rm -rf NumOS.iso
+	@$(MAKE) -C $(USER_SPACE_DIR) clean
 	@echo "[OK] Clean complete"
 
 .PHONY: distclean
 distclean: clean
-	@echo "[DISTCLEAN] Removing ISO image..."
+	@echo "[DISTCLEAN] Removing ISO and disk images..."
 	@rm -f $(ISO_FILE)
 	@echo "[OK] Distribution clean complete"
 
@@ -159,16 +205,24 @@ distclean: clean
 # ==============================
 .PHONY: help
 help:
-	@echo "NumOS Kernel Build System (No Filesystem/Disk)"
-	@echo "==============================================="
+	@echo "NumOS Kernel Build System with FAT32 + User Space"
+	@echo "=================================================="
 	@echo ""
 	@echo "Targets:"
-	@echo "  all         - Build kernel (default)"
+	@echo "  all         - Build kernel, user space, and disk image (default)"
 	@echo "  kernel      - Build kernel only"
+	@echo "  user_space  - Build user_space/shell.elf"
+	@echo "  disk        - Create FAT32 disk image (embeds shell.elf into /init)"
+	@echo "  newdisk     - Recreate disk image from scratch"
 	@echo "  iso         - Create bootable ISO image"
-	@echo "  run         - Build ISO and run in QEMU"
+	@echo "  run         - Build and run in QEMU with disk"
 	@echo "  debug       - Build and run with GDB support"
 	@echo "  clean       - Remove build artifacts"
 	@echo "  distclean   - Remove everything including images"
 	@echo ""
 	@echo "Current OS: $(OS_TYPE)"
+	@echo ""
+	@echo "The disk image contains:"
+	@echo "  /init/SHELL - User-space Hello World ELF"
+	@echo "  /bin        - Empty directory"
+	@echo "  /run        - Empty directory"

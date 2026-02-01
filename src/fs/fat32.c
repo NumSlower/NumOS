@@ -45,6 +45,12 @@ int fat32_read_cluster(uint32_t cluster, void *buffer) {
     uint32_t first_sector = g_fs.data_start_sector + 
                            (cluster - 2) * g_fs.boot.sectors_per_cluster;
     
+    vga_writestring("[FAT32] Reading cluster ");
+    print_dec(cluster);
+    vga_writestring(" from sector ");
+    print_dec(first_sector);
+    vga_writestring("\n");
+    
     for (uint8_t i = 0; i < g_fs.boot.sectors_per_cluster; i++) {
         if (fat32_read_sector(first_sector + i, 
                              (uint8_t*)buffer + (i * 512)) != 0) {
@@ -334,10 +340,29 @@ int fat32_mount(void) {
         return -1;
     }
     
+    /* Debug: Print boot sector parameters */
+    vga_writestring("FAT32: Boot sector values:\n");
+    vga_writestring("  Reserved sectors: ");
+    print_dec(g_fs.boot.reserved_sectors);
+    vga_writestring("\n  Sectors per cluster: ");
+    print_dec(g_fs.boot.sectors_per_cluster);
+    vga_writestring("\n  Number of FATs: ");
+    print_dec(g_fs.boot.num_fats);
+    vga_writestring("\n  FAT size (32-bit): ");
+    print_dec(g_fs.boot.fat_size_32);
+    vga_writestring(" sectors\n");
+    
     /* Calculate filesystem parameters */
     g_fs.fat_start_sector = g_fs.boot.reserved_sectors;
     g_fs.data_start_sector = g_fs.fat_start_sector + 
                              (g_fs.boot.num_fats * g_fs.boot.fat_size_32);
+    
+    vga_writestring("FAT32: Calculated offsets:\n");
+    vga_writestring("  FAT start sector: ");
+    print_dec(g_fs.fat_start_sector);
+    vga_writestring("\n  Data start sector: ");
+    print_dec(g_fs.data_start_sector);
+    vga_writestring("\n");
     g_fs.first_data_sector = g_fs.data_start_sector;
     
     uint32_t total_sectors = g_fs.boot.total_sectors_32;
@@ -370,6 +395,223 @@ int fat32_mount(void) {
     vga_writestring(" bytes\n");
     
     return 0;
+}
+
+/* ─── Forward declarations ───────────────────────────────────────
+ * find_entry() and find_entry_in_cluster() are defined later in this
+ * file (after the helper code they depend on) but are called by
+ * fat32_open(), fat32_stat(), fat32_mkdir(), and fat32_chdir() which
+ * appear earlier.  These declarations resolve the implicit-declaration
+ * errors without moving large blocks of code.
+ * ─────────────────────────────────────────────────────────────── */
+static struct fat32_dir_entry* find_entry_in_cluster(uint32_t cluster,
+                                                     char *formatted_name);
+static struct fat32_dir_entry* find_entry(const char *path,
+                                          uint32_t *parent_cluster);
+
+/*
+ * Open a file by path.
+ *
+ * Resolves path via find_entry(), allocates the first free slot in
+ * g_fd_table[], and returns its index as the fd.  Only FAT32_O_RDONLY
+ * is fully implemented; FAT32_O_CREAT / O_WRONLY are not yet supported.
+ *
+ * Returns fd (0..MAX_OPEN_FILES-1) on success, -1 on failure.
+ */
+int fat32_open(const char *path, int flags)
+{
+    if (!g_fs.mounted) {
+        return -1;
+    }
+
+    /* Resolve the path to a directory entry */
+    struct fat32_dir_entry *entry = find_entry(path, NULL);
+    if (!entry) {
+        return -1;  /* File not found */
+    }
+
+    /* Directories cannot be opened as files */
+    if (entry->attr & FAT32_ATTR_DIRECTORY) {
+        return -1;
+    }
+
+    /* Allocate an fd slot */
+    int fd = -1;
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (!g_fd_table[i].in_use) {
+            fd = i;
+            break;
+        }
+    }
+    if (fd < 0) {
+        return -1;  /* No free fd slots */
+    }
+
+    /* Populate the fd structure */
+    uint32_t cluster = ((uint32_t)entry->first_cluster_high << 16) |
+                        entry->first_cluster_low;
+
+    fat32_parse_short_name(entry->name, g_fd_table[fd].name);
+    g_fd_table[fd].first_cluster   = cluster;
+    g_fd_table[fd].current_cluster = cluster;
+    g_fd_table[fd].size            = entry->file_size;
+    g_fd_table[fd].position        = 0;
+    g_fd_table[fd].attr            = entry->attr;
+    g_fd_table[fd].flags           = flags;
+    g_fd_table[fd].in_use          = 1;
+
+    return fd;
+}
+
+/*
+ * Read up to count bytes from an open file descriptor.
+ *
+ * Walks the cluster chain starting from the cluster that contains
+ * the current byte position.  Each iteration reads one cluster into
+ * cluster_buffer, copies the relevant slice into the caller's buffer,
+ * and advances position.  Stops at EOF or when count bytes have been
+ * copied.
+ *
+ * Returns the number of bytes actually read (0 at EOF), or -1 on error.
+ */
+ssize_t fat32_read(int fd, void *buf, size_t count)
+{
+    if (!g_fs.mounted) {
+        return -1;
+    }
+    if (fd < 0 || fd >= MAX_OPEN_FILES || !g_fd_table[fd].in_use) {
+        return -1;
+    }
+
+    uint8_t *out     = (uint8_t *)buf;
+    uint32_t pos     = g_fd_table[fd].position;
+    uint32_t size    = g_fd_table[fd].size;
+    uint32_t bpc     = g_fs.bytes_per_cluster;
+    ssize_t  total   = 0;
+
+    /* Clamp to remaining bytes in file */
+    if (pos >= size) {
+        return 0;   /* Already at EOF */
+    }
+    if ((uint32_t)count > size - pos) {
+        count = size - pos;
+    }
+
+    /* Seek the cluster chain to the cluster that contains `pos`.
+     * cluster_index = pos / bytes_per_cluster tells us how many
+     * fat32_next_cluster hops from first_cluster we need. */
+    uint32_t target_cluster_index = pos / bpc;
+    uint32_t cluster = g_fd_table[fd].first_cluster;
+
+    for (uint32_t i = 0; i < target_cluster_index; i++) {
+        cluster = fat32_next_cluster(cluster);
+        if (cluster == 0) {
+            return -1;  /* Truncated cluster chain */
+        }
+    }
+
+    /* Current offset within this cluster */
+    uint32_t offset_in_cluster = pos % bpc;
+
+    while ((size_t)total < count) {
+        if (cluster == 0) {
+            break;  /* End of chain reached */
+        }
+
+        /* Read the current cluster */
+        if (fat32_read_cluster(cluster, cluster_buffer) != 0) {
+            return (total > 0) ? total : -1;
+        }
+
+        /* How many bytes are available in this cluster from our offset */
+        uint32_t avail = bpc - offset_in_cluster;
+
+        /* Don't read past what the caller wants */
+        size_t remaining = count - (size_t)total;
+        if (avail > remaining) {
+            avail = (uint32_t)remaining;
+        }
+
+        /* Copy to caller's buffer */
+        memcpy(out + total, cluster_buffer + offset_in_cluster, avail);
+        total += (ssize_t)avail;
+
+        /* Advance to next cluster; reset offset to start of cluster */
+        cluster = fat32_next_cluster(cluster);
+        offset_in_cluster = 0;
+    }
+
+    g_fd_table[fd].position = pos + (uint32_t)total;
+    return total;
+}
+
+/*
+ * Stat a file: fill a fat32_dirent with name, size, and attributes.
+ *
+ * Returns 0 on success, -1 if the path does not resolve.
+ */
+int fat32_stat(const char *path, struct fat32_dirent *stat)
+{
+    if (!g_fs.mounted) {
+        return -1;
+    }
+
+    struct fat32_dir_entry *entry = find_entry(path, NULL);
+    if (!entry) {
+        return -1;
+    }
+
+    fat32_parse_short_name(entry->name, stat->name);
+    stat->size    = entry->file_size;
+    stat->attr    = entry->attr;
+    stat->cluster = ((uint32_t)entry->first_cluster_high << 16) |
+                     entry->first_cluster_low;
+    return 0;
+}
+
+/*
+ * Write to an open file — not yet implemented.
+ */
+ssize_t fat32_write(int fd, const void *buf, size_t count)
+{
+    (void)fd; (void)buf; (void)count;
+    return -1;
+}
+
+/*
+ * Seek within an open file — not yet implemented.
+ */
+off_t fat32_seek(int fd, off_t offset, int whence)
+{
+    (void)fd; (void)offset; (void)whence;
+    return -1;
+}
+
+/*
+ * Unlink (delete) a file — not yet implemented.
+ */
+int fat32_unlink(const char *path)
+{
+    (void)path;
+    return -1;
+}
+
+/*
+ * Remove a directory — not yet implemented.
+ */
+int fat32_rmdir(const char *path)
+{
+    (void)path;
+    return -1;
+}
+
+/*
+ * Get current working directory — not yet implemented.
+ */
+char* fat32_getcwd(char *buf, size_t size)
+{
+    (void)buf; (void)size;
+    return NULL;
 }
 
 /*

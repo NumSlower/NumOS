@@ -1,5 +1,5 @@
 /*
- * kmain.c - Kernel main with FAT32 filesystem support
+ * kmain.c - Kernel main with FAT32 filesystem support + user space
  */
 
 #include "kernel/kernel.h"
@@ -13,6 +13,8 @@
 #include "drivers/ata.h"
 #include "cpu/heap.h"
 #include "fs/fat32.h"
+#include "cpu/syscall.h"
+#include "kernel/elf_loader.h"
 
 void kernel_init(void) {
     /* Initialize VGA text mode first so we can see output */
@@ -43,6 +45,10 @@ void kernel_init(void) {
     /* Initialize IDT */
     vga_writestring("Loading IDT and enabling interrupts...\n");
     idt_init();
+
+    /* Initialize syscall subsystem (programs IA32_LSTAR etc).
+     * Must come after GDT + IDT are set up. */
+    syscall_init();
     
     /* Initialize keyboard */
     vga_writestring("Initializing keyboard driver...\n");
@@ -226,17 +232,69 @@ void kernel_main(void) {
     
     /* Run system tests */
     run_system_tests();
-    
+
+    /* ── Launch the first user-space process ──────────────────
+     * chdir into /init so that fat32_open("SHELL") finds the file.
+     * exec_user_elf does not return on success — the kernel's
+     * execution context is replaced by the user process.  The user
+     * will eventually call SYS_EXIT, which spins in hlt inside the
+     * syscall handler.
+     *
+     * If loading fails, we fall through to the idle loop below.
+     * ────────────────────────────────────────────────────────── */
     vga_writestring("\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    vga_writestring("All tests completed! Use arrow keys to scroll.\n");
-    vga_writestring("Disk contents are displayed above.\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("========================================\n");
+    vga_writestring("  Loading first user-space process...\n");
+    vga_writestring("========================================\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 
-    /* Enter scroll mode for user to review output */
-    vga_enter_scroll_mode();
+    if (fat32_chdir("init") == 0) {
+        exec_user_elf("SHELL");
+        /* If we get here, loading failed.  Error was already printed. */
+    } else {
+        vga_writestring("[kernel] ERROR: /init directory not found\n");
+    }
+
+    /* Fallback when user loading failed */
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+    vga_writestring("\n[kernel] Failed to launch user process.\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("[kernel] Press 'PAGE UP' to scroll through boot messages, or 'Q' to halt.\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     
-    /* Idle loop */
+    /* Enter scroll mode for debugging */
+    vga_writestring("\n");
+    vga_enter_scroll_mode();
+
+    /* If user exits scroll mode, show debug prompt */
+    vga_writestring("\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("Debug Mode\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    vga_writestring("Press 'R' to retry loading user space, or 'H' to halt:\n");
+    
+    while (1) {
+        uint8_t scan_code = keyboard_read_scan_code();
+        char c = scan_code_to_ascii(scan_code);
+        
+        if (c == 'r' || c == 'R') {
+            vga_clear();
+            vga_writestring("Retrying user-space load...\n");
+            if (fat32_chdir("init") == 0) {
+                exec_user_elf("SHELL");
+            }
+            /* If we get here, it failed again */
+            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+            vga_writestring("Load failed again. Returning to debug mode.\n");
+            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        } else if (c == 'h' || c == 'H') {
+            vga_writestring("Halting system.\n");
+            break;
+        }
+    }
+
+    /* Halt */
     while (1) {
         __asm__ volatile("hlt");
     }
