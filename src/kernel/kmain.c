@@ -1,5 +1,5 @@
 /*
- * kmain.c - Kernel main without filesystem/disk support
+ * kmain.c - Kernel main with FAT32 filesystem support
  */
 
 #include "kernel/kernel.h"
@@ -10,7 +10,9 @@
 #include "cpu/paging.h"
 #include "drivers/pic.h"
 #include "drivers/timer.h"
+#include "drivers/ata.h"
 #include "cpu/heap.h"
+#include "fs/fat32.h"
 
 void kernel_init(void) {
     /* Initialize VGA text mode first so we can see output */
@@ -18,7 +20,7 @@ void kernel_init(void) {
     
     /* Display early boot message */
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("NumOS v2.5 - 64-bit Kernel\n");
+    vga_writestring("NumOS v3.0 - 64-bit Kernel with FAT32\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("Initializing kernel subsystems...\n\n");
     
@@ -49,6 +51,20 @@ void kernel_init(void) {
     /* Unmask timer and keyboard IRQs */
     pic_unmask_irq(0); /* Timer */
     pic_unmask_irq(1); /* Keyboard */
+    
+    /* Initialize ATA/IDE disk controller */
+    vga_writestring("\n");
+    ata_init();
+    
+    /* Initialize FAT32 filesystem */
+    vga_writestring("\n");
+    if (fat32_init() == 0) {
+        if (fat32_mount() == 0) {
+            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+            vga_writestring("✓ Filesystem mounted successfully\n");
+            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        }
+    }
     
     /* Display system summary */
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
@@ -146,30 +162,54 @@ void test_paging(void) {
     /* Print paging statistics */
     vga_putchar('\n');
     paging_print_stats();
+}
+
+void test_filesystem(void) {
+    vga_writestring("\n=== Filesystem Test ===\n");
     
-    /* Print VM regions */
-    vga_putchar('\n');
-    paging_print_vm_regions();
+    /* Print filesystem information */
+    fat32_print_info();
+    
+    /* List root directory contents */
+    vga_writestring("\n");
+    fat32_list_directory("/");
+    
+    /* Test directory creation */
+    vga_writestring("\nTesting mkdir('/test')... ");
+    if (fat32_mkdir("test") == 0) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("OK\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        
+        /* List directory again to show new folder */
+        vga_writestring("\nUpdated root directory:\n");
+        fat32_list_directory("/");
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("FAILED\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
 }
 
 void run_system_tests(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("\n");
-    vga_writestring("=====================================\n");
+    vga_writestring("=========================================\n");
     vga_writestring("    NumOS System Tests\n");
-    vga_writestring("=====================================\n");
+    vga_writestring("=========================================\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     
     /* Run tests */
     test_memory_allocation();
     test_paging();
+    test_filesystem();
     
     /* Final summary */
     vga_putchar('\n');
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("=====================================\n");
+    vga_writestring("=========================================\n");
     vga_writestring("    Tests Complete\n");
-    vga_writestring("=====================================\n");
+    vga_writestring("=========================================\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 }
 
@@ -179,8 +219,8 @@ void kernel_main(void) {
     
     vga_writestring("\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("NumOS Kernel Ready\n");
-    vga_writestring("===================\n");
+    vga_writestring("NumOS Kernel Ready with FAT32 Support\n");
+    vga_writestring("======================================\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("Running system tests...\n");
     
@@ -190,6 +230,8 @@ void kernel_main(void) {
     vga_writestring("\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
     vga_writestring("All tests completed! Use arrow keys to scroll.\n");
+    vga_writestring("Disk contents are displayed above.\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 
     /* Enter scroll mode for user to review output */
     vga_enter_scroll_mode();
