@@ -5,16 +5,18 @@
    This is position-dependent; the kernel's ELF loader handles relocation.
    
    Memory layout:
-   - 0x400000 - 0x400FFF: .text (code)
-   - 0x401000+:         .data, .bss, .heap, .stack
+   - 0x400000 - 0x7FFFFF: User process space (code + data)
+   - 0x7FC000 - 0x800000: User stack (managed by kernel)
+   
+   NOTE: Do NOT define heap/stack in the ELF. The kernel provides
+   these at runtime. Only code and data sections go here.
 */
 
-ENTRY(main)
+ENTRY(_start)
 
 PHDRS
 {
     text PT_LOAD FLAGS(5);  /* Read + Execute */
-    data PT_LOAD FLAGS(6);  /* Read + Write */
 }
 
 SECTIONS
@@ -47,7 +49,7 @@ SECTIONS
         *(.data)
         *(.data.*)
         _data_end = .;
-    } :data
+    } :text
 
     /* Uninitialized data (Read + Write) */
     .bss ALIGN(0x1000) : {
@@ -56,21 +58,7 @@ SECTIONS
         *(.bss)
         *(.bss.*)
         _bss_end = .;
-    } :data
-
-    /* User heap (grows upward) */
-    .heap ALIGN(0x1000) : {
-        _heap_start = .;
-        . += 0x100000;  /* 1MB heap */
-        _heap_end = .;
-    } :data
-
-    /* User stack (grows downward) */
-    .stack ALIGN(0x1000) : {
-        _stack_start = .;
-        . += 0x80000;   /* 512KB stack */
-        _stack_end = .;
-    } :data
+    } :text
 
     /* End of user process */
     _user_end = .;
