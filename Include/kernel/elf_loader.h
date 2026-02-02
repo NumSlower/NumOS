@@ -40,8 +40,19 @@
 /* e_machine */
 #define EM_X86_64       62
 
-/* Program-header type */
-#define PT_LOAD         1
+/* e_type */
+#define ET_EXEC         2
+#define ET_DYN          3
+
+/* Section-header type */
+#define SHT_RELA        4
+#define SHT_SYMTAB      2
+#define SHT_STRTAB      3
+
+/* Relocation types for x86-64 */
+#define R_X86_64_RELATIVE   8
+#define R_X86_64_GLOB_DAT   6
+#define R_X86_64_JUMP_SLOT  7
 
 /* ─── ELF64 file header (64 bytes) ───────────────────────────────
  * Every field is present so that sizeof(struct elf64_ehdr) == 64
@@ -78,9 +89,38 @@ struct elf64_phdr {
     uint64_t p_align;           /* Alignment requirement             */
 } __attribute__((packed));
 
+/* Program-header type */
+#define PT_LOAD         1
+#define PT_DYNAMIC      2
+
+/* ─── ELF64 section header (64 bytes) ────────────────────────────
+ * Needed for accessing relocation and symbol tables
+ * ─────────────────────────────────────────────────────────────── */
+struct elf64_shdr {
+    uint32_t sh_name;           /* Name offset in strtab             */
+    uint32_t sh_type;           /* SHT_PROGBITS, SHT_RELA, etc       */
+    uint64_t sh_flags;          /* SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR */
+    uint64_t sh_addr;           /* Virtual address in memory         */
+    uint64_t sh_offset;         /* File offset                       */
+    uint64_t sh_size;           /* Section size in bytes             */
+    uint32_t sh_link;           /* Link to related section           */
+    uint32_t sh_info;           /* Section info                      */
+    uint64_t sh_addralign;      /* Alignment requirement             */
+    uint64_t sh_entsize;        /* Size of each entry (if table)     */
+} __attribute__((packed));
+
+/* ─── ELF64 relocation entry ─────────────────────────────────────
+ * For processing relocations
+ * ─────────────────────────────────────────────────────────────── */
+struct elf64_rela {
+    uint64_t r_offset;          /* Virtual address of relocation site */
+    uint64_t r_info;            /* Relocation type and symbol index   */
+    int64_t  r_addend;          /* Addend for relocation              */
+} __attribute__((packed));
+
 /* ─── Public API ─────────────────────────────────────────────────
  * exec_user_elf(path)
- *   path  — FAT32 path relative to the current directory on the
+ *   path  - FAT32 path relative to the current directory on the
  *           mounted filesystem.  The caller must have already done
  *           fat32_chdir("init") if the file is in /init.
  *
