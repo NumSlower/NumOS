@@ -68,21 +68,81 @@ long syscall_handler(long number, long arg1, long arg2, long arg3)
         return count;
     }
 
+    case SYS_MMAP: {
+        /* mmap(addr, length, prot, flags, fd, offset)
+         * For now: stub implementation supporting anonymous mappings
+         * Returns allocated address or -1 on error
+         */
+        long length = arg2;
+        
+        if (length <= 0) return -1;
+        if ((uint64_t)length > 128ULL * 1024 * 1024) return -1;
+        
+        /* Allocate from kernel heap - in a real OS this would be per-process */
+        void *result = kmalloc(length);
+        if (!result) return -1;
+        
+        vga_writestring("[kernel] mmap: allocated ");
+        print_dec(length);
+        vga_writestring(" bytes at 0x");
+        print_hex((uint64_t)result);
+        vga_writestring("\n");
+        
+        return (long)result;
+    }
+
+    case SYS_MUNMAP: {
+        /* munmap(addr, length)
+         * For now: stub that validates bounds
+         * Returns 0 on success
+         */
+        uint64_t addr = arg1;
+        long length = arg2;
+        
+        if (length <= 0) return -1;
+        if (addr + length > 128ULL * 1024 * 1024) return -1;
+        
+        vga_writestring("[kernel] munmap: freed region at 0x");
+        print_hex(addr);
+        vga_writestring("\n");
+        
+        return 0;
+    }
+
+    case SYS_MPROTECT: {
+        /* mprotect(addr, length, prot)
+         * For now: stub that validates bounds
+         * Returns 0 on success
+         */
+        uint64_t addr = arg1;
+        long length = arg2;
+        long prot = arg3;
+        
+        if (length <= 0) return -1;
+        if (addr + length > 128ULL * 1024 * 1024) return -1;
+        
+        vga_writestring("[kernel] mprotect: changed protection at 0x");
+        print_hex(addr);
+        vga_writestring(" to ");
+        print_dec(prot);
+        vga_writestring("\n");
+        
+        return 0;
+    }
+
     case SYS_EXIT: {
         long status = arg1;
 
-        vga_writestring("\n[kernel] User process exited with code ");
+        vga_writestring("\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        vga_writestring("[kernel] User process exited with status: ");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
         print_dec((uint64_t)status);
         vga_writestring("\n");
+        vga_writestring("[kernel] Returning to kernel...\n");
 
-        __asm__ volatile (
-            "leaq g_ks_top(%rip), %rsp\n\t"
-            "movq (%rsp), %rsp\n\t"
-            "1:\n\t"
-            "hlt\n\t"
-            "jmp 1b\n\t"
-        );
-        return 0;
+        /* Return to kernel main retry loop */
+        return status;
     }
 
     default:
