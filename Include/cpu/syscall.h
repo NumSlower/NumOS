@@ -26,6 +26,9 @@
  * We use Linux x86_64 numbers for familiarity.
  * ─────────────────────────────────────────────────────────────── */
 #define SYS_WRITE   1     /* write(fd, buf, count) → bytes written  */
+#define SYS_MMAP    9     /* mmap(addr, length, prot, flags, fd, offset) */
+#define SYS_MUNMAP  11    /* munmap(addr, length) → 0 on success */
+#define SYS_MPROTECT 10   /* mprotect(addr, length, prot) → 0 on success */
 #define SYS_EXIT    60    /* exit(status)          → does not return */
 
 /* ─── Kernel API ─────────────────────────────────────────────────
