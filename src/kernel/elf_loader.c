@@ -45,8 +45,11 @@ static int is_valid_user_address(uint64_t addr) {
 static int is_valid_user_range(uint64_t start, uint64_t size) {
     if (start < 0x1000) return 0;  /* Reserved for null pointer dereference */
     if (start + size > 128ULL * 1024 * 1024) return 0;
-    /* Check against kernel stack area (top of low memory) */
-    if (start <= 0x7FFFFF && start + size > USER_STACK_BOTTOM) return 0;
+    /* Check against user stack area - reject if overlaps with stack region */
+    if (start < USER_STACK_TOP && start + size > USER_STACK_BOTTOM) {
+        /* Segments must not overlap with the stack */
+        if (start >= USER_STACK_BOTTOM) return 0;
+    }
     return 1;
 }
 
