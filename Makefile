@@ -63,7 +63,6 @@ ALL_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS)
 KERNEL := $(BUILD_DIR)/kernel.bin
 ISO_FILE := NumOS.iso
 DISK_IMAGE := $(BUILD_DIR)/disk.img
-USER_ELF := $(USER_SPACE_DIR)/main.elf
 
 # ==============================
 #  DEFAULT TARGET
@@ -92,13 +91,7 @@ $(KERNEL): $(ALL_KERNEL_OBJECTS)
 	@$(LD) $(LDFLAGS) -o $@ $^
 	@echo "[OK] Kernel built: $(KERNEL)"
 
-# ==============================
-#  USER SPACE BUILD
-# ==============================
-.PHONY: user_space
-user_space:
-	@echo "[USER] Building user_space..."
-	@$(MAKE) -C $(USER_SPACE_DIR)
+
 
 # ==============================
 #  DISK IMAGE CREATION
@@ -107,10 +100,10 @@ user_space:
 #   embeds the current main.elf.
 # ==============================
 .PHONY: disk
-disk: user_space
+disk: 
 	@echo "[DISK] Creating FAT32 disk image..."
 	@mkdir -p $(BUILD_DIR)
-	@python3 $(TOOLS_DIR)/create_disk_fixed.py $(DISK_IMAGE) $(USER_ELF)
+	@python3 $(TOOLS_DIR)/create_disk_fixed.py $(DISK_IMAGE) 
 	@echo "[OK] Disk image created: $(DISK_IMAGE)"
 
 # ==============================
@@ -191,7 +184,6 @@ clean:
 	@echo "[CLEAN] Removing build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@rm -rf NumOS.iso
-	@$(MAKE) -C $(USER_SPACE_DIR) clean
 	@echo "[OK] Clean complete"
 
 .PHONY: distclean
