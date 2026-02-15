@@ -1,6 +1,7 @@
 /*
  * gdt.c - Global Descriptor Table for x86-64
  * Implements proper segmentation for 64-bit long mode with TSS
+ * FIXED: User segments swapped for sysret compatibility
  */
 
 #include "cpu/gdt.h"
@@ -11,8 +12,8 @@
  * 0: NULL descriptor
  * 1: Kernel Code
  * 2: Kernel Data
- * 3: User Code
- * 4: User Data
+ * 3: User Data   <- SWAPPED for sysret!
+ * 4: User Code   <- SWAPPED for sysret!
  * 5-6: TSS (takes 2 entries = 16 bytes in 64-bit mode)
  */
 #define GDT_ENTRIES 7
@@ -165,22 +166,26 @@ void gdt_init(void) {
                  GDT_GRAN_4K | GDT_GRAN_32BIT);
     
     /*
-     * Entry 3: User Code Segment (selector 0x18 | 3 = 0x1B)
-     * Access: 0xFA = Present, Ring 3, Code, Executable, Readable
+     * Entry 3: User Data Segment (selector 0x18 | 3 = 0x1B)
+     * Access: 0xF2 = Present, Ring 3, Data, Writable
+     * CRITICAL: Data must be at index 3 for sysret compatibility!
+     * sysret loads SS = (STAR[63:48] + 8) | 3 = 0x18 | 3 = 0x1B
      */
     gdt_set_gate(3, 0, 0xFFFFF,
                  GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | 
-                 GDT_ACCESS_SYSTEM | GDT_ACCESS_CODE | GDT_ACCESS_READABLE,
-                 GDT_GRAN_4K | GDT_GRAN_64BIT);
+                 GDT_ACCESS_SYSTEM | GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
+                 GDT_GRAN_4K | GDT_GRAN_32BIT);
     
     /*
-     * Entry 4: User Data Segment (selector 0x20 | 3 = 0x23)
-     * Access: 0xF2 = Present, Ring 3, Data, Writable
+     * Entry 4: User Code Segment (selector 0x20 | 3 = 0x23)
+     * Access: 0xFA = Present, Ring 3, Code, Executable, Readable
+     * CRITICAL: Code must be at index 4 for sysret compatibility!
+     * sysret loads CS = (STAR[63:48] + 16) | 3 = 0x20 | 3 = 0x23
      */
     gdt_set_gate(4, 0, 0xFFFFF,
                  GDT_ACCESS_PRESENT | GDT_ACCESS_DPL3 | 
-                 GDT_ACCESS_SYSTEM | GDT_ACCESS_DATA | GDT_ACCESS_WRITABLE,
-                 GDT_GRAN_4K | GDT_GRAN_32BIT);
+                 GDT_ACCESS_SYSTEM | GDT_ACCESS_CODE | GDT_ACCESS_READABLE,
+                 GDT_GRAN_4K | GDT_GRAN_64BIT);
     
     /* Entries 5-6: TSS (initialized by tss_init) */
     
@@ -226,8 +231,8 @@ void gdt_print_info(void) {
         "NULL Descriptor",
         "Kernel Code (0x08)",
         "Kernel Data (0x10)",
-        "User Code (0x18)",
-        "User Data (0x20)",
+        "User Data (0x18/0x1B)",     /* SWAPPED! */
+        "User Code (0x20/0x23)",     /* SWAPPED! */
         "TSS Lower (0x28)",
         "TSS Upper"
     };

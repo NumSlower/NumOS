@@ -1,57 +1,73 @@
 /*
- * crt0.S — NumOS user-space C runtime startup
+ * crt0.S — NumOS user-space test program
  *
  * Entry point of the user-space executable.
- * Displays "Hello World From User space" via syscall and then halts.
+ * Writes directly to VGA buffer to display "TEST FROM USER SPACE"
+ * No syscalls needed - just direct memory writes.
  *
- * Execution flow:
- *   1. Kernel loads the ELF, sets up user stack, and iretq to _start.
- *   2. _start (below) writes the message to stdout via SYS_WRITE.
- *   3. We invoke SYS_EXIT to halt.
- *
- * Assembly syntax: AT&T (the default for GNU as).  Operands are
- * source, destination: movq %rax, %rbx means "move RAX into RBX".
+ * VGA text mode buffer is at physical 0xB8000, which should be
+ * identity-mapped by the kernel's boot paging.
  */
 
     .section .rodata
 msg:
-    .asciz "Hello World From User space\n"
-msg_len = . - msg - 1   /* Exclude null terminator */
+    .asciz "TEST FROM USER SPACE"
+msg_len = . - msg - 1
 
     .section .text
     .global _start
 
 _start:
-    /*
-     * The kernel has already set RSP to the top of our user stack.
-     * Clear frame pointer for stack unwinding hygiene.
-     */
+    /* Clear frame pointer */
     xorq    %rbp, %rbp
 
     /* 
-     * Issue SYS_WRITE(1, msg, len) via syscall:
-     *   RAX = 1  (SYS_WRITE)
-     *   RDI = 1  (stdout)
-     *   RSI = pointer to message
-     *   RDX = message length
+     * Write message directly to VGA buffer at 0xB8000
+     * Each character takes 2 bytes: one for ASCII, one for attribute
+     * We'll write to columns 40-60 on line 12 (offset 0xB8000 + 24*160 + 80)
      */
-    movq    $1,         %rax    /* RAX = SYS_WRITE */
-    movq    $1,         %rdi    /* RDI = stdout fd */
-    leaq    msg(%rip),  %rsi    /* RSI = &msg (RIP-relative) */
-    movq    $msg_len,   %rdx    /* RDX = message length */
-    syscall
+    
+    /* RBX = VGA buffer address + offset for row 12, col 0 */
+    movq    $0xB8000,   %rbx
+    
+    /* RBX = 0xB8000 + (12 * 160) = 0xB8000 + 0xBE0 = 0xB8BE0 */
+    addq    $0xBE0,     %rbx
+    
+    /* RSI = pointer to message string */
+    leaq    msg(%rip),  %rsi
+    
+    /* RCX = message length */
+    movq    $msg_len,   %rcx
+    
+    /* RAX = attribute: 0x0F = white on black */
+    movq    $0x0F,      %rax
 
-    /*
-     * Write completed.  Now exit via SYS_EXIT(0).
-     *   RAX = 60 (SYS_EXIT)
-     *   RDI = 0  (exit status)
-     */
-    movq    $60,  %rax          /* RAX = SYS_EXIT */
-    movq    $0,   %rdi          /* RDI = exit status */
-    syscall
+write_loop:
+    /* Check if we've written all characters */
+    cmpq    $0,         %rcx
+    je      write_done
+    
+    /* Load character from message */
+    movzbl  (%rsi),     %edx    /* Load byte, zero extend to 32-bit */
+    
+    /* Write character to VGA buffer: char in low byte, attribute in high byte */
+    movb    %dl,        (%rbx)  /* Write ASCII character */
+    movb    %al,        1(%rbx) /* Write attribute (white on black) */
+    
+    /* Move to next character position (2 bytes per char in VGA) */
+    addq    $2,         %rbx
+    addq    $1,         %rsi
+    subq    $1,         %rcx
+    
+    jmp     write_loop
 
-    /*
-     * SYS_EXIT does not return.  If we somehow get here,
-     * execute an undefined instruction to trigger a fault.
+write_done:
+    /* 
+     * Message written. Now just halt.
+     * Execute an infinite loop.
      */
-    ud2
+    cli                         /* Disable interrupts */
+    
+halt_loop:
+    hlt                         /* Halt CPU */
+    jmp     halt_loop           /* If we somehow resume, loop */

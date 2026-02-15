@@ -1,16 +1,27 @@
 /*
  * elf_loader.h — NumOS minimal ELF64 loader (kernel side)
  *
- * Loads a static ELF64 executable from the FAT32 filesystem, maps
- * its PT_LOAD segments into low physical memory (identity-mapped),
- * installs ring-3 GDT descriptors, sets up a user stack, and
- * transfers control via iretq.
+ * Loads a static or position-independent ELF64 executable from the FAT32
+ * filesystem, copies its PT_LOAD segments into low physical memory
+ * (identity-mapped by the boot page tables), and transfers control via iretq.
  *
  * Scope limitations (by design, for this kernel stage):
- *   - Static executables only.  No dynamic linker, no PLT/GOT.
- *   - Little-endian x86_64 only (matches the host; no byte-swap).
- *   - One process at a time.  exec_user_elf does not return on success.
- *   - No TLS, no shared objects, no relocation.
+ *   - Little-endian x86_64 only.
+ *   - One process at a time; exec_user_elf does not return on success.
+ *   - No TLS, no shared objects.
+ *   - Relocation support: R_X86_64_RELATIVE only (for ET_DYN / PIE).
+ *
+ * GDT layout assumed (must match gdt.c):
+ *   GDT[0] = null
+ *   GDT[1] = kernel code  (0x08)
+ *   GDT[2] = kernel data  (0x10)
+ *   GDT[3] = user data    (0x1B with RPL=3)  ← Data BEFORE Code (sysret requirement)
+ *   GDT[4] = user code    (0x23 with RPL=3)
+ *
+ * iretq fixes:
+ *   - All pushed values use "r" (register) constraints, not "i" (immediate).
+ *   - Interrupts are disabled (cli) before building the iretq frame to prevent
+ *     a timer IRQ from corrupting the partially-built frame.
  */
 
 #ifndef ELF_LOADER_H
@@ -18,13 +29,8 @@
 
 #include "lib/base.h"
 
-/* ─── ELF constants ──────────────────────────────────────────────
- * Only the values we actually check or use are defined here.
- * ─────────────────────────────────────────────────────────────── */
-
-/* ELF Magic: bytes 0x7F 'E' 'L' 'F' (0x7F 0x45 0x4C 0x46)
- * When interpreted as a little-endian uint32_t, this becomes 0x464C457F
- * (least significant byte first: 0x7F, then 0x45, 0x4C, 0x46) */
+/* ─── ELF magic ─────────────────────────────────────────────────
+ * 0x7F 'E' 'L' 'F' as little-endian uint32_t = 0x464C457F         */
 #define ELF_MAGIC       0x464C457F
 
 /* e_ident byte indices */
@@ -35,7 +41,7 @@
 #define ELFCLASS64      2
 
 /* e_ident data encoding */
-#define ELFDATA2LSB     1            /* Little-endian */
+#define ELFDATA2LSB     1
 
 /* e_machine */
 #define EM_X86_64       62
@@ -44,7 +50,7 @@
 #define ET_EXEC         2
 #define ET_DYN          3
 
-/* Section-header type */
+/* Section-header types */
 #define SHT_RELA        4
 #define SHT_SYMTAB      2
 #define SHT_STRTAB      3
@@ -54,79 +60,73 @@
 #define R_X86_64_GLOB_DAT   6
 #define R_X86_64_JUMP_SLOT  7
 
-/* ─── ELF64 file header (64 bytes) ───────────────────────────────
- * Every field is present so that sizeof(struct elf64_ehdr) == 64
- * and pointer arithmetic over the program-header table is correct.
- * ─────────────────────────────────────────────────────────────── */
+/* ─── ELF64 file header (64 bytes) ─────────────────────────────── */
 struct elf64_ehdr {
-    uint8_t  e_ident[16];       /* Magic, class, data, version, ...  */
-    uint16_t e_type;            /* ET_EXEC = 2                       */
-    uint16_t e_machine;         /* EM_X86_64 = 62                    */
-    uint32_t e_version;         /* 1                                 */
-    uint64_t e_entry;           /* Entry point virtual address       */
-    uint64_t e_phoff;           /* Program-header table byte offset  */
-    uint64_t e_shoff;           /* Section-header offset (unused)    */
-    uint32_t e_flags;           /* Processor flags                   */
-    uint16_t e_ehsize;          /* ELF header size in bytes (64)     */
-    uint16_t e_phentsize;       /* Bytes per program-header entry    */
-    uint16_t e_phnum;           /* Number of program-header entries  */
-    uint16_t e_shentsize;       /* Bytes per section-header entry    */
-    uint16_t e_shnum;           /* Number of section-header entries  */
-    uint16_t e_shstrndx;        /* Section-header string-table index */
+    uint8_t  e_ident[16];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint64_t e_entry;
+    uint64_t e_phoff;
+    uint64_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
 } __attribute__((packed));
 
-/* ─── ELF64 program header (56 bytes) ────────────────────────────
- * sizeof must be 56 for e_phoff + i * e_phentsize to work.
- * ─────────────────────────────────────────────────────────────── */
+/* ─── ELF64 program header (56 bytes) ───────────────────────────── */
 struct elf64_phdr {
-    uint32_t p_type;            /* PT_LOAD, PT_NOTE, ...             */
-    uint32_t p_flags;           /* PF_R | PF_W | PF_X                */
-    uint64_t p_offset;          /* Byte offset in the ELF file       */
-    uint64_t p_vaddr;           /* Virtual address to load at        */
-    uint64_t p_paddr;           /* Physical address (= p_vaddr here) */
-    uint64_t p_filesz;          /* Bytes to copy from the file       */
-    uint64_t p_memsz;           /* Bytes in memory (≥ p_filesz)      */
-    uint64_t p_align;           /* Alignment requirement             */
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
 } __attribute__((packed));
 
-/* Program-header type */
+/* p_type values */
 #define PT_LOAD         1
 #define PT_DYNAMIC      2
 
-/* ─── ELF64 section header (64 bytes) ────────────────────────────
- * Needed for accessing relocation and symbol tables
- * ─────────────────────────────────────────────────────────────── */
+/* ─── ELF64 section header (64 bytes) ───────────────────────────── */
 struct elf64_shdr {
-    uint32_t sh_name;           /* Name offset in strtab             */
-    uint32_t sh_type;           /* SHT_PROGBITS, SHT_RELA, etc       */
-    uint64_t sh_flags;          /* SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR */
-    uint64_t sh_addr;           /* Virtual address in memory         */
-    uint64_t sh_offset;         /* File offset                       */
-    uint64_t sh_size;           /* Section size in bytes             */
-    uint32_t sh_link;           /* Link to related section           */
-    uint32_t sh_info;           /* Section info                      */
-    uint64_t sh_addralign;      /* Alignment requirement             */
-    uint64_t sh_entsize;        /* Size of each entry (if table)     */
+    uint32_t sh_name;
+    uint32_t sh_type;
+    uint64_t sh_flags;
+    uint64_t sh_addr;
+    uint64_t sh_offset;
+    uint64_t sh_size;
+    uint32_t sh_link;
+    uint32_t sh_info;
+    uint64_t sh_addralign;
+    uint64_t sh_entsize;
 } __attribute__((packed));
 
-/* ─── ELF64 relocation entry ─────────────────────────────────────
- * For processing relocations
- * ─────────────────────────────────────────────────────────────── */
+/* ─── ELF64 relocation entry ────────────────────────────────────── */
 struct elf64_rela {
-    uint64_t r_offset;          /* Virtual address of relocation site */
-    uint64_t r_info;            /* Relocation type and symbol index   */
-    int64_t  r_addend;          /* Addend for relocation              */
+    uint64_t r_offset;
+    uint64_t r_info;
+    int64_t  r_addend;
 } __attribute__((packed));
 
-/* ─── Public API ─────────────────────────────────────────────────
+/* ─── Public API ────────────────────────────────────────────────── */
+
+/**
  * exec_user_elf(path)
- *   path  - FAT32 path relative to the current directory on the
- *           mounted filesystem.  The caller must have already done
- *           fat32_chdir("init") if the file is in /init.
  *
- *   On success: does NOT return.  Transfers control to user space.
+ *   path  — FAT32 path relative to the current directory on the mounted
+ *            filesystem.  Caller must have already called fat32_chdir("init")
+ *            if the file is in /init.
+ *
+ *   On success: does NOT return.  Transfers control to user space via iretq.
  *   On failure: prints a diagnostic to VGA and returns -1.
- * ─────────────────────────────────────────────────────────────── */
+ */
 int exec_user_elf(const char *path);
 
 #endif /* ELF_LOADER_H */

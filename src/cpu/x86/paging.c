@@ -328,6 +328,59 @@ void paging_flush_page(uint64_t virtual_addr) {
     __asm__ volatile("invlpg (%0)" : : "r"(virtual_addr) : "memory");
 }
 
+/* Mark a virtual range as user-accessible.
+ * Adds PAGE_USER to PD/PT entries where present. Handles 2MB huge pages
+ * by setting the bit in the PD entry and advances by LARGE_PAGE_SIZE.
+ */
+int paging_set_user_range(uint64_t start, uint64_t size) {
+    uint64_t addr = paging_align_down(start, PAGE_SIZE);
+    uint64_t end = paging_align_up(start + size, PAGE_SIZE);
+
+    while (addr < end) {
+        uint64_t pml4_idx = PML4_INDEX(addr);
+        uint64_t pdpt_idx = PDPT_INDEX(addr);
+        uint64_t pd_idx = PD_INDEX(addr);
+
+        struct page_table *pml4 = current_pml4;
+        if (!(pml4->entries[pml4_idx] & PAGE_PRESENT)) {
+            addr += PAGE_SIZE;
+            continue;
+        }
+
+        struct page_table *pdpt = (struct page_table*)(pml4->entries[pml4_idx] & ~0xFFF);
+        if (!(pdpt->entries[pdpt_idx] & PAGE_PRESENT)) {
+            addr += PAGE_SIZE;
+            continue;
+        }
+
+        struct page_table *pd = (struct page_table*)(pdpt->entries[pdpt_idx] & ~0xFFF);
+        if (!(pd->entries[pd_idx] & PAGE_PRESENT)) {
+            addr += PAGE_SIZE;
+            continue;
+        }
+
+        /* If PD entry is a huge (2MB) page, set USER bit on PD entry */
+        if (pd->entries[pd_idx] & PAGE_HUGE) {
+            pd->entries[pd_idx] |= PAGE_USER;
+            paging_flush_page(addr);
+            addr += LARGE_PAGE_SIZE;
+            continue;
+        }
+
+        /* Otherwise operate on PT entry */
+        struct page_table *pt = (struct page_table*)(pd->entries[pd_idx] & ~0xFFF);
+        uint64_t pt_idx = PT_INDEX(addr);
+        if (pt->entries[pt_idx] & PAGE_PRESENT) {
+            pt->entries[pt_idx] |= PAGE_USER;
+            paging_flush_page(addr);
+        }
+
+        addr += PAGE_SIZE;
+    }
+
+    return 0;
+}
+
 /* Physical Memory Manager */
 void pmm_init(struct physical_memory_info *mem_info) {
     total_frames = mem_info->available_memory / PAGE_SIZE;

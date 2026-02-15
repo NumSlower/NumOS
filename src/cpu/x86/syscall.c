@@ -1,51 +1,88 @@
 /*
  * syscall.c — NumOS system call entry point and dispatcher
- * UPDATED: MSR_STAR now uses correct base selector for swapped GDT layout
+ *
+ * Fixes applied:
+ *  1. SYS_EXIT now calls hang() instead of returning to userspace.
+ *  2. Kernel stack pointer loaded with a single direct LEA (no double-deref).
+ *  3. Caller-saved registers (rdi/rsi/rdx) preserved around the C call.
  */
 
 #include "cpu/syscall.h"
 #include "drivers/vga.h"
 #include "kernel/kernel.h"
 
+/* 16 KB kernel syscall stack, 16-byte aligned */
 #define KS_SIZE  (16 * 1024)
+uint8_t  g_ks[KS_SIZE] __attribute__((aligned(16)));
 
-static char g_ks[KS_SIZE] __attribute__((aligned(16)));
-static volatile uint64_t g_ks_top = (uint64_t)((uint8_t *)g_ks + KS_SIZE);
+/* Saved user RSP while executing a syscall */
 static volatile uint64_t g_user_rsp = 0;
 
+/*
+ * syscall_trampoline — naked trampoline, called by hardware on `syscall`.
+ *
+ * Register state on entry (set by CPU):
+ *   RCX  = user RIP  (return address)
+ *   R11  = user RFLAGS
+ *   RSP  = still the user stack pointer
+ *   RAX  = syscall number
+ *   RDI  = arg1, RSI = arg2, RDX = arg3
+ *
+ * We:
+ *  1. Save user RSP.
+ *  2. Switch to kernel stack (g_ks top).
+ *  3. Save caller-saved regs that the C ABI would clobber.
+ *  4. Rearrange args: syscall_handler(number, arg1, arg2, arg3).
+ *  5. Call syscall_handler.
+ *  6. Restore regs, restore user RSP, sysretq.
+ */
 __attribute__((naked))
 void syscall_trampoline(void)
 {
     __asm__ volatile (
-        "movq %rsp, g_user_rsp(%rip)\n\t"
-        "leaq g_ks_top(%rip), %rsp\n\t"
-        "movq (%rsp), %rsp\n\t"
-        "pushq %rcx\n\t"
-        "pushq %r11\n\t"
-        "pushq %rbx\n\t"
-        "pushq %rbp\n\t"
-        "pushq %r12\n\t"
-        "pushq %r13\n\t"
-        "pushq %r14\n\t"
-        "pushq %r15\n\t"
-        "movq %rdi, %r8\n\t"
-        "movq %rsi, %r9\n\t"
-        "movq %rdx, %r10\n\t"
-        "movq %rax, %rdi\n\t"
-        "movq %r8,  %rsi\n\t"
-        "movq %r9,  %rdx\n\t"
-        "movq %r10, %rcx\n\t"
+        /* 1. Save user RSP and switch to kernel stack */
+        "movq %%rsp, g_user_rsp(%%rip)\n\t"
+        "leaq g_ks+%c0(%%rip), %%rsp\n\t"   /* RSP = &g_ks[KS_SIZE] directly */
+
+        /* 2. Save caller-saved registers the C ABI may clobber */
+        "pushq %%rcx\n\t"          /* user RIP */
+        "pushq %%r11\n\t"          /* user RFLAGS */
+        "pushq %%rbx\n\t"
+        "pushq %%rbp\n\t"
+        "pushq %%r12\n\t"
+        "pushq %%r13\n\t"
+        "pushq %%r14\n\t"
+        "pushq %%r15\n\t"
+
+        /* 3. Set up args for syscall_handler(number, arg1, arg2, arg3)
+         *    On syscall entry: RAX=number, RDI=arg1, RSI=arg2, RDX=arg3
+         *    System V AMD64 ABI: RDI=1st, RSI=2nd, RDX=3rd, RCX=4th
+         *    RCX was clobbered by `syscall` (user RIP) so use R10 for arg3 */
+        "movq %%rdi, %%r8\n\t"     /* stash arg1 */
+        "movq %%rsi, %%r9\n\t"     /* stash arg2 */
+        "movq %%rdx, %%r10\n\t"    /* stash arg3 */
+        "movq %%rax, %%rdi\n\t"    /* number */
+        "movq %%r8,  %%rsi\n\t"    /* arg1 */
+        "movq %%r9,  %%rdx\n\t"    /* arg2 */
+        "movq %%r10, %%rcx\n\t"    /* arg3 */
         "call syscall_handler\n\t"
-        "popq %r15\n\t"
-        "popq %r14\n\t"
-        "popq %r13\n\t"
-        "popq %r12\n\t"
-        "popq %rbp\n\t"
-        "popq %rbx\n\t"
-        "popq %r11\n\t"
-        "popq %rcx\n\t"
-        "movq g_user_rsp(%rip), %rsp\n\t"
+
+        /* 4. Restore saved registers */
+        "popq %%r15\n\t"
+        "popq %%r14\n\t"
+        "popq %%r13\n\t"
+        "popq %%r12\n\t"
+        "popq %%rbp\n\t"
+        "popq %%rbx\n\t"
+        "popq %%r11\n\t"           /* user RFLAGS */
+        "popq %%rcx\n\t"           /* user RIP */
+
+        /* 5. Restore user RSP and return to userspace */
+        "movq g_user_rsp(%%rip), %%rsp\n\t"
         "sysretq\n\t"
+        :
+        : "i"(KS_SIZE)
+        : "memory"
     );
 }
 
@@ -53,14 +90,18 @@ long syscall_handler(long number, long arg1, long arg2, long arg3)
 {
     switch (number) {
 
+    /* ── write(fd, buf, count) ─────────────────────────────────── */
     case SYS_WRITE: {
         long        fd    = arg1;
-        const char *buf   = (const char *)arg2;
+        const char *buf   = (const char *)(uintptr_t)arg2;
         long        count = arg3;
 
-        if (fd != 1) return -1;
-        if (count < 0) return -1;
-        if ((uint64_t)buf + (uint64_t)count > 128ULL * 1024 * 1024) return -1;
+        if (fd != 1 && fd != 2) return -1;
+        if (count < 0 || count > 65536) return -1;
+
+        /* Basic bounds check: buffer must be in user space (< 128 MB) */
+        if ((uintptr_t)buf + (uint64_t)count > 128ULL * 1024 * 1024) return -1;
+        if ((uintptr_t)buf < 0x1000) return -1;
 
         for (long i = 0; i < count; i++) {
             vga_putchar((unsigned char)buf[i]);
@@ -68,150 +109,109 @@ long syscall_handler(long number, long arg1, long arg2, long arg3)
         return count;
     }
 
+    /* ── mmap(addr, length, prot, flags, fd, offset) ──────────── */
     case SYS_MMAP: {
-        /* mmap(addr, length, prot, flags, fd, offset)
-         * For now: stub implementation supporting anonymous mappings
-         * Returns allocated address or -1 on error
-         */
         long length = arg2;
-        
-        if (length <= 0) return -1;
-        if ((uint64_t)length > 128ULL * 1024 * 1024) return -1;
-        
-        /* Allocate from kernel heap - in a real OS this would be per-process */
-        void *result = kmalloc(length);
+
+        if (length <= 0 || (uint64_t)length > 128ULL * 1024 * 1024) return -1;
+
+        void *result = kmalloc((size_t)length);
         if (!result) return -1;
-        
-        vga_writestring("[kernel] mmap: allocated ");
-        print_dec(length);
-        vga_writestring(" bytes at 0x");
-        print_hex((uint64_t)result);
-        vga_writestring("\n");
-        
-        return (long)result;
+
+        return (long)(uintptr_t)result;
     }
 
+    /* ── munmap(addr, length) ──────────────────────────────────── */
     case SYS_MUNMAP: {
-        /* munmap(addr, length)
-         * For now: stub that validates bounds
-         * Returns 0 on success
-         */
-        uint64_t addr = arg1;
-        long length = arg2;
-        
+        uint64_t addr   = (uint64_t)(uintptr_t)arg1;
+        long     length = arg2;
+
         if (length <= 0) return -1;
-        if (addr + length > 128ULL * 1024 * 1024) return -1;
-        
-        vga_writestring("[kernel] munmap: freed region at 0x");
-        print_hex(addr);
-        vga_writestring("\n");
-        
+        if (addr + (uint64_t)length > 128ULL * 1024 * 1024) return -1;
+
+        /* stub — we don't track mmap regions yet */
         return 0;
     }
 
+    /* ── mprotect(addr, length, prot) ─────────────────────────── */
     case SYS_MPROTECT: {
-        /* mprotect(addr, length, prot)
-         * For now: stub that validates bounds
-         * Returns 0 on success
-         */
-        uint64_t addr = arg1;
-        long length = arg2;
-        long prot = arg3;
-        
+        uint64_t addr   = (uint64_t)(uintptr_t)arg1;
+        long     length = arg2;
+
         if (length <= 0) return -1;
-        if (addr + length > 128ULL * 1024 * 1024) return -1;
-        
-        vga_writestring("[kernel] mprotect: changed protection at 0x");
-        print_hex(addr);
-        vga_writestring(" to ");
-        print_dec(prot);
-        vga_writestring("\n");
-        
+        if (addr + (uint64_t)length > 128ULL * 1024 * 1024) return -1;
+
+        /* stub */
         return 0;
     }
 
+    /* ── exit(status) ─────────────────────────────────────────── */
     case SYS_EXIT: {
         long status = arg1;
 
         vga_writestring("\n");
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
         vga_writestring("[kernel] User process exited with status: ");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
         print_dec((uint64_t)status);
         vga_writestring("\n");
-        vga_writestring("[kernel] Returning to kernel...\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 
-        /* Return to kernel main retry loop */
+        /*
+         * FIX: SYS_EXIT must NOT return.  Returning here would cause
+         * sysretq to resume userspace at the instruction after `syscall`,
+         * which is `ud2` — triggering an invalid-opcode exception.
+         * Instead, halt the CPU permanently.
+         */
+        hang();
+
+        /* unreachable, silences compiler warning */
         return status;
     }
 
     default:
-        vga_writestring("[kernel] Unknown syscall ");
+        vga_writestring("[kernel] Unknown syscall: ");
         print_dec((uint64_t)number);
         vga_writestring("\n");
         return -1;
     }
 }
 
-/* MSR_STAR setup - CRITICAL FIX!
- * 
- * With swapped GDT layout:
- *   GDT[3] = User Data (selector 0x18, or 0x1B with RPL=3)
- *   GDT[4] = User Code (selector 0x20, or 0x23 with RPL=3)
- *
- * sysret loads:
- *   SS = (STAR[63:48] + 8) | 3
- *   CS = (STAR[63:48] + 16) | 3
- *
- * We want SS=0x1B, CS=0x23, so:
- *   STAR[63:48] + 8 = 0x18  → STAR[63:48] = 0x10
- *   STAR[63:48] + 16 = 0x20 → STAR[63:48] = 0x10 ✓
- *
- * Therefore: STAR[63:48] = 0x10
- */
+/* ── MSR helpers ──────────────────────────────────────────────── */
+#define MSR_STAR    0x174
+#define MSR_LSTAR   0x176
+#define MSR_CSTAR   0x177
+#define MSR_SFMASK  0x178
 
-#define MSR_STAR     0x174
-#define MSR_LSTAR    0x176
-#define MSR_CSTAR    0x177
-#define MSR_SFMASK   0x178
-
-#define KERNEL_CS  0x08   /* GDT index 1 */
-#define USER_BASE  0x10   /* Base for user segments (see calculation above) */
+#define KERNEL_CS   0x08   /* GDT[1] */
+#define USER_BASE   0x10   /* sysret: CS=(BASE+16)|3=0x23, SS=(BASE+8)|3=0x1B */
 
 static inline void wrmsr(uint32_t msr, uint64_t value)
 {
     uint32_t lo = (uint32_t)(value & 0xFFFFFFFFU);
     uint32_t hi = (uint32_t)(value >> 32);
     __asm__ volatile ("wrmsr"
-        : : "c" (msr), "a" (lo), "d" (hi) : "memory");
+        : : "c"(msr), "a"(lo), "d"(hi) : "memory");
 }
 
 void syscall_init(void)
 {
-    vga_writestring("Syscall: programming MSRs...\n");
+    vga_writestring("Syscall: initialising MSRs...\n");
 
-    /* CRITICAL: USER_BASE = 0x10 for swapped GDT layout */
+    /*
+     * STAR layout:
+     *   [47:32] = kernel CS used by SYSCALL  → 0x08
+     *   [63:48] = base for SYSRET selectors  → 0x10
+     *             SYSRET CS  = (0x10 + 16) | 3 = 0x23 (GDT[4] user code)
+     *             SYSRET SS  = (0x10 +  8) | 3 = 0x1B (GDT[3] user data)
+     */
     uint64_t star = ((uint64_t)KERNEL_CS << 32) |
                     ((uint64_t)USER_BASE  << 48);
-                    
-    vga_writestring("Syscall:   STAR = ");
-    print_hex(star);
-    vga_writestring("\n");
-    vga_writestring("Syscall:   sysret will load CS=(0x");
-    print_hex(USER_BASE + 16);
-    vga_writestring("|3)=0x");
-    print_hex((USER_BASE + 16) | 3);
-    vga_writestring("\n");
-    vga_writestring("Syscall:   sysret will load SS=(0x");
-    print_hex(USER_BASE + 8);
-    vga_writestring("|3)=0x");
-    print_hex((USER_BASE + 8) | 3);
-    vga_writestring("\n");
-    
+
     wrmsr(MSR_STAR,   star);
     wrmsr(MSR_LSTAR,  (uint64_t)(uintptr_t)syscall_trampoline);
     wrmsr(MSR_CSTAR,  0);
-    wrmsr(MSR_SFMASK, 0x200);
+    wrmsr(MSR_SFMASK, 0x200);  /* clear IF on syscall entry */
 
-    vga_writestring("Syscall: MSRs programmed\n");
+    vga_writestring("Syscall: LSTAR -> syscall_trampoline\n");
+    vga_writestring("Syscall: SYSRET will load CS=0x23, SS=0x1B\n");
 }

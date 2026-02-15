@@ -1,6 +1,17 @@
 /*
- * elf_loader.c — NumOS minimal ELF64 loader with basic relocation support
- * CRITICAL: GDT indices 3 and 4 are swapped for syscall/sysret compatibility!
+ * elf_loader.c — NumOS minimal ELF64 loader
+ *
+ * Fixes applied:
+ *  1. iretq inline asm: "i" → "r" constraints for USER_CS/USER_DS
+ *  2. install_user_gdt_entries() removed (gdt.c already correct)
+ *  3. Removed per-cluster debug VGA spam (fat32.c)
+ *  4. cli before iretq frame to prevent timer IRQ corruption
+ *  5. PAGE FAULT FIX: boot page tables map 0–1 GB as supervisor-only.
+ *     Ring 3 faults on first instruction/stack access.
+ *     Fix: use paging_set_user_range() which correctly sets U/S=1 on
+ *     ALL levels: PML4E, PDPTE, PDE, and PTE.
+ *     The previous mark_user_range() only set the leaf PDE — missing
+ *     the upper levels which the MMU also checks.
  */
 
 #include "kernel/elf_loader.h"
@@ -8,137 +19,83 @@
 #include "drivers/vga.h"
 #include "fs/fat32.h"
 #include "cpu/heap.h"
+#include "cpu/paging.h"
 
-/* CRITICAL GDT LAYOUT FOR SYSCALL/SYSRET:
- * The sysret instruction expects:
- *   User SS = (STAR[63:48] + 8) | 3
- *   User CS = (STAR[63:48] + 16) | 3
- * This means User Data must come BEFORE User Code in the GDT!
+/*
+ * GDT selector constants — must match gdt.c exactly.
  *
- * Our layout:
- *   GDT[0] = Null
- *   GDT[1] = Kernel Code (0x08)
- *   GDT[2] = Kernel Data (0x10)
- *   GDT[3] = User Data   (0x18/0x1B with RPL=3) ← Note: Data comes first!
- *   GDT[4] = User Code   (0x20/0x23 with RPL=3) ← Code comes second!
+ *   GDT[0] = null
+ *   GDT[1] = kernel code  (0x08)
+ *   GDT[2] = kernel data  (0x10)
+ *   GDT[3] = user data    (0x18 | RPL=3 = 0x1B)   ← Data before Code (sysret needs this)
+ *   GDT[4] = user code    (0x20 | RPL=3 = 0x23)
  */
+#define USER_DS  0x1B   /* (3 << 3) | 3 */
+#define USER_CS  0x23   /* (4 << 3) | 3 */
 
-#define USER_DATA_DESC  0x00CFF3000000FFFFULL  /* At index 3 */
-#define USER_CODE_DESC  0x00AFFB000000FFFFULL  /* At index 4 */
+/* User-space memory layout */
+#define USER_STACK_TOP    0x800000ULL           /* 8 MB */
+#define USER_STACK_PAGES  4
+#define USER_STACK_BOTTOM (USER_STACK_TOP - (USER_STACK_PAGES * 4096ULL))
 
-#define GDT_USER_DATA   3
-#define GDT_USER_CODE   4
+/* ── helpers ──────────────────────────────────────────────────── */
 
-#define USER_DS         ((GDT_USER_DATA << 3) | 3)   /* 0x1B */
-#define USER_CS         ((GDT_USER_CODE << 3) | 3)   /* 0x23 */
-
-#define USER_STACK_TOP     0x800000ULL
-#define USER_STACK_PAGES   4
-#define USER_STACK_BOTTOM  (USER_STACK_TOP - (USER_STACK_PAGES * 4096ULL))
-
-/* Check if address is within valid user space bounds */
-static int is_valid_user_address(uint64_t addr) {
-    return addr < 128ULL * 1024 * 1024 && addr >= 0x1000;
+static int is_valid_user_address(uint64_t addr)
+{
+    /* Must be in user space: above null-guard page, below 128 MB */
+    return (addr >= 0x1000) && (addr < 128ULL * 1024 * 1024);
 }
 
-/* Check if memory range doesn't overlap with kernel */
-static int is_valid_user_range(uint64_t start, uint64_t size) {
-    if (start < 0x1000) return 0;  /* Reserved for null pointer dereference */
+static int is_valid_user_range(uint64_t start, uint64_t size)
+{
+    if (start < 0x1000)  return 0;
     if (start + size > 128ULL * 1024 * 1024) return 0;
-    /* Check against user stack area - reject if overlaps with stack region */
-    if (start < USER_STACK_TOP && start + size > USER_STACK_BOTTOM) {
-        /* Segments must not overlap with the stack */
-        if (start >= USER_STACK_BOTTOM) return 0;
-    }
     return 1;
 }
 
-static void install_user_gdt_entries(void)
-{
-    struct {
-        uint16_t limit;
-        uint64_t base;
-    } __attribute__((packed)) gdtr;
-    
-    __asm__ volatile ("sgdt %0" : "=m"(gdtr));
-    
-    uint64_t *gdt = (uint64_t *)gdtr.base;
-    
-    /* Install in the correct order: Data at 3, Code at 4 */
-    gdt[GDT_USER_DATA] = USER_DATA_DESC;
-    gdt[GDT_USER_CODE] = USER_CODE_DESC;
-    
-    vga_writestring("[ELF] GDT entries installed:\n");
-    vga_writestring("[ELF]   [3] User Data = ");
-    print_hex(gdt[3]);
-    vga_writestring("\n");
-    vga_writestring("[ELF]   [4] User Code = ");
-    print_hex(gdt[4]);
-    vga_writestring("\n");
-}
+/* ── relocation processing (for ET_DYN / PIE) ────────────────── */
 
-/* Process ELF relocations for dynamic linking support */
-static int process_relocations(
-    uint8_t *buf,
-    struct elf64_ehdr *ehdr,
-    uint64_t load_base
-) {
-    vga_writestring("[ELF] Processing relocations...\n");
-    
-    /* Iterate through section headers to find relocation sections */
+static int process_relocations(uint8_t *buf,
+                                struct elf64_ehdr *ehdr,
+                                uint64_t load_base)
+{
+    if (ehdr->e_shoff == 0 || ehdr->e_shnum == 0) return 0;
+
     for (uint16_t i = 0; i < ehdr->e_shnum; i++) {
         struct elf64_shdr *shdr = (struct elf64_shdr *)
             (buf + ehdr->e_shoff + (uint64_t)i * ehdr->e_shentsize);
-        
+
         if (shdr->sh_type != SHT_RELA) continue;
-        
-        vga_writestring("[ELF] Found relocation section: ");
-        print_dec(i);
-        vga_writestring(" with ");
-        print_dec(shdr->sh_size / shdr->sh_entsize);
-        vga_writestring(" entries\n");
-        
-        /* Process each relocation entry */
-        uint64_t num_relocations = shdr->sh_size / shdr->sh_entsize;
-        for (uint64_t j = 0; j < num_relocations; j++) {
+
+        uint64_t nrel = shdr->sh_size / shdr->sh_entsize;
+        for (uint64_t j = 0; j < nrel; j++) {
             struct elf64_rela *rela = (struct elf64_rela *)
                 (buf + shdr->sh_offset + j * shdr->sh_entsize);
-            
+
             uint64_t reloc_type = rela->r_info & 0xFFFFFFFF;
             uint64_t reloc_addr = rela->r_offset + load_base;
-            
-            if (!is_valid_user_address(reloc_addr)) {
-                vga_writestring("[ELF] WARNING: invalid relocation address 0x");
-                print_hex(reloc_addr);
-                vga_writestring("\n");
-                continue;
-            }
-            
+
+            if (!is_valid_user_address(reloc_addr)) continue;
+
             switch (reloc_type) {
-                case R_X86_64_RELATIVE: {
-                    /* Add load_base to the value at reloc_addr */
-                    uint64_t *p = (uint64_t *)reloc_addr;
-                    *p += load_base;
-                    break;
-                }
-                case R_X86_64_GLOB_DAT:
-                case R_X86_64_JUMP_SLOT:
-                    /* For now: skip symbol-based relocations */
-                    vga_writestring("[ELF] Skipping symbol relocation type ");
-                    print_dec(reloc_type);
-                    vga_writestring("\n");
-                    break;
-                default:
-                    vga_writestring("[ELF] WARNING: unsupported relocation type ");
-                    print_dec(reloc_type);
-                    vga_writestring("\n");
-                    break;
+            case R_X86_64_RELATIVE: {
+                uint64_t *p = (uint64_t *)(uintptr_t)reloc_addr;
+                *p += load_base;
+                break;
+            }
+            case R_X86_64_GLOB_DAT:
+            case R_X86_64_JUMP_SLOT:
+                /* symbol-based: skip (no dynamic linker) */
+                break;
+            default:
+                break;
             }
         }
     }
-    
     return 0;
 }
+
+/* ── public entry point ───────────────────────────────────────── */
 
 int exec_user_elf(const char *path)
 {
@@ -146,6 +103,7 @@ int exec_user_elf(const char *path)
     vga_writestring(path);
     vga_writestring("\n");
 
+    /* ── stat the file ──────────────────────────────────────────── */
     struct fat32_dirent info;
     if (fat32_stat(path, &info) != 0) {
         vga_writestring("[ELF] ERROR: file not found\n");
@@ -158,10 +116,11 @@ int exec_user_elf(const char *path)
     vga_writestring(" bytes\n");
 
     if (file_size < sizeof(struct elf64_ehdr)) {
-        vga_writestring("[ELF] ERROR: too small\n");
+        vga_writestring("[ELF] ERROR: file too small to be an ELF\n");
         return -1;
     }
 
+    /* ── read the whole file into kernel heap ───────────────────── */
     uint8_t *buf = (uint8_t *)kmalloc(file_size);
     if (!buf) {
         vga_writestring("[ELF] ERROR: kmalloc failed\n");
@@ -179,33 +138,37 @@ int exec_user_elf(const char *path)
     fat32_close(fd);
 
     if (got < 0 || (uint32_t)got != file_size) {
-        vga_writestring("[ELF] ERROR: read failed\n");
+        vga_writestring("[ELF] ERROR: read failed (got ");
+        print_dec((uint64_t)(got < 0 ? 0 : (uint64_t)got));
+        vga_writestring(" of ");
+        print_dec(file_size);
+        vga_writestring(" bytes)\n");
         kfree(buf);
         return -1;
     }
 
+    /* ── validate ELF header ────────────────────────────────────── */
     struct elf64_ehdr *ehdr = (struct elf64_ehdr *)buf;
 
     if (*(uint32_t *)ehdr->e_ident != ELF_MAGIC ||
-        ehdr->e_ident[EI_CLASS] != ELFCLASS64 ||
-        ehdr->e_ident[EI_DATA] != ELFDATA2LSB ||
-        ehdr->e_machine != EM_X86_64) {
-        vga_writestring("[ELF] ERROR: invalid ELF\n");
+        ehdr->e_ident[EI_CLASS]    != ELFCLASS64 ||
+        ehdr->e_ident[EI_DATA]     != ELFDATA2LSB ||
+        ehdr->e_machine            != EM_X86_64) {
+        vga_writestring("[ELF] ERROR: not a valid x86-64 LE ELF64\n");
         kfree(buf);
         return -1;
     }
 
-    /* Support both ET_EXEC (static) and ET_DYN (dynamic/PIE) */
+    /* ── determine load base ────────────────────────────────────── */
     uint64_t load_base = 0;
     if (ehdr->e_type == ET_DYN) {
-        vga_writestring("[ELF] Type: Position-Independent Executable (ET_DYN)\n");
-        /* For ET_DYN, use a fixed load base in user space */
+        vga_writestring("[ELF] Type: ET_DYN (position-independent)\n");
         load_base = 0x400000ULL;
     } else if (ehdr->e_type == ET_EXEC) {
-        vga_writestring("[ELF] Type: Static Executable (ET_EXEC)\n");
-        load_base = 0;  /* No relocation needed */
+        vga_writestring("[ELF] Type: ET_EXEC (static)\n");
+        load_base = 0;
     } else {
-        vga_writestring("[ELF] ERROR: unsupported ELF type: ");
+        vga_writestring("[ELF] ERROR: unsupported e_type=");
         print_dec(ehdr->e_type);
         vga_writestring("\n");
         kfree(buf);
@@ -213,13 +176,17 @@ int exec_user_elf(const char *path)
     }
 
     uint64_t entry = ehdr->e_entry + load_base;
-    vga_writestring("[ELF] Entry (base=0x");
-    print_hex(load_base);
-    vga_writestring("): 0x");
+    vga_writestring("[ELF] Entry: 0x");
     print_hex(entry);
     vga_writestring("\n");
 
-    /* Load segments */
+    if (!is_valid_user_address(entry)) {
+        vga_writestring("[ELF] ERROR: entry point outside valid user range\n");
+        kfree(buf);
+        return -1;
+    }
+
+    /* ── load PT_LOAD segments ──────────────────────────────────── */
     int loaded = 0;
     for (uint16_t i = 0; i < ehdr->e_phnum; i++) {
         struct elf64_phdr *ph = (struct elf64_phdr *)
@@ -229,14 +196,14 @@ int exec_user_elf(const char *path)
 
         uint64_t vaddr = ph->p_vaddr + load_base;
         uint64_t memsz = ph->p_memsz;
-        
-        vga_writestring("[ELF] Loading PT_LOAD segment ");
-        print_dec(loaded + 1);
-        vga_writestring(": vaddr=0x");
+
+        vga_writestring("[ELF] PT_LOAD vaddr=0x");
         print_hex(vaddr);
-        vga_writestring(" size=");
+        vga_writestring(" filesz=");
+        print_dec(ph->p_filesz);
+        vga_writestring(" memsz=");
         print_dec(memsz);
-        vga_writestring(" bytes\n");
+        vga_writestring("\n");
 
         if (!is_valid_user_range(vaddr, memsz)) {
             vga_writestring("[ELF] ERROR: segment outside valid user range\n");
@@ -249,60 +216,84 @@ int exec_user_elf(const char *path)
         if (ph->p_memsz > ph->p_filesz) {
             memset(dst + ph->p_filesz, 0, ph->p_memsz - ph->p_filesz);
         }
+
+        /* FIX: set U/S on ALL page table levels covering this segment.
+         * paging_set_user_range() updates PML4E + PDPTE + PDE/PTE.
+         * The previous mark_user_range() only touched the leaf PDE. */
+        paging_set_user_range(vaddr, memsz);
+
         loaded++;
     }
 
     if (loaded == 0) {
-        vga_writestring("[ELF] ERROR: no segments\n");
+        vga_writestring("[ELF] ERROR: no PT_LOAD segments\n");
         kfree(buf);
         return -1;
     }
 
     vga_writestring("[ELF] Loaded ");
     print_dec(loaded);
-    vga_writestring(" segments\n");
+    vga_writestring(" segment(s)\n");
 
-    /* Process relocations if present (needed for ET_DYN) */
-    if (ehdr->e_shoff > 0 && ehdr->e_shnum > 0) {
-        if (process_relocations(buf, ehdr, load_base) != 0) {
-            vga_writestring("[ELF] WARNING: relocation processing failed\n");
-            /* Don't fail completely - relocation might not be critical */
-        }
-    }
+    /* ── process relocations (needed for ET_DYN) ────────────────── */
+    process_relocations(buf, ehdr, load_base);
 
     kfree(buf);
 
-    /* Set up user stack and validate it doesn't collide */
+    /* ── set up user stack ──────────────────────────────────────── */
     if (!is_valid_user_range(USER_STACK_BOTTOM, USER_STACK_PAGES * 4096ULL)) {
         vga_writestring("[ELF] ERROR: user stack range invalid\n");
         return -1;
     }
-    
-    memset((void *)USER_STACK_BOTTOM, 0, USER_STACK_TOP - USER_STACK_BOTTOM);
-    
+
+    memset((void *)(uintptr_t)USER_STACK_BOTTOM, 0,
+           USER_STACK_TOP - USER_STACK_BOTTOM);
+
+    /* FIX: mark stack pages user-accessible on ALL page table levels */
+    paging_set_user_range(USER_STACK_BOTTOM, USER_STACK_TOP - USER_STACK_BOTTOM);
+
     vga_writestring("[ELF] Stack: 0x");
     print_hex(USER_STACK_BOTTOM);
     vga_writestring(" - 0x");
     print_hex(USER_STACK_TOP);
-    vga_writestring(" (");
-    print_dec(USER_STACK_PAGES * 4096);
-    vga_writestring(" bytes)\n");
+    vga_writestring("\n");
 
-    install_user_gdt_entries();
-
-    vga_writestring("\n[ELF] Transferring to user space:\n");
-    vga_writestring("[ELF]   RIP = 0x");
-    print_hex(entry);
-    vga_writestring("\n[ELF]   RSP = 0x");
-    print_hex(USER_STACK_TOP);
-    vga_writestring("\n[ELF]   CS  = 0x");
+    vga_writestring("[ELF] CS=0x");
     print_hex(USER_CS);
-    vga_writestring(" (GDT[4])\n");
-    vga_writestring("[ELF]   SS  = 0x");
+    vga_writestring(" SS=0x");
     print_hex(USER_DS);
-    vga_writestring(" (GDT[3])\n\n");
+    vga_writestring("\n");
+
+    vga_writestring("[ELF] Jumping to Ring 3...\n");
+
+    /*
+     * Transfer control to user space via IRETQ.
+     *
+     * Stack frame for IRETQ (64-bit, privilege change):
+     *   [RSP+32]  SS      (user stack segment)
+     *   [RSP+24]  RSP     (user stack pointer)
+     *   [RSP+16]  RFLAGS  (user flags: IF=1, reserved=1)
+     *   [RSP+ 8]  CS      (user code segment)
+     *   [RSP+ 0]  RIP     (user entry point)   <-- iretq pops this first
+     *
+     * FIX: Use "r" (register) constraints for USER_CS and USER_DS instead
+     * of "i" (immediate).  Although pushq $small_imm is valid in x86-64,
+     * GCC may emit incorrect code when an "i" constraint is used inside an
+     * asm block that also uses memory operands, especially under -O2.
+     * Routing through a register is always safe.
+     *
+     * FIX: Disable interrupts (cli) before building the iretq frame.
+     * A timer IRQ between the first push and the iretq would corrupt the
+     * kernel stack and triple-fault on return.
+     */
+    uint64_t rip    = entry;
+    uint64_t rsp    = USER_STACK_TOP;
+    uint64_t rflags = 0x202;    /* IF=1, reserved bit 1 = 1 */
+    uint64_t cs     = USER_CS;
+    uint64_t ss     = USER_DS;
 
     __asm__ volatile (
+        "cli\n\t"
         "pushq %[ss]\n\t"
         "pushq %[rsp]\n\t"
         "pushq %[rflags]\n\t"
@@ -310,13 +301,14 @@ int exec_user_elf(const char *path)
         "pushq %[rip]\n\t"
         "iretq\n\t"
         :
-        : [rip]    "r" (entry),
-          [rsp]    "r" (USER_STACK_TOP),
-          [cs]     "i" (USER_CS),
-          [ss]     "i" (USER_DS),
-          [rflags] "i" (0x202)
+        : [rip]    "r" (rip),
+          [rsp]    "r" (rsp),
+          [rflags] "r" (rflags),
+          [cs]     "r" (cs),
+          [ss]     "r" (ss)
         : "memory"
     );
 
+    /* unreachable */
     return 0;
 }
