@@ -8,7 +8,6 @@
 #include "cpu/gdt.h"
 #include "cpu/idt.h"
 #include "cpu/paging.h"
-#include "cpu/tss.h"
 #include "drivers/pic.h"
 #include "drivers/timer.h"
 #include "drivers/ata.h"
@@ -29,9 +28,9 @@ void kernel_init(void) {
     vga_writestring("Loading GDT...\n");
     gdt_init();
 
+    /* Initialize IDT */
+    vga_writestring("Loading IDT...\n");
     idt_init();
-
-    tss_init();
     
     /* Initialize enhanced paging system */
     vga_writestring("Initializing paging system...\n");

@@ -28,7 +28,6 @@ BUILD_KERNEL := $(BUILD_DIR)/kernel
 ISO_DIR := $(BUILD_DIR)/iso
 GRUB_DIR := $(ISO_DIR)/boot/grub
 TOOLS_DIR := tools
-USER_SPACE_DIR := user_space
 
 # ==============================
 #  FLAGS
