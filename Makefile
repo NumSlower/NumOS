@@ -1,5 +1,9 @@
 ################################################################################
-#  NUMOS MAKEFILE WITH FAT32 FILESYSTEM SUPPORT + USER SPACE
+#  NUMOS ROOT MAKEFILE
+#
+#  Kernel and disk image build.
+#  User-space programs live in user/ and are built by user/Makefile.
+#  This file never compiles user code directly.
 ################################################################################
 
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
@@ -13,7 +17,7 @@ else
 endif
 
 # ==============================
-#  TOOLCHAIN
+#  TOOLCHAIN  (kernel only)
 # ==============================
 AS := nasm
 CC := x86_64-elf-gcc
@@ -22,15 +26,17 @@ LD := x86_64-elf-ld
 # ==============================
 #  DIRECTORIES
 # ==============================
-SRC_DIR := src
-BUILD_DIR := build
+SRC_DIR      := src
+BUILD_DIR    := build
 BUILD_KERNEL := $(BUILD_DIR)/kernel
-ISO_DIR := $(BUILD_DIR)/iso
-GRUB_DIR := $(ISO_DIR)/boot/grub
-TOOLS_DIR := tools
+BUILD_USER   := $(BUILD_DIR)/user
+ISO_DIR      := $(BUILD_DIR)/iso
+GRUB_DIR     := $(ISO_DIR)/boot/grub
+TOOLS_DIR    := tools
+USER_DIR     := user
 
 # ==============================
-#  FLAGS
+#  FLAGS  (kernel only)
 # ==============================
 ASFLAGS := -f elf64
 
@@ -41,7 +47,7 @@ KERNEL_CFLAGS := -m64 -ffreestanding -fno-stack-protector -fno-pic \
 LDFLAGS := -T linker.ld -nostdlib --nmagic
 
 # ==============================
-#  SOURCE FILES
+#  KERNEL SOURCE FILES
 # ==============================
 ASM_SOURCES := $(wildcard $(SRC_DIR)/boot/*.asm)
 
@@ -59,15 +65,19 @@ ALL_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS)
 # ==============================
 #  ARTIFACTS
 # ==============================
-KERNEL := $(BUILD_DIR)/kernel.bin
-ISO_FILE := NumOS.iso
+KERNEL     := $(BUILD_DIR)/kernel.bin
+ISO_FILE   := NumOS.iso
 DISK_IMAGE := $(BUILD_DIR)/disk.img
+
+# The ELF that ends up as /init/SHELL on the disk.
+# Built by user/Makefile, installed to build/user/.
+SHELL_ELF  := $(BUILD_USER)/elftest.elf
 
 # ==============================
 #  DEFAULT TARGET
 # ==============================
 .PHONY: all
-all: kernel disk
+all: kernel user_space disk
 
 # ==============================
 #  KERNEL BUILD
@@ -76,34 +86,41 @@ all: kernel disk
 kernel: $(KERNEL)
 
 $(BUILD_KERNEL)/boot/%.o: $(SRC_DIR)/boot/%.asm
-	@echo "[AS] $<"
+	@echo "[AS kernel] $<"
 	@mkdir -p $(BUILD_KERNEL)/boot
 	@$(AS) $(ASFLAGS) $< -o $@
 
 $(BUILD_KERNEL)/%.o: $(SRC_DIR)/%.c
-	@echo "[CC] $<"
+	@echo "[CC kernel] $<"
 	@mkdir -p $(dir $@)
 	@$(CC) $(KERNEL_CFLAGS) $< -o $@
 
 $(KERNEL): $(ALL_KERNEL_OBJECTS)
-	@echo "[LD] Linking kernel..."
+	@echo "[LD kernel] Linking kernel..."
 	@$(LD) $(LDFLAGS) -o $@ $^
-	@echo "[OK] Kernel built: $(KERNEL)"
-
-
+	@echo "[OK] Kernel: $(KERNEL)"
 
 # ==============================
-#  DISK IMAGE CREATION
-#   Depends on user_space so main.elf is guaranteed to exist.
-#   Always rebuilds the disk image (PHONY) because create_disk_fixed.py
-#   embeds the current main.elf.
+#  USER-SPACE BUILD
+#  Delegates entirely to user/Makefile.
+#  No user .asm/.c/.o files are ever touched by this Makefile.
+# ==============================
+.PHONY: user_space
+user_space:
+	@echo "[USER] Building user-space programs..."
+	@$(MAKE) -C $(USER_DIR) install
+	@echo "[USER] Done."
+
+# ==============================
+#  DISK IMAGE
+#  Depends on user_space so elftest.elf is guaranteed to exist first.
 # ==============================
 .PHONY: disk
-disk: 
+disk: user_space
 	@echo "[DISK] Creating FAT32 disk image..."
 	@mkdir -p $(BUILD_DIR)
-	@python3 $(TOOLS_DIR)/create_disk_fixed.py $(DISK_IMAGE) 
-	@echo "[OK] Disk image created: $(DISK_IMAGE)"
+	@python3 $(TOOLS_DIR)/create_disk_fixed.py $(DISK_IMAGE) $(SHELL_ELF)
+	@echo "[OK] Disk image: $(DISK_IMAGE)"
 
 # ==============================
 #  ISO IMAGE (GRUB)
@@ -112,7 +129,7 @@ disk:
 iso: $(ISO_FILE)
 
 $(ISO_FILE): $(KERNEL)
-	@echo "[ISO] Creating bootable ISO image..."
+	@echo "[ISO] Creating bootable ISO..."
 	@mkdir -p $(GRUB_DIR)
 	@cp $(KERNEL) $(ISO_DIR)/boot/kernel.bin
 	@if [ ! -f $(GRUB_DIR)/grub.cfg ]; then \
@@ -123,26 +140,22 @@ $(ISO_FILE): $(KERNEL)
 	fi
 	@grub-mkrescue -o $(ISO_FILE) $(ISO_DIR) 2>/dev/null || \
 		(echo "[ERROR] grub-mkrescue not found. Install grub-pc-bin and xorriso" && false)
-	@echo "[OK] ISO created: $(ISO_FILE)"
+	@echo "[OK] ISO: $(ISO_FILE)"
 
 # ==============================
-#  RUN IN QEMU WITH DISK
+#  RUN IN QEMU
 # ==============================
 .PHONY: run
 run: iso disk
-	@echo "[QEMU] Starting NumOS with disk..."
+	@echo "[QEMU] Starting NumOS..."
 	@qemu-system-x86_64 -m 128M \
 		-boot order=dc \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
 		-serial stdio
 
-# ==============================
-#  RUN WITHOUT GRAPHICS
-# ==============================
 .PHONY: run-nographic
 run-nographic: iso disk
-	@echo "=== Starting NumOS in QEMU (no graphics) with disk ==="
 	qemu-system-x86_64 -m 128M \
 		-boot order=dc \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
@@ -154,24 +167,18 @@ run-nographic: iso disk
 # ==============================
 .PHONY: debug
 debug: iso disk
-	@echo "[QEMU] Starting NumOS with GDB support and disk..."
-	@echo "In another terminal run: gdb build/kernel.bin"
-	@echo "Then: (gdb) target remote localhost:1234"
-	@echo "      (gdb) break kernel_main"
-	@echo "      (gdb) continue"
+	@echo "[QEMU] GDB mode..."
 	@qemu-system-x86_64 -m 128M \
 		-boot order=dc \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
-		-serial stdio \
-		-s -S
+		-serial stdio -s -S
 
 # ==============================
-#  RECREATE DISK IMAGE
+#  RECREATE DISK
 # ==============================
 .PHONY: newdisk
 newdisk:
-	@echo "[DISK] Recreating disk image..."
 	@rm -f $(DISK_IMAGE)
 	@$(MAKE) disk
 
@@ -180,40 +187,46 @@ newdisk:
 # ==============================
 .PHONY: clean
 clean:
-	@echo "[CLEAN] Removing build artifacts..."
-	@rm -rf $(BUILD_DIR)
-	@rm -rf NumOS.iso
-	@echo "[OK] Clean complete"
+	@echo "[CLEAN] Kernel build artefacts..."
+	@rm -rf $(BUILD_DIR) NumOS.iso
+	@echo "[CLEAN] User build artefacts..."
+	@$(MAKE) -C $(USER_DIR) clean
+	@echo "[OK] Clean complete."
 
 .PHONY: distclean
 distclean: clean
-	@echo "[DISTCLEAN] Removing ISO and disk images..."
 	@rm -f $(ISO_FILE)
-	@echo "[OK] Distribution clean complete"
+	@echo "[OK] Dist-clean complete."
 
 # ==============================
 #  HELP
 # ==============================
 .PHONY: help
 help:
-	@echo "NumOS Kernel Build System with FAT32 + User Space"
-	@echo "=================================================="
+	@echo "NumOS Build System"
+	@echo "=================="
 	@echo ""
-	@echo "Targets:"
-	@echo "  all         - Build kernel, user space, and disk image (default)"
-	@echo "  kernel      - Build kernel only"
-	@echo "  user_space  - Build user_space/shell.elf"
-	@echo "  disk        - Create FAT32 disk image (embeds shell.elf into /init)"
-	@echo "  newdisk     - Recreate disk image from scratch"
-	@echo "  iso         - Create bootable ISO image"
-	@echo "  run         - Build and run in QEMU with disk"
-	@echo "  debug       - Build and run with GDB support"
-	@echo "  clean       - Remove build artifacts"
-	@echo "  distclean   - Remove everything including images"
+	@echo "Kernel targets (this Makefile):"
+	@echo "  all          - kernel + user_space + disk (default)"
+	@echo "  kernel       - kernel binary only"
+	@echo "  user_space   - delegates to user/Makefile"
+	@echo "  disk         - FAT32 disk image (embeds user/elftest.elf as /init/SHELL)"
+	@echo "  iso          - bootable ISO via GRUB"
+	@echo "  run          - build + boot in QEMU"
+	@echo "  debug        - build + QEMU with GDB stub on :1234"
+	@echo "  clean        - remove all build artefacts (kernel + user)"
 	@echo ""
-	@echo "Current OS: $(OS_TYPE)"
+	@echo "User targets (user/Makefile, also callable directly):"
+	@echo "  make -C user         - build all user programs"
+	@echo "  make -C user install - build + copy to build/user/"
+	@echo "  make -C user clean   - remove user build artefacts"
 	@echo ""
-	@echo "The disk image contains:"
-	@echo "  /init/SHELL - User-space Hello World ELF"
-	@echo "  /bin        - Empty directory"
-	@echo "  /run        - Empty directory"
+	@echo "Project layout:"
+	@echo "  src/          Kernel C and boot ASM sources"
+	@echo "  Include/      Kernel headers"
+	@echo "  user/         User-space programs (elftest.asm, linker.ld, Makefile)"
+	@echo "  build/kernel/ Kernel object files"
+	@echo "  build/user/   User ELF binaries (produced by user/Makefile)"
+	@echo "  tools/        Disk image creation scripts"
+	@echo ""
+	@echo "OS: $(OS_TYPE)"
