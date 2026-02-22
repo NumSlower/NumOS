@@ -23,6 +23,9 @@
 #include "cpu/heap.h"
 #include "fs/fat32.h"
 
+/* paging_unmap_page() returns the physical frame that was unmapped (0=not mapped).
+ Declared here in case it is not in paging.h yet.    */
+
 /* -------------------------------------------------------------------------
  * Helper: set error string and return code
  * ---------------------------------------------------------------------- */
@@ -159,13 +162,15 @@ static int map_segment(const uint8_t *data, size_t data_size,
 /* -------------------------------------------------------------------------
  * allocate_user_stack
  *
- * Allocates USER_STACK_SIZE bytes below `stack_top_virt` and maps them
+ * Allocates USER_STACK_PAGES pages below `stack_top_virt` and maps them
  * as PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER.
- * Returns the stack top (highest address, ready for rsp) or 0 on failure.
+ * Returns the stack top (aligned, ready for rsp) or 0 on failure.
+ * Sets *stack_bottom_out to the lowest mapped virtual address.
  * ---------------------------------------------------------------------- */
 #define USER_STACK_PAGES   16    /* 16 × 4096 = 64 KB user stack */
 
-static uint64_t allocate_user_stack(uint64_t stack_top_virt) {
+static uint64_t allocate_user_stack(uint64_t stack_top_virt,
+                                    uint64_t *stack_bottom_out) {
     uint64_t stack_bottom = stack_top_virt - (USER_STACK_PAGES * PAGE_SIZE);
     uint64_t pflags       = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
 
@@ -181,6 +186,8 @@ static uint64_t allocate_user_stack(uint64_t stack_top_virt) {
         /* Zero via virtual address now that the page is mapped */
         memset((void *)virt, 0, PAGE_SIZE);
     }
+
+    if (stack_bottom_out) *stack_bottom_out = stack_bottom;
 
     /* Return the top of the stack (16-byte aligned, subtract 8 for ABI) */
     return (stack_top_virt - 8) & ~(uint64_t)0xF;
@@ -263,24 +270,26 @@ int elf_load_from_memory(const void *elf_data, size_t elf_size,
     }
 
     /* Allocate user stack just below USER_STACK_TOP */
-    uint64_t stack_top_virt = USER_STACK_TOP;  /* 0x800000 from paging.h */
-    uint64_t stack_top = allocate_user_stack(stack_top_virt);
+    uint64_t stack_top_virt  = USER_STACK_TOP;  /* 0x800000 from paging.h */
+    uint64_t stack_bottom    = 0;
+    uint64_t stack_top = allocate_user_stack(stack_top_virt, &stack_bottom);
     if (!stack_top) {
         return elf_err(result, ELF_ERR_STACK, "User stack allocation failed");
     }
 
     vga_writestring("ELF: User stack: 0x");
-    print_hex(stack_top_virt - USER_STACK_PAGES * PAGE_SIZE);
+    print_hex(stack_bottom);
     vga_writestring(" - 0x");
     print_hex(stack_top_virt);
     vga_writestring("\n");
 
     /* Fill in result */
-    result->success    = 1;
-    result->entry      = hdr->e_entry;
-    result->load_base  = load_base;
-    result->load_end   = load_end;
-    result->stack_top  = stack_top;
+    result->success      = 1;
+    result->entry        = hdr->e_entry;
+    result->load_base    = load_base;
+    result->load_end     = load_end;
+    result->stack_top    = stack_top;
+    result->stack_bottom = stack_bottom;
 
     vga_writestring("ELF: Load complete. entry=0x");
     print_hex(result->entry);
@@ -347,4 +356,55 @@ int elf_load_from_file(const char *path, struct elf_load_result *result) {
 
     kfree(buf);
     return rc;
+}
+
+/* -------------------------------------------------------------------------
+ * elf_unload
+ *
+ * Unmaps every page in [load_base, load_end) and [stack_bottom, stack_top_page)
+ * and frees the backing physical frames.  Called from process_mark_zombie()
+ * so that virtual addresses are reusable for the next ELF load.
+ *
+ * We call paging_unmap_page(virt) which must:
+ *   1. Look up the physical frame for `virt` in the page tables.
+ *   2. Clear the PTE.
+ *   3. Return the physical frame address (or 0 if not mapped).
+ * Then we call pmm_free_frame(phys) to return it to the free pool.
+ * ---------------------------------------------------------------------- */
+void elf_unload(uint64_t load_base, uint64_t load_end,
+                uint64_t stack_bottom, uint64_t stack_top_page) {
+    uint64_t pages_freed = 0;
+
+    /* Unmap ELF segment pages */
+    if (load_base && load_end > load_base) {
+        for (uint64_t virt = load_base; virt < load_end; virt += PAGE_SIZE) {
+            uint64_t phys = paging_unmap_page(virt);
+            if (phys) {
+                pmm_free_frame(phys);
+                pages_freed++;
+            }
+        }
+    }
+
+    /* Unmap user stack pages */
+    if (stack_bottom && stack_top_page > stack_bottom) {
+        for (uint64_t virt = stack_bottom; virt < stack_top_page; virt += PAGE_SIZE) {
+            uint64_t phys = paging_unmap_page(virt);
+            if (phys) {
+                pmm_free_frame(phys);
+                pages_freed++;
+            }
+        }
+    }
+
+    /* Flush TLB by reloading CR3 */
+    __asm__ volatile(
+        "mov %%cr3, %%rax\n\t"
+        "mov %%rax, %%cr3\n\t"
+        ::: "rax", "memory"
+    );
+
+    vga_writestring("ELF: Unloaded ");
+    print_dec(pages_freed);
+    vga_writestring(" pages (virtual address space freed)\n");
 }

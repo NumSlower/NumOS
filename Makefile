@@ -148,16 +148,14 @@ $(ISO_FILE): $(KERNEL)
 .PHONY: run
 run: iso disk
 	@echo "[QEMU] Starting NumOS..."
-	@qemu-system-x86_64 \
+	@qemu-system-x86_64 -m 4096 \
 		-boot order=dc \
-		-machine q35 \
-		-m 4096 \
 		-smp 2 \
 		-device virtio-gpu-pci \
 		-display gtk \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
-		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1  
-
+		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
+		-serial stdio
 
 .PHONY: run-nographic
 run-nographic: iso disk
