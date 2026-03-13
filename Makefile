@@ -132,12 +132,12 @@ $(ISO_FILE): $(KERNEL)
 	@echo "[ISO] Creating bootable ISO..."
 	@mkdir -p $(GRUB_DIR)
 	@cp $(KERNEL) $(ISO_DIR)/boot/kernel.bin
-	@if [ ! -f $(GRUB_DIR)/grub.cfg ]; then \
-		echo "menuentry \"NumOS\" {" > $(GRUB_DIR)/grub.cfg; \
-		echo "    multiboot2 /boot/kernel.bin" >> $(GRUB_DIR)/grub.cfg; \
-		echo "    boot" >> $(GRUB_DIR)/grub.cfg; \
-		echo "}" >> $(GRUB_DIR)/grub.cfg; \
-	fi
+	@echo "set default=0" > $(GRUB_DIR)/grub.cfg
+	@echo "set timeout=0" >> $(GRUB_DIR)/grub.cfg
+	@echo "menuentry \"NumOS\" {" >> $(GRUB_DIR)/grub.cfg
+	@echo "    multiboot2 /boot/kernel.bin" >> $(GRUB_DIR)/grub.cfg
+	@echo "    boot" >> $(GRUB_DIR)/grub.cfg
+	@echo "}" >> $(GRUB_DIR)/grub.cfg
 	@grub-mkrescue -o $(ISO_FILE) $(ISO_DIR) 2>/dev/null || \
 		(echo "[ERROR] grub-mkrescue not found. Install grub-pc-bin and xorriso" && false)
 	@echo "[OK] ISO: $(ISO_FILE)"

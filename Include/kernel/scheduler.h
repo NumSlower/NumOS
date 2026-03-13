@@ -76,6 +76,7 @@ struct process {
     /* User address space */
     uint64_t user_entry;                   /* ELF entry point (virtual)       */
     uint64_t user_stack_top;              /* Top of user stack (virtual)      */
+    uint64_t user_stack_bottom;           /* Bottom of user stack (for unmap) */
     uint64_t load_base;                   /* Lowest mapped virtual address    */
     uint64_t load_end;                    /* Highest mapped virtual address   */
 
@@ -113,13 +114,15 @@ struct process *process_create_kernel(const char *name,
  * Returns the new process, or NULL on failure.                             */
 struct process *process_create_user(const char *name,
                                     uint64_t entry,
-                                    uint64_t stack_top);
+                                    uint64_t stack_top,
+                                    uint64_t stack_bottom);
 
 /* Called by the ELF loader after successfully loading an image.
  * Convenience wrapper: calls process_create_user() then makes it READY.   */
 struct process *process_spawn(const char *name,
                                uint64_t entry,
-                               uint64_t stack_top);
+                               uint64_t stack_top,
+                               uint64_t stack_bottom);
 
 /* Mark the current process as ZOMBIE and yield the CPU.
  * Never returns.                                                           */
@@ -152,7 +155,10 @@ struct sched_stats scheduler_get_stats(void);
 extern void context_switch(struct cpu_context **old_ctx,
                             struct cpu_context  *new_ctx);
 
-/* ---- Helper used by process_exit() in syscall.c ------------------------- */
-void process_mark_zombie(struct process *proc, int exit_code);
+	/* ---- Helper used by process_exit() in syscall.c ------------------------- */
+	void process_mark_zombie(struct process *proc, int exit_code);
 
-#endif /* SCHEDULER_H */
+	/* Reap a ZOMBIE process and free its slot */
+	void process_reap(struct process *proc);
+
+	#endif /* SCHEDULER_H */

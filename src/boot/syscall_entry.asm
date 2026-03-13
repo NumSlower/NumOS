@@ -31,52 +31,58 @@ global syscall_kernel_stack_top
 section .bss
 align 16
 syscall_kernel_stack_space:
-    resb 16384          ; 16 KB kernel stack for syscall handling
+    resb 16384          ; 16 KB fallback kernel stack for syscall handling
+syscall_kernel_stack_space_top:
+
+align 8
 syscall_kernel_stack_top:
+    resq 1              ; uint8_t* set by scheduler before entering userland
+
+align 8
+syscall_user_rsp:
+    resq 1              ; temporary storage for user RSP while switching stacks
 
 section .text
 
 syscall_entry:
-    ; ---- swap user rsp for kernel rsp -------------------------
-    ; We need a scratch register to do the swap.
-    ; rcx holds the user RIP already (set by the cpu), so use r15
-    ; as a temporary — we'll save it immediately after.
-    ;
-    ; Canonical pattern: xchg user rsp with kernel rsp stored in
-    ; a well-known location.  Here we use a simple absolute addr
-    ; because we have no per-CPU segment in this single-CPU kernel.
+    ; ---- switch to the kernel stack ----------------------------
+    ; SYSCALL does not switch stacks. Save user RSP to memory
+    ; before overwriting RSP with the kernel stack pointer.
+    mov     [rel syscall_user_rsp], rsp
 
-    ; Save user rsp in r15 temporarily
-    mov     r15, rsp
-
-    ; Switch to kernel syscall stack
+    ; If the scheduler hasn't set syscall_kernel_stack_top yet, fall back
+    ; to the static kernel stack in this file.
     mov     rsp, [rel syscall_kernel_stack_top]
+    test    rsp, rsp
+    jnz     .have_kstack
+    lea     rsp, [rel syscall_kernel_stack_space_top]
+.have_kstack:
 
     ; Align stack to 16 bytes (System V ABI requirement for calls)
     and     rsp, -16
 
-    ; ---- build struct syscall_regs on the kernel stack ---------
-    ; Layout (low → high addresses, i.e. push order):
-    ;   rsp, r15, r14, r13, r12, rbp, rbx, r11, rcx,
-    ;   r9,  r8,  r10, rdx, rsi, rdi, rax
-    ; (We push in reverse order so the struct fields match
-    ;  the C declaration top-to-bottom.)
-
-    push    r15         ; rsp  (user stack pointer, saved in r15 above)
+    ; ---- build struct syscall_regs on the kernel stack ----------
+    ; struct syscall_regs (see Include/kernel/syscall.h):
+    ;   rax, rdi, rsi, rdx, r10, r8, r9, rcx, r11,
+    ;   rbx, rbp, r12, r13, r14, r15, rsp
+    ;
+    ; Push in reverse order so [rsp] points at regs->rax.
+    push    qword [rel syscall_user_rsp]   ; rsp (user stack pointer)
+    push    r15
     push    r14
     push    r13
     push    r12
     push    rbp
     push    rbx
-    push    r11         ; user RFLAGS (saved by SYSCALL)
-    push    rcx         ; user RIP   (saved by SYSCALL)
+    push    r11                            ; user RFLAGS (saved by SYSCALL)
+    push    rcx                            ; user RIP    (saved by SYSCALL)
     push    r9
     push    r8
     push    r10
     push    rdx
     push    rsi
     push    rdi
-    push    rax         ; syscall number
+    push    rax                            ; syscall number
 
     ; ---- call C dispatcher -------------------------------------
     ; First argument (rdi) = pointer to struct syscall_regs
@@ -87,27 +93,24 @@ syscall_entry:
     ; to hand back to userland in rax.
 
     ; ---- restore registers from struct -------------------------
-    ; Skip rax slot (we keep the return value in rax)
-    add     rsp, 8      ; skip saved rax (syscall number)
+    ; Skip regs->rax slot (keep return value in rax)
+    add     rsp, 8
     pop     rdi
     pop     rsi
     pop     rdx
     pop     r10
     pop     r8
     pop     r9
-    pop     rcx         ; user RIP  → rcx (needed by SYSRETQ)
-    pop     r11         ; user RFLAGS → r11 (needed by SYSRETQ)
+    pop     rcx         ; user RIP     (needed by SYSRETQ)
+    pop     r11         ; user RFLAGS  (needed by SYSRETQ)
     pop     rbx
     pop     rbp
     pop     r12
     pop     r13
     pop     r14
     pop     r15
-
-    ; Restore user rsp (was the last thing pushed)
-    ; It's sitting at [rsp] right now — pop into the actual rsp.
-    ; But pop rsp isn't encodable directly; use a mov.
-    mov     rsp, [rsp]  ; restore user rsp
+    pop     rsp         ; user RSP
 
     ; ---- return to userland ------------------------------------
-    sysretq
+    ; NASM's plain `sysret` encodes SYSRETL (compat mode). Force SYSRETQ.
+    o64 sysret

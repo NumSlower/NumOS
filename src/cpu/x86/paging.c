@@ -35,8 +35,8 @@ static struct vm_region *vm_regions = NULL;
 
 void paging_init(void) {
     // Set up memory info (simplified - in real OS you'd parse multiboot info)
-    memory_info.total_memory = 128 * 1024 * 1024; // 128MB for now
-    memory_info.available_memory = 120 * 1024 * 1024; // 120MB available
+    memory_info.total_memory = 512  * 1024 * 1024; // 128MB for now
+    memory_info.available_memory = 512  * 1024 * 1024; // 120MB available
     memory_info.kernel_start = 0x100000; // 1MB
     memory_info.kernel_end = 0x400000;   // 4MB (estimated)
     
@@ -499,53 +499,57 @@ struct page_table* paging_get_page_table(uint64_t virtual_addr, int create) {
     uint64_t pml4_idx = PML4_INDEX(virtual_addr);
     uint64_t pdpt_idx = PDPT_INDEX(virtual_addr);
     uint64_t pd_idx = PD_INDEX(virtual_addr);
+
+    int user_mapping = 0;
+    if (virtual_addr >= USER_VIRTUAL_BASE && virtual_addr < USER_STACK_TOP) {
+        user_mapping = 1;
+    }
     
     struct page_table *pml4 = current_pml4;
     
-    // Get or create PDPT
     if (!(pml4->entries[pml4_idx] & PAGE_PRESENT)) {
-        if (!create) return NULL;
-        
+        if (!create) return NULL;   // ← was falling through and dereferencing 0
         uint64_t physical = pmm_alloc_frame();
         if (!physical) return NULL;
-        
-        pml4->entries[pml4_idx] = physical | PAGE_PRESENT | PAGE_WRITABLE;
-        
-        // Clear the new table
+        uint64_t flags = PAGE_PRESENT | PAGE_WRITABLE;
+        if (user_mapping) flags |= PAGE_USER;
+        pml4->entries[pml4_idx] = physical | flags;
         struct page_table *new_table = (struct page_table*)physical;
         memset(new_table, 0, sizeof(struct page_table));
+    } else if (user_mapping) {
+        pml4->entries[pml4_idx] |= PAGE_USER;
     }
     
     struct page_table *pdpt = (struct page_table*)(pml4->entries[pml4_idx] & ~0xFFF);
+    if (!pdpt) return NULL;  // ← guard
     
-    // Get or create PD
     if (!(pdpt->entries[pdpt_idx] & PAGE_PRESENT)) {
         if (!create) return NULL;
-        
         uint64_t physical = pmm_alloc_frame();
         if (!physical) return NULL;
-        
-        pdpt->entries[pdpt_idx] = physical | PAGE_PRESENT | PAGE_WRITABLE;
-        
-        // Clear the new table
+        uint64_t flags = PAGE_PRESENT | PAGE_WRITABLE;
+        if (user_mapping) flags |= PAGE_USER;
+        pdpt->entries[pdpt_idx] = physical | flags;
         struct page_table *new_table = (struct page_table*)physical;
         memset(new_table, 0, sizeof(struct page_table));
+    } else if (user_mapping) {
+        pdpt->entries[pdpt_idx] |= PAGE_USER;
     }
     
     struct page_table *pd = (struct page_table*)(pdpt->entries[pdpt_idx] & ~0xFFF);
+    if (!pd) return NULL;  // ← guard
     
-    // Get or create PT
     if (!(pd->entries[pd_idx] & PAGE_PRESENT)) {
         if (!create) return NULL;
-        
         uint64_t physical = pmm_alloc_frame();
         if (!physical) return NULL;
-        
-        pd->entries[pd_idx] = physical | PAGE_PRESENT | PAGE_WRITABLE;
-        
-        // Clear the new table
+        uint64_t flags = PAGE_PRESENT | PAGE_WRITABLE;
+        if (user_mapping) flags |= PAGE_USER;
+        pd->entries[pd_idx] = physical | flags;
         struct page_table *new_table = (struct page_table*)physical;
         memset(new_table, 0, sizeof(struct page_table));
+    } else if (user_mapping) {
+        pd->entries[pd_idx] |= PAGE_USER;
     }
     
     return (struct page_table*)(pd->entries[pd_idx] & ~0xFFF);

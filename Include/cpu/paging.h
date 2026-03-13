@@ -22,9 +22,9 @@
 
 /* Virtual Memory Layout Constants (Canonical addresses for 64-bit) */
 #define KERNEL_VIRTUAL_BASE 0xFFFFFFFF80000000UL   /* -2GB (canonical high) */
-#define USER_VIRTUAL_BASE   0x0000000000400000UL   /* 4MB (user space start) */
+#define USER_VIRTUAL_BASE   0x0000000060000000UL   /* 4MB (user space start) */
 #define KERNEL_HEAP_START   0xFFFFFFFF90000000UL   /* Kernel heap start */
-#define USER_STACK_TOP      0x0000000000800000UL   /* 8MB (user stack) */
+#define USER_STACK_TOP      0x0000000070000000UL      /* 1.25GB - above identity map */
 
 /* Page Table Entry Type */
 typedef uint64_t page_entry_t;
@@ -78,6 +78,10 @@ int paging_unmap_range(uint64_t virtual_start, size_t pages, int free_physical);
 int paging_change_protection(uint64_t virtual_addr, uint64_t new_flags);
 int paging_is_mapped(uint64_t virtual_addr);
 uint64_t paging_get_physical_address(uint64_t virtual_addr);
+/* Mark a virtual range as user-accessible (adds PAGE_USER to page flags)
+ * Handles both 4KB and 2MB (huge) pages where present.
+ */
+int paging_set_user_range(uint64_t start, uint64_t size);
 
 /* Virtual Memory Region Management */
 int paging_create_vm_region(uint64_t start, uint64_t end, uint64_t flags);

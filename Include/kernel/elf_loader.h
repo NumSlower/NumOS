@@ -106,6 +106,7 @@ struct elf_load_result {
     uint64_t load_base;     /* Lowest virtual address mapped                  */
     uint64_t load_end;      /* Highest virtual address mapped (page-aligned)  */
     uint64_t stack_top;     /* Top of freshly-allocated user stack            */
+    uint64_t stack_bottom;  /* Bottom of user stack (for cleanup/unmap)       */
     char     error[64];     /* Human-readable error string on failure         */
 };
 
@@ -156,5 +157,18 @@ int elf_validate(const struct elf64_hdr *hdr);
 
 /* Debug helper: print segment information for a loaded ELF */
 void elf_print_info(const struct elf64_hdr *hdr);
+
+/*
+ * elf_unload()
+ *
+ *   Unmaps all virtual pages in [vaddr_start, vaddr_end) and frees their
+ *   physical frames.  Call with:
+ *     - load_base / load_end from elf_load_result  (ELF segments)
+ *     - stack_bottom / (stack_top rounded up) from elf_load_result (stack)
+ *
+ *   After this call the virtual address range is reusable.
+ */
+void elf_unload(uint64_t load_base, uint64_t load_end,
+                uint64_t stack_bottom, uint64_t stack_top_page);
 
 #endif /* ELF_LOADER_H */

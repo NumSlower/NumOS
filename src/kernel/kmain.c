@@ -228,7 +228,8 @@ static void launch_init_elf(void) {
      */
     struct process *proc = process_spawn("elftest",
                                          result.entry,
-                                         result.stack_top);
+                                         result.stack_top,
+                                         result.stack_bottom);
     if (!proc) {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_writestring("process_spawn FAILED (table full?)\n");
@@ -236,6 +237,7 @@ static void launch_init_elf(void) {
         return;
     }
 
+    /* Store ELF load extent for page cleanup on exit */
     proc->load_base = result.load_base;
     proc->load_end  = result.load_end;
 
@@ -245,18 +247,26 @@ static void launch_init_elf(void) {
     vga_writestring("). Yielding CPU...\n\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 
-    /*
-     * Voluntarily yield.  The scheduler will switch to the new user process
-     * via context_switch() -> process_trampoline() -> IRETQ -> Ring 3.
-     * We return here once the user process calls SYS_EXIT and the idle
-     * process (or this kernel thread) is rescheduled.
-     */
-    schedule();
+	    /*
+	     * Voluntarily yield.  The scheduler will switch to the new user process
+	     * via context_switch() -> process_trampoline() -> SYSRETQ -> Ring 3.
+	     * schedule() can also return due to preemption, so we must wait until
+	     * the process reaches ZOMBIE before continuing.
+	     */
+	    while (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
+	        schedule();
+	        if (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
+	            __asm__ volatile("sti; hlt" ::: "memory");
+	        }
+	    }
 
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("\nUser process finished. Kernel regained control.\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-}
+	    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+	    vga_writestring("\nUser process finished. Kernel regained control.\n");
+	    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+	    /* Free the PCB slot so repeated [R] does not exhaust the process table */
+	    process_reap(proc);
+	}
 
 /* =========================================================================
  * kernel_main - entry point from boot stub

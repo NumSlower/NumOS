@@ -25,6 +25,7 @@
 
 #include "kernel/scheduler.h"
 #include "kernel/kernel.h"
+#include "kernel/elf_loader.h"
 #include "drivers/vga.h"
 #include "drivers/timer.h"
 #include "cpu/heap.h"
@@ -79,48 +80,43 @@ static void process_trampoline(void) {
     }
 
     /*
-     * User process: transition to Ring 3 via IRETQ.
+     * User process: transition to Ring 3 via SYSRETQ.
      *
-     * IRETQ pops (from current rsp upward): RIP, CS, RFLAGS, RSP, SS.
+     * SYSRETQ does NOT validate the SS GDT descriptor — it loads SS
+     * from STAR[63:48]+8 directly, avoiding the GPF caused by IRETQ
+     * when the user-data descriptor has unexpected attributes.
      *
-     * Selectors with RPL=3:
-     *   CS = GDT_USER_CODE | 3 = 0x20 | 3 = 0x23
-     *   SS = GDT_USER_DATA | 3 = 0x18 | 3 = 0x1B
+     * Required register state before SYSRETQ:
+     *   RCX = user RIP  (entry point)
+     *   R11 = user RFLAGS
+     *   RSP = user stack pointer
+     *   Interrupts MUST be disabled (CLI before SYSRETQ)
      *
-     * CRITICAL: we must load all five values into physical registers BEFORE
-     * we overwrite rsp, because the C local variables live on the old stack.
-     * We use explicit register variables to force gcc to materialise each
-     * value in a register prior to the asm block.
+     * After SYSRETQ:
+     *   RIP    ← RCX,     CS ← STAR[63:48]+16 | 3 (user code)
+     *   RFLAGS ← R11,     SS ← STAR[63:48]+8  | 3 (user data)
+     *   CPL    ← 3
+     *
+     * All register loads and the RSP switch happen inside a single
+     * __asm__ volatile block so the compiler cannot insert any
+     * stack-relative loads after RSP is overwritten.
      */
-    register uint64_t r_kstack  asm("rax") = (uint64_t)proc->kernel_stack_top;
-    register uint64_t r_ss      asm("rbx") = (uint64_t)(GDT_USER_DATA | 3);
-    register uint64_t r_ursp    asm("rcx") = proc->user_stack_top;
-    register uint64_t r_rflags  asm("rdx") = 0x202UL;   /* IF=1, bit1 always 1 */
-    register uint64_t r_cs      asm("rsi") = (uint64_t)(GDT_USER_CODE | 3);
-    register uint64_t r_rip     asm("rdi") = proc->user_entry;
-
-    /* Update the per-process syscall kernel-stack pointer */
     extern uint8_t *syscall_kernel_stack_top;
     syscall_kernel_stack_top = proc->kernel_stack_top;
 
+    uint64_t urip  = proc->user_entry;
+    uint64_t ursp  = proc->user_stack_top;
+
     __asm__ volatile(
-        /* Switch to this process's kernel stack (fresh, no saved frame) */
-        "mov %0, %%rsp\n\t"
-        /* Build the IRETQ frame on the new kernel stack */
-        "push %1\n\t"       /* SS   */
-        "push %2\n\t"       /* RSP  */
-        "push %3\n\t"       /* RFLAGS */
-        "push %4\n\t"       /* CS   */
-        "push %5\n\t"       /* RIP  */
-        "iretq\n\t"
+        "cli\n\t"               /* SYSRETQ requires IF=0 */
+        "mov %[rip], %%rcx\n\t" /* RCX ← user entry point */
+        "mov $0x202, %%r11\n\t" /* R11 ← RFLAGS: IF=1, bit1=1 */
+        "mov %[rsp], %%rsp\n\t" /* RSP ← user stack (must be last C ref) */
+        "sysretq\n\t"
         :
-        : "r"(r_kstack),
-          "r"(r_ss),
-          "r"(r_ursp),
-          "r"(r_rflags),
-          "r"(r_cs),
-          "r"(r_rip)
-        : "memory"
+        : [rip] "r"(urip),
+          [rsp] "r"(ursp)
+        : "rcx", "r11", "memory"
     );
 
     /* Unreachable */
@@ -386,7 +382,8 @@ struct process *process_create_kernel(const char *name, void (*func)(void)) {
  * ======================================================================= */
 struct process *process_create_user(const char *name,
                                     uint64_t entry,
-                                    uint64_t stack_top) {
+                                    uint64_t stack_top,
+                                    uint64_t stack_bottom) {
     struct process *proc = alloc_process();
     if (!proc) {
         vga_writestring("Scheduler: process table full\n");
@@ -398,8 +395,9 @@ struct process *process_create_user(const char *name,
     proc->state            = PROC_READY;
     proc->ticks_remaining  = SCHED_TICKS_PER_SLICE;
     proc->created_at_ms    = timer_get_uptime_ms();
-    proc->user_entry       = entry;
-    proc->user_stack_top   = stack_top;
+    proc->user_entry        = entry;
+    proc->user_stack_top    = stack_top;
+    proc->user_stack_bottom = stack_bottom;
 
     if (setup_kernel_stack(proc) != 0) {
         free_process(proc);
@@ -428,8 +426,9 @@ struct process *process_create_user(const char *name,
  * ======================================================================= */
 struct process *process_spawn(const char *name,
                                uint64_t entry,
-                               uint64_t stack_top) {
-    return process_create_user(name, entry, stack_top);
+                               uint64_t stack_top,
+                               uint64_t stack_bottom) {
+    return process_create_user(name, entry, stack_top, stack_bottom);
 }
 
 /* =========================================================================
@@ -441,6 +440,39 @@ void process_mark_zombie(struct process *proc, int exit_code) {
     dequeue(proc);
     stats.processes_exited++;
     if (stats.active_processes > 0) stats.active_processes--;
+
+    /*
+     * Free all user virtual pages so the address range can be reused
+     * when the ELF is loaded again (e.g. via [R] in interactive mode).
+     *
+     * ELF segment pages:   [load_base, load_end)
+     * Stack pages:         [user_stack_bottom, USER_STACK_TOP)
+     *
+     * user_stack_top is the *usable* top (aligned-8); the full page-aligned
+     * top is USER_STACK_TOP.  We pass user_stack_bottom and USER_STACK_TOP
+     * (as a page-aligned value) to elf_unload().
+     */
+    if (proc->user_entry != 0) {   /* only for user processes */
+        uint64_t stack_page_top = paging_align_up(proc->user_stack_top + 8,
+                                                   PAGE_SIZE);
+        elf_unload(proc->load_base, proc->load_end,
+                   proc->user_stack_bottom, stack_page_top);
+    }
+}
+
+void process_reap(struct process *proc) {
+    if (!proc) return;
+
+    __asm__ volatile("cli");
+    if (proc->state == PROC_ZOMBIE) {
+        /*
+         * ZOMBIE processes are dequeued by process_mark_zombie().
+         * Dequeue again defensively.
+         */
+        dequeue(proc);
+        free_process(proc);
+    }
+    __asm__ volatile("sti");
 }
 
 /* =========================================================================
@@ -510,6 +542,11 @@ void schedule(void) {
     }
     next->state            = PROC_RUNNING;
     next->ticks_remaining  = SCHED_TICKS_PER_SLICE;
+
+    /* Ensure ring3 interrupts and SYSCALL both land on the correct kernel stack */
+    tss_set_rsp0((uint64_t)(uintptr_t)next->kernel_stack_top);
+    extern uint8_t *syscall_kernel_stack_top;
+    syscall_kernel_stack_top = next->kernel_stack_top;
 
     stats.context_switches++;
     stats.total_ticks++;

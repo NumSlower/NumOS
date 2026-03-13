@@ -117,22 +117,16 @@ static int map_segment(const uint8_t *data, size_t data_size,
             return ELF_ERR_MAP;
         }
 
-        /* Zero the page via its virtual address (now that it's mapped) */
-        memset((void *)virt, 0, PAGE_SIZE);
+        /* Zero using PHYSICAL address (identity mapped), not virtual */
+        memset((void *)phys, 0, PAGE_SIZE);
 
-        /*
-         * Copy the portion of the file image that falls in this page.
-         * Offset within the segment: page_virt_offset = virt - p_vaddr (clamped).
-         */
         int64_t seg_offset = (int64_t)virt - (int64_t)ph->p_vaddr;
 
         if (seg_offset < (int64_t)ph->p_filesz) {
-            /* There is file data to copy into this page */
             uint64_t file_off    = ph->p_offset + (uint64_t)(seg_offset < 0 ? 0 : seg_offset);
             uint64_t copy_start  = (seg_offset < 0) ? (uint64_t)(-seg_offset) : 0;
             uint64_t copy_count  = PAGE_SIZE - copy_start;
 
-            /* Clamp to what's actually available in the file */
             uint64_t avail = ph->p_filesz - (uint64_t)(seg_offset < 0 ? 0 : seg_offset);
             if (copy_count > avail) copy_count = avail;
             if (file_off + copy_count > data_size) {
@@ -140,13 +134,14 @@ static int map_segment(const uint8_t *data, size_t data_size,
             }
 
             if (copy_count > 0) {
-                memcpy((void *)(virt + copy_start),
-                       data + file_off,
-                       (size_t)copy_count);
+                /* Copy using PHYSICAL address too */
+                memcpy((void *)(phys + copy_start),
+                    data + file_off,
+                    (size_t)copy_count);
             }
         }
-        /* BSS area is already zeroed by the memset above */
     }
+
 
     /* Track the overall load extent */
     if (vaddr_start < *load_base_out || *load_base_out == 0) {
@@ -183,13 +178,11 @@ static uint64_t allocate_user_stack(uint64_t stack_top_virt,
             return 0;
         }
 
-        /* Zero via virtual address now that the page is mapped */
-        memset((void *)virt, 0, PAGE_SIZE);
+        /* Zero using PHYSICAL address (identity mapped), not virtual */
+        memset((void *)phys, 0, PAGE_SIZE);
     }
 
     if (stack_bottom_out) *stack_bottom_out = stack_bottom;
-
-    /* Return the top of the stack (16-byte aligned, subtract 8 for ABI) */
     return (stack_top_virt - 8) & ~(uint64_t)0xF;
 }
 
@@ -365,11 +358,8 @@ int elf_load_from_file(const char *path, struct elf_load_result *result) {
  * and frees the backing physical frames.  Called from process_mark_zombie()
  * so that virtual addresses are reusable for the next ELF load.
  *
- * We call paging_unmap_page(virt) which must:
- *   1. Look up the physical frame for `virt` in the page tables.
- *   2. Clear the PTE.
- *   3. Return the physical frame address (or 0 if not mapped).
- * Then we call pmm_free_frame(phys) to return it to the free pool.
+ * paging_unmap_page() in this kernel unmaps the page and frees the
+ * backing physical frame.
  * ---------------------------------------------------------------------- */
 void elf_unload(uint64_t load_base, uint64_t load_end,
                 uint64_t stack_bottom, uint64_t stack_top_page) {
@@ -378,9 +368,7 @@ void elf_unload(uint64_t load_base, uint64_t load_end,
     /* Unmap ELF segment pages */
     if (load_base && load_end > load_base) {
         for (uint64_t virt = load_base; virt < load_end; virt += PAGE_SIZE) {
-            uint64_t phys = paging_unmap_page(virt);
-            if (phys) {
-                pmm_free_frame(phys);
+            if (paging_unmap_page(virt) == 0) {
                 pages_freed++;
             }
         }
@@ -389,9 +377,7 @@ void elf_unload(uint64_t load_base, uint64_t load_end,
     /* Unmap user stack pages */
     if (stack_bottom && stack_top_page > stack_bottom) {
         for (uint64_t virt = stack_bottom; virt < stack_top_page; virt += PAGE_SIZE) {
-            uint64_t phys = paging_unmap_page(virt);
-            if (phys) {
-                pmm_free_frame(phys);
+            if (paging_unmap_page(virt) == 0) {
                 pages_freed++;
             }
         }

@@ -58,12 +58,14 @@ struct gdt_ptr {
 #define GDT_NULL_SELECTOR      0x00  // Entry 0
 #define GDT_KERNEL_CODE        0x08  // Entry 1 (0x08 = 1 * 8)
 #define GDT_KERNEL_DATA        0x10  // Entry 2 (0x10 = 2 * 8)
-#define GDT_USER_CODE          0x18  // Entry 3 (0x18 = 3 * 8)
-#define GDT_USER_DATA          0x20  // Entry 4 (0x20 = 4 * 8)
+#define GDT_USER_DATA          0x18  // Entry 3 (0x18 = 3 * 8)  (sysret SS)
+#define GDT_USER_CODE          0x20  // Entry 4 (0x20 = 4 * 8)  (sysret CS)
+#define GDT_TSS_SELECTOR       0x28  // Entry 5 (0x28 = 5 * 8)
 
 /* Function prototypes */
 void gdt_init(void);
 void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran);
 void gdt_print_info(void);
+void tss_set_rsp0(uint64_t rsp0);
 
 #endif /* GDT_H */

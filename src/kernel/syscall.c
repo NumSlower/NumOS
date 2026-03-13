@@ -19,6 +19,7 @@
 #include "drivers/timer.h"
 #include "fs/fat32.h"
 #include "cpu/gdt.h"
+#include "kernel/scheduler.h"
 
 /* -------------------------------------------------------------------------
  * MSR addresses
@@ -175,14 +176,15 @@ int64_t sys_exit(int status) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("\n[SYSCALL] sys_exit(");
     print_dec((uint64_t)(uint32_t)status);
-    vga_writestring(") called by userland process\n");
+    vga_writestring(") called\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    /* In a real OS this would terminate the current task.
-     * For now, spin so we can observe the VGA output.        */
-    while (1) {
-        __asm__ volatile("hlt");
-    }
-    return 0; /* unreachable */
+
+    /* Properly terminate the current process via the scheduler */
+    process_exit(status);
+
+    /* Never reached */
+    while (1) __asm__ volatile("hlt");
+    return 0;
 }
 
 /* ---- sys_getpid --------------------------------------------------------- */
@@ -193,7 +195,8 @@ int64_t sys_getpid(void) {
 
 /* ---- sys_sleep_ms ------------------------------------------------------- */
 int64_t sys_sleep_ms(uint64_t ms) {
-    timer_sleep((uint32_t)ms);
+    uint64_t wake = timer_get_uptime_ms() + ms;
+    process_sleep_until(wake);
     return 0;
 }
 

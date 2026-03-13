@@ -5,7 +5,7 @@
 
 /* Heap Configuration Constants */
 #define HEAP_START          0xFFFFFFFF90000000UL  /* Kernel heap start address */
-#define HEAP_SIZE           (64 * 1024 * 1024)    /* 64MB heap size */
+#define HEAP_SIZE           (128 * 1024 * 1024)    /* 64MB heap size */
 #define HEAP_MIN_SIZE       16                     /* Minimum allocation size */
 #define HEAP_ALIGNMENT      16                     /* Memory alignment (16-byte for 64-bit) */
 
