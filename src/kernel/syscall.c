@@ -144,17 +144,15 @@ int64_t sys_read(int fd, void *buf, size_t count) {
     if (!buf) return SYSCALL_EFAULT;
     if (count == 0) return 0;
     if (fd != FD_STDIN) return SYSCALL_EBADF;
-
-    /* Block reading from stdin is intentionally minimal:
-     * read up to count bytes from the keyboard.              */
+ 
     char *p = (char *)buf;
     size_t got = 0;
     while (got < count) {
-        /* keyboard_getchar blocks until a key is pressed */
-        extern char keyboard_getchar(void);
-        char c = keyboard_getchar();
+        /* Use the IRQ-buffer version - does NOT call keyboard_handler() */
+        extern char keyboard_getchar_buffered(void);
+        char c = keyboard_getchar_buffered();
         p[got++] = c;
-        if (c == '\n') break;   /* line-mode read */
+        if (c == '\n') break;
     }
     return (int64_t)got;
 }
