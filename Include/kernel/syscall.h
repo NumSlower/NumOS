@@ -28,6 +28,8 @@
 #define SYS_SLEEP_MS    35
 #define SYS_UPTIME_MS   96
 #define SYS_PUTS        200
+/* Keyboard input (custom). arg1=buf, arg2=count */
+#define SYS_INPUT       207
 
 /* ---- Framebuffer syscalls -----------------------------------------------
  *
@@ -126,6 +128,7 @@ int64_t sys_getpid(void);
 int64_t sys_sleep_ms(uint64_t ms);
 int64_t sys_uptime_ms(void);
 int64_t sys_puts(const char *str);
+int64_t sys_input(void *buf, size_t count);
 
 /* Framebuffer syscall implementations */
 int64_t sys_fb_info(uint64_t field);

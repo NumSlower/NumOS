@@ -18,7 +18,7 @@
 #define KEY_RELEASE_OFFSET 0x80
 
 /* Buffer size */
-#define KEYBOARD_BUFFER_SIZE 256
+#define KEYBOARD_BUFFER_SIZE 4096
 
 /* Keyboard state flags */
 extern uint8_t shift_pressed;

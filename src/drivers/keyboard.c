@@ -73,6 +73,20 @@ static volatile size_t buffer_tail = 0;   /* read index  (consumer side) */
  * Initialisation
  * ======================================================================= */
 
+static int ps2_wait_input_clear(void) {
+    for (int i = 0; i < 100000; i++) {
+        if (!(inb(KEYBOARD_STATUS_PORT) & 0x02)) return 1;
+    }
+    return 0;
+}
+
+static int ps2_wait_output_full(void) {
+    for (int i = 0; i < 100000; i++) {
+        if (inb(KEYBOARD_STATUS_PORT) & 0x01) return 1;
+    }
+    return 0;
+}
+
 /*
  * keyboard_init - reset modifier state and empty the ring buffer.
  */
@@ -81,6 +95,32 @@ void keyboard_init(void) {
     buffer_tail   = 0;
     shift_pressed = 0;
     ctrl_pressed  = 0;
+
+    /* Enable IRQ1 at the 8042 controller so user-space sys_read can block on IRQs */
+    for (int i = 0; i < 32 && (inb(KEYBOARD_STATUS_PORT) & 0x01); i++) {
+        (void)inb(KEYBOARD_DATA_PORT);
+    }
+
+    if (!ps2_wait_input_clear()) return;
+    outb(KEYBOARD_STATUS_PORT, 0xAE); /* Enable keyboard interface */
+
+    if (!ps2_wait_input_clear()) return;
+    outb(KEYBOARD_STATUS_PORT, 0x20); /* Read controller command byte */
+    if (!ps2_wait_output_full()) return;
+    uint8_t cmd = inb(KEYBOARD_DATA_PORT);
+
+    cmd |= 0x01; /* Bit 0: IRQ1 enable */
+
+    if (!ps2_wait_input_clear()) return;
+    outb(KEYBOARD_STATUS_PORT, 0x60); /* Write controller command byte */
+    if (!ps2_wait_input_clear()) return;
+    outb(KEYBOARD_DATA_PORT, cmd);
+
+    /* Ask keyboard to start scanning (best-effort) */
+    if (!ps2_wait_input_clear()) return;
+    outb(KEYBOARD_DATA_PORT, 0xF4);
+    (void)ps2_wait_output_full();
+    if (inb(KEYBOARD_STATUS_PORT) & 0x01) (void)inb(KEYBOARD_DATA_PORT);
 }
 
 /* =========================================================================

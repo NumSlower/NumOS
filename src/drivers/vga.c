@@ -61,6 +61,13 @@ static int      scroll_mode_active      = 0; /* non-zero while in scroll UI */
 static uint8_t color_stack[COLOR_STACK_SIZE];
 static int     color_stack_top = -1;
 
+/* Optional secondary output sink (for example framebuffer console). */
+static vga_output_hook_t vga_output_hook = NULL;
+
+void vga_set_output_hook(vga_output_hook_t hook) {
+    vga_output_hook = hook;
+}
+
 /* =========================================================================
  * Attribute helpers
  * ======================================================================= */
@@ -167,6 +174,8 @@ void vga_clear(void) {
     vga_row    = 0;
     vga_column = 0;
     vga_update_cursor(0, 0);
+
+    if (vga_output_hook) vga_output_hook('\f');
 }
 
 /* =========================================================================
@@ -219,11 +228,13 @@ void vga_putchar(char c) {
     switch (c) {
         case '\n':
             vga_newline();
+            if (vga_output_hook) vga_output_hook('\n');
             return;
 
         case '\r':
             vga_column = 0;
             vga_update_cursor((int)vga_column, (int)vga_row);
+            if (vga_output_hook) vga_output_hook('\r');
             return;
 
         case '\b':
@@ -232,6 +243,7 @@ void vga_putchar(char c) {
                 vga_buffer[vga_row * VGA_WIDTH + vga_column] =
                     vga_entry(' ', vga_text_color);
                 vga_update_cursor((int)vga_column, (int)vga_row);
+                if (vga_output_hook) vga_output_hook('\b');
             }
             return;
 
@@ -253,6 +265,8 @@ void vga_putchar(char c) {
     } else {
         vga_update_cursor((int)vga_column, (int)vga_row);
     }
+
+    if (vga_output_hook) vga_output_hook(c);
 }
 
 /*

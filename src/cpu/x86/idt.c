@@ -201,7 +201,6 @@ void exception_handler(uint32_t exception_num, uint64_t error_code) {
         uint64_t fault_addr;
         __asm__ volatile("mov %%cr2, %0" : "=r"(fault_addr));
         page_fault_handler(error_code, fault_addr);
-        __asm__ volatile("sti");
         return;
     }
 
@@ -227,7 +226,6 @@ void exception_handler(uint32_t exception_num, uint64_t error_code) {
         vga_writestring("' killed by exception\n");
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
         process_mark_zombie(cur, -(int)exception_num);
-        __asm__ volatile("sti");
         schedule();
         return;
     }

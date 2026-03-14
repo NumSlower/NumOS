@@ -16,8 +16,9 @@
 #define BGA_ID_MIN      0xB0C0
 #define BGA_ID_MAX      0xB0C5
 
-#define FB_WIDTH    1024
-#define FB_HEIGHT   768
+/* ---- Resolution --------------------------------------------------------- */
+#define FB_WIDTH    920
+#define FB_HEIGHT   920
 
 #define FB_BPP          32
 #define FB_TRANSPARENT  0xFFFFFFFFU

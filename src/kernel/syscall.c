@@ -12,6 +12,7 @@
 #include "kernel/syscall.h"
 #include "kernel/kernel.h"
 #include "drivers/vga.h"
+#include "drivers/keyboard.h"
 #include "drivers/timer.h"
 #include "drivers/framebuffer.h"
 #include "fs/fat32.h"
@@ -98,26 +99,34 @@ int64_t sys_write(int fd, const void *buf, size_t count) {
 int64_t sys_read(int fd, void *buf, size_t count) {
     if (!buf)   return SYSCALL_EFAULT;
     if (!count) return 0;
-    if (fd != FD_STDIN) return SYSCALL_EBADF;
 
-    char  *p   = (char *)buf;
-    size_t got = 0;
-    while (got < count) {
-        char c = keyboard_getchar_buffered();
-        p[got++] = c;
-        if (c == '\n') break;
+    /* fd=0: stdin, backed by the PS/2 keyboard ring buffer. */
+    if (fd == FD_STDIN) {
+        return sys_input(buf, count);
     }
-    return (int64_t)got;
+
+    /* Reserve 1,2 for stdout/stderr. FAT32 file descriptors start at 3. */
+    if (fd < 3) return SYSCALL_EBADF;
+
+    int fat_fd = fd - 3;
+    ssize_t n  = fat32_read(fat_fd, buf, count);
+    if (n < 0) return SYSCALL_EBADF;
+    return (int64_t)n;
 }
 
 int64_t sys_open(const char *path, int flags, int mode) {
     (void)mode;
     if (!path) return SYSCALL_EFAULT;
-    return fat32_open(path, flags);
+
+    int fat_fd = fat32_open(path, flags);
+    if (fat_fd < 0) return SYSCALL_EINVAL;
+    return (int64_t)(fat_fd + 3);
 }
 
 int64_t sys_close(int fd) {
-    return fat32_close(fd);
+    if (fd < 3) return SYSCALL_EBADF;
+    int fat_fd = fd - 3;
+    return (fat32_close(fat_fd) == 0) ? 0 : SYSCALL_EBADF;
 }
 
 int64_t sys_exit(int status) {
@@ -150,6 +159,20 @@ int64_t sys_puts(const char *str) {
         vga_putchar('\n');
     }
     return 0;
+}
+
+int64_t sys_input(void *buf, size_t count) {
+    if (!buf)   return SYSCALL_EFAULT;
+    if (!count) return 0;
+
+    char  *p   = (char *)buf;
+    size_t got = 0;
+    while (got < count) {
+        char c = keyboard_getchar_buffered();
+        p[got++] = c;
+        if (c == '\n') break;
+    }
+    return (int64_t)got;
 }
 
 /* =========================================================================
@@ -230,6 +253,9 @@ int64_t syscall_dispatch(struct syscall_regs *regs) {
         case SYS_READ:
             ret = sys_read((int)regs->rdi, (void*)regs->rsi, (size_t)regs->rdx);
             break;
+        case SYS_INPUT:
+            ret = sys_input((void*)regs->rdi, (size_t)regs->rsi);
+            break;
         case SYS_WRITE:
             ret = sys_write((int)regs->rdi, (const void*)regs->rsi, (size_t)regs->rdx);
             break;
@@ -296,6 +322,7 @@ void syscall_print_stats(void) {
     static const char *names[SYSCALL_MAX];
     for (int i = 0; i < SYSCALL_MAX; i++) names[i] = NULL;
     names[SYS_READ]      = "read";
+    names[SYS_INPUT]     = "input";
     names[SYS_WRITE]     = "write";
     names[SYS_OPEN]      = "open";
     names[SYS_CLOSE]     = "close";

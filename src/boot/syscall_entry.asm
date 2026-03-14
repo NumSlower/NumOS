@@ -89,6 +89,10 @@ syscall_entry:
     mov     rdi, rsp
     call    syscall_dispatch
 
+    ; syscall_dispatch enables interrupts. Disable them before restoring
+    ; registers so an IRQ cannot clobber the restore sequence.
+    cli
+
     ; Return value from C is in rax — that's exactly what we want
     ; to hand back to userland in rax.
 
