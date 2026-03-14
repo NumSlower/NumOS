@@ -29,7 +29,12 @@ void keyboard_init(void);
 uint8_t keyboard_read_scan_code(void);
 char scan_code_to_ascii(uint8_t scan_code);
 void keyboard_handler(void);
-char keyboard_getchar(void);
+
+/* Called from IRQ context only - polls hardware directly */
+/* Called from syscall/userland context - blocks on IRQ-filled buffer */
+char keyboard_getchar(void);         /* kernel interactive use (polls hw) */
+char keyboard_getchar_buffered(void); /* syscall use (waits on IRQ buffer) */
+
 void keyboard_read_line(char *buffer, size_t max_size);
 
 #endif /* KEYBOARD_H */
