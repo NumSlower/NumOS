@@ -31,6 +31,7 @@
 #include "drivers/pic.h"
 #include "drivers/timer.h"
 #include "drivers/ata.h"
+#include "drivers/device.h"
 #include "cpu/heap.h"
 #include "fs/fat32.h"
 
@@ -240,43 +241,46 @@ void kernel_init(void) {
     vga_init();
 
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("NumOS v4.0 - 64-bit Kernel | Syscalls + Scheduler + ELF\n");
+    vga_writestring("NumOS v0.8.0-beta - 64-bit Kernel\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("Initializing kernel subsystems...\n\n");
 
-    vga_writestring("[ 1/9] Loading GDT...\n");
+    vga_writestring("[ 1/10] Loading GDT...\n");
     gdt_init();
 
-    vga_writestring("[ 2/9] Loading IDT...\n");
+    vga_writestring("[ 2/10] Loading IDT...\n");
     idt_init();
 
-    vga_writestring("[ 3/9] Initializing paging...\n");
+    vga_writestring("[ 3/10] Initializing paging...\n");
     paging_init();
 
-    vga_writestring("[ 4/9] Initializing heap allocator...\n");
+    vga_writestring("[ 4/10] Initializing heap allocator...\n");
     heap_init();
 
-    vga_writestring("[ 5/9] Initializing timer (100 Hz)...\n");
+    vga_writestring("[ 5/10] Initializing timer (100 Hz)...\n");
     timer_init(100);
 
     /* Re-init the IDT after the timer to pick up any late changes,
      * then re-enable interrupts. */
     idt_init();
 
-    vga_writestring("[ 6/9] Initializing keyboard driver...\n");
+    vga_writestring("[ 6/10] Initializing keyboard driver...\n");
     keyboard_init();
 
     /* Unmask timer (IRQ 0) and keyboard (IRQ 1) now that handlers are ready */
     pic_unmask_irq(0);
     pic_unmask_irq(1);
 
-    vga_writestring("[ 7/9] Initializing syscall subsystem (SYSCALL/SYSRET)...\n");
+    vga_writestring("[ 7/10] Initializing syscall subsystem (SYSCALL/SYSRET)...\n");
     syscall_init();
 
-    vga_writestring("[ 8/9] Initializing process scheduler...\n");
+    vga_writestring("[ 8/10] Initializing process scheduler...\n");
     scheduler_init();
 
-    vga_writestring("[ 9/9] Initializing ATA + FAT32...\n");
+    vga_writestring("[ 9/10] Initializing device detection...\n");
+    device_init();
+
+    vga_writestring("[ 10/10] Initializing ATA + FAT32...\n");
     ata_init();
 
     if (fat32_init() == 0) {
@@ -328,7 +332,8 @@ void kernel_main(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     vga_writestring("  [S] Scroll mode     [L] List root dir\n");
     vga_writestring("  [I] Syscall stats   [P] Process list\n");
-    vga_writestring("  [R] Re-run ELF      [H] Halt\n");
+    vga_writestring("  [D] Device list     [R] Re-run ELF\n");
+    vga_writestring("  [H] Halt\n");
     vga_writestring("\nPress a key: ");
 
     while (1) {
@@ -364,6 +369,11 @@ void kernel_main(void) {
                 vga_writestring("\nRe-running ELF...\n");
                 launch_init_elf();
                 vga_writestring("\nPress S/L/I/P/R/H: ");
+                break;
+            
+            case 'd': case 'D':
+                device_print_all();
+                vga_writestring("\nPress S/L/I/P/D/R/H: ");
                 break;
 
             case 'h': case 'H':
