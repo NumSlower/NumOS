@@ -3,24 +3,23 @@
  *
  * Design overview
  * ---------------
- * Processes are stored in a fixed-size table (process_table[]).
+ * Processes live in a fixed-size table (process_table[]).
  * The run-queue is a singly-linked circular list of READY/RUNNING
- * processes maintained in run_queue_head.
+ * processes rooted at run_queue_head.
  *
  * Preemption is driven by scheduler_tick() which the timer IRQ calls
- * every tick (~10 ms at 100 Hz).  When a slice expires, schedule() is
- * called to pick the next READY process and perform a context_switch().
+ * every tick (~10 ms at 100 Hz). When a slice expires, schedule()
+ * selects the next READY process and calls context_switch().
  *
- * A single "idle" process (pid 0) runs when no user processes are ready.
- * It simply executes HLT in a loop so the CPU can sleep between ticks.
+ * A single idle process (pid 0) runs when no user process is READY.
+ * It executes HLT in a loop so the CPU sleeps between ticks.
  *
- * Each process has its own 16 KB kernel stack.  On first creation a
- * cpu_context frame is hand-crafted at the top of that stack with rip
- * pointing at process_trampoline() so that context_switch() will land
- * there on the first scheduling of the process.
+ * Each process owns a 16 KB kernel stack.  On first creation a
+ * cpu_context frame is hand-crafted at the stack top with rip =
+ * process_trampoline(), so context_switch() lands there on first dispatch.
  *
- * For user processes, process_trampoline() issues an IRETQ into Ring 3
- * using the entry point and user stack stored in the PCB.
+ * For user processes, process_trampoline() issues SYSRETQ into Ring 3
+ * using the entry point and user stack pointer stored in the PCB.
  */
 
 #include "kernel/scheduler.h"
@@ -32,99 +31,92 @@
 #include "cpu/paging.h"
 #include "cpu/gdt.h"
 
-/* -------------------------------------------------------------------------
- * Module state
- * ---------------------------------------------------------------------- */
-static struct process  process_table[MAX_PROCESSES];
-static struct process *run_queue_head = NULL;   /* head of circular READY list */
-static struct process *current_proc   = NULL;   /* currently running process   */
-static struct process *idle_proc      = NULL;   /* always-ready idle process   */
-static struct sched_stats stats;
-static int scheduler_active = 0;               /* set after scheduler_init()  */
+/* =========================================================================
+ * External symbol provided by syscall_entry.asm
+ * Declared here at file scope so both process_trampoline() and schedule()
+ * can reference it without repeating the extern inside function bodies.
+ * ======================================================================= */
+extern uint8_t *syscall_kernel_stack_top;
 
-/* -------------------------------------------------------------------------
+/* =========================================================================
+ * Module state
+ * ======================================================================= */
+
+static struct process  process_table[MAX_PROCESSES]; /* all PCB slots        */
+static struct process *run_queue_head = NULL;        /* circular READY list  */
+static struct process *current_proc   = NULL;        /* currently executing  */
+static struct process *idle_proc      = NULL;        /* always-ready idle    */
+static struct sched_stats stats;                     /* lifetime counters    */
+static int  scheduler_active = 0;                    /* set after init       */
+static int  next_pid         = 1;                    /* monotonic PID counter*/
+
+/* =========================================================================
  * Forward declarations of internal helpers
- * ---------------------------------------------------------------------- */
+ * ======================================================================= */
+
 static struct process *alloc_process(void);
 static void            free_process(struct process *proc);
 static void            enqueue(struct process *proc);
 static void            dequeue(struct process *proc);
 static struct process *pick_next(void);
+static int             setup_kernel_stack(struct process *proc);
+static int             alloc_pid(void);
 static void            idle_loop(void);
 static void            process_trampoline(void);
 
 /* =========================================================================
  * process_trampoline
  *
- * Every new process's initial rip points here.
+ * Every new process's initial rip points here (set up in setup_kernel_stack).
  *
- * For KERNEL processes  – the PCB's user_entry holds the C function pointer;
- *                          we simply call it and then call process_exit(0).
- *
- * For USER processes    – we do a manual IRETQ into Ring 3 using the saved
- *                          entry point and user stack stored in the PCB.
+ * Kernel process: load_base holds the C function pointer; call it then exit.
+ * User process:   transition to Ring 3 via SYSRETQ.
  * ======================================================================= */
 static void process_trampoline(void) {
     struct process *proc = current_proc;
 
     if (proc->user_entry == 0) {
-        /*
-         * Kernel process: user_entry is repurposed as a function pointer.
-         * Cast and call it.
-         */
-        void (*fn)(void) = (void(*)(void))(uintptr_t)proc->load_base;
+        /* Kernel process: load_base is repurposed as a function pointer */
+        void (*fn)(void) = (void (*)(void))(uintptr_t)proc->load_base;
         fn();
         process_exit(0);
-        /* Never reached */
-        while(1) __asm__ volatile("hlt");
+        while (1) __asm__ volatile("hlt");
     }
 
     /*
      * User process: transition to Ring 3 via SYSRETQ.
      *
-     * SYSRETQ does NOT validate the SS GDT descriptor — it loads SS
-     * from STAR[63:48]+8 directly, avoiding the GPF caused by IRETQ
-     * when the user-data descriptor has unexpected attributes.
+     * Point syscall_kernel_stack_top at this process's kernel stack so
+     * that the syscall entry stub switches to the correct stack on
+     * the first system call from this process.
      *
-     * Required register state before SYSRETQ:
-     *   RCX = user RIP  (entry point)
+     * SYSRETQ register requirements:
+     *   RCX = user RIP (entry point)
      *   R11 = user RFLAGS
      *   RSP = user stack pointer
-     *   Interrupts MUST be disabled (CLI before SYSRETQ)
-     *
-     * After SYSRETQ:
-     *   RIP    ← RCX,     CS ← STAR[63:48]+16 | 3 (user code)
-     *   RFLAGS ← R11,     SS ← STAR[63:48]+8  | 3 (user data)
-     *   CPL    ← 3
-     *
-     * All register loads and the RSP switch happen inside a single
-     * __asm__ volatile block so the compiler cannot insert any
-     * stack-relative loads after RSP is overwritten.
+     *   IF  = 0 (cleared by CLI before SYSRETQ)
      */
-    extern uint8_t *syscall_kernel_stack_top;
     syscall_kernel_stack_top = proc->kernel_stack_top;
 
-    uint64_t urip  = proc->user_entry;
-    uint64_t ursp  = proc->user_stack_top;
+    uint64_t urip = proc->user_entry;
+    uint64_t ursp = proc->user_stack_top;
 
     __asm__ volatile(
-        "cli\n\t"               /* SYSRETQ requires IF=0 */
-        "mov %[rip], %%rcx\n\t" /* RCX ← user entry point */
-        "mov $0x202, %%r11\n\t" /* R11 ← RFLAGS: IF=1, bit1=1 */
-        "mov %[rsp], %%rsp\n\t" /* RSP ← user stack (must be last C ref) */
+        "cli\n\t"
+        "mov %[rip], %%rcx\n\t"   /* RCX <- user entry point */
+        "mov $0x202, %%r11\n\t"   /* R11 <- RFLAGS: IF=1, bit1=1 */
+        "mov %[rsp], %%rsp\n\t"   /* RSP <- user stack (last C stack ref) */
         "sysretq\n\t"
         :
-        : [rip] "r"(urip),
-          [rsp] "r"(ursp)
+        : [rip] "r"(urip), [rsp] "r"(ursp)
         : "rcx", "r11", "memory"
     );
 
-    /* Unreachable */
-    while(1) __asm__ volatile("hlt");
+    while (1) __asm__ volatile("hlt");  /* unreachable */
 }
 
 /* =========================================================================
- * idle_loop – runs when no user process is READY
+ * idle_loop - executes when no user process is READY
  * ======================================================================= */
 static void idle_loop(void) {
     while (1) {
@@ -136,7 +128,7 @@ static void idle_loop(void) {
  * Internal run-queue helpers
  * ======================================================================= */
 
-/* Find a free slot in process_table */
+/* alloc_process - find and zero a free slot in process_table. */
 static struct process *alloc_process(void) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (process_table[i].state == PROC_UNUSED) {
@@ -147,6 +139,7 @@ static struct process *alloc_process(void) {
     return NULL;
 }
 
+/* free_process - release the kernel stack and mark the slot UNUSED. */
 static void free_process(struct process *proc) {
     if (proc->kernel_stack) {
         kfree(proc->kernel_stack);
@@ -156,14 +149,14 @@ static void free_process(struct process *proc) {
     proc->state = PROC_UNUSED;
 }
 
-/* Append proc to the tail of the circular run-queue */
+/* enqueue - append proc to the tail of the circular run-queue. */
 static void enqueue(struct process *proc) {
     if (!run_queue_head) {
-        proc->next      = proc;   /* circular: points to itself */
-        run_queue_head  = proc;
+        proc->next     = proc;   /* single element: points to itself */
+        run_queue_head = proc;
         return;
     }
-    /* Walk to the tail (the node whose ->next is the head) */
+
     struct process *tail = run_queue_head;
     while (tail->next != run_queue_head) {
         tail = tail->next;
@@ -172,26 +165,23 @@ static void enqueue(struct process *proc) {
     proc->next = run_queue_head;
 }
 
-/* Remove proc from the circular run-queue */
+/* dequeue - remove proc from the circular run-queue. */
 static void dequeue(struct process *proc) {
     if (!run_queue_head) return;
 
     if (run_queue_head == proc && proc->next == proc) {
-        /* Only element */
+        /* Only element in the queue */
         run_queue_head = NULL;
         proc->next     = NULL;
         return;
     }
 
-    /* Find the node before proc */
     struct process *prev = run_queue_head;
     while (prev->next != proc) {
         prev = prev->next;
-        if (prev == run_queue_head) {
-            /* proc not in queue */
-            return;
-        }
+        if (prev == run_queue_head) return;  /* proc not in queue */
     }
+
     prev->next = proc->next;
     if (run_queue_head == proc) {
         run_queue_head = proc->next;
@@ -200,8 +190,10 @@ static void dequeue(struct process *proc) {
 }
 
 /*
- * Pick the next READY process after current_proc in the run-queue.
- * Unblocks sleeping processes whose wake_at_ms has passed.
+ * pick_next - choose the next READY process to run.
+ *
+ * First unblocks any sleeping processes whose wake_at_ms has passed,
+ * then picks the first READY process after current_proc in the queue.
  * Falls back to idle_proc if nothing is runnable.
  */
 static struct process *pick_next(void) {
@@ -209,7 +201,7 @@ static struct process *pick_next(void) {
 
     uint64_t now = timer_get_uptime_ms();
 
-    /* First pass: unblock any sleeping processes that are due */
+    /* Unblock sleeping processes */
     struct process *p = run_queue_head;
     do {
         if (p->state == PROC_BLOCKED && p->wake_at_ms != 0 &&
@@ -220,7 +212,7 @@ static struct process *pick_next(void) {
         p = p->next;
     } while (p != run_queue_head);
 
-    /* Second pass: find next READY process after current_proc */
+    /* Find next READY process after current_proc */
     struct process *start = current_proc ? current_proc->next : run_queue_head;
     if (!start) start = run_queue_head;
 
@@ -233,12 +225,26 @@ static struct process *pick_next(void) {
     return idle_proc;
 }
 
+/* alloc_pid - return the next monotonically increasing PID. */
+static int alloc_pid(void) {
+    return next_pid++;
+}
+
 /* =========================================================================
- * Allocate and prepare the kernel stack for a new process.
+ * Kernel stack initialisation
  *
- * We place a hand-crafted cpu_context frame at the top of the kernel stack
- * so that the very first context_switch() into this process will pop the
- * registers and ret into process_trampoline().
+ * Places a hand-crafted cpu_context frame at the top of the kernel stack
+ * so that the first context_switch() into this process pops registers
+ * and returns into process_trampoline().
+ *
+ * Memory layout matches context_switch.asm push sequence:
+ *   frame[0] = rbp   (lowest address, top of push sequence)
+ *   frame[1] = rbx
+ *   frame[2] = r12
+ *   frame[3] = r13
+ *   frame[4] = r14
+ *   frame[5] = r15
+ *   frame[6] = rip   (return address, pushed by the call instruction)
  * ======================================================================= */
 static int setup_kernel_stack(struct process *proc) {
     proc->kernel_stack = (uint8_t *)kmalloc(KERNEL_STACK_SIZE);
@@ -247,90 +253,51 @@ static int setup_kernel_stack(struct process *proc) {
     memset(proc->kernel_stack, 0, KERNEL_STACK_SIZE);
     proc->kernel_stack_top = proc->kernel_stack + KERNEL_STACK_SIZE;
 
-    /*
-     * Build a fake cpu_context at the top of the kernel stack so that the
-     * very first context_switch() into this process pops registers and
-     * rets into process_trampoline().
-     *
-     * context_switch.asm pushes in this order AFTER the call instruction
-     * pushes rip:
-     *   push r15  → rsp -= 8
-     *   push r14  → rsp -= 8
-     *   push r13  → rsp -= 8
-     *   push r12  → rsp -= 8
-     *   push rbx  → rsp -= 8
-     *   push rbp  → rsp -= 8   ← final rsp (saved as context pointer)
-     *
-     * So memory layout from [rsp] upward (i.e. frame[0] = lowest addr):
-     *   frame[0] = rbp   (top of push sequence, lowest address)
-     *   frame[1] = rbx
-     *   frame[2] = r12
-     *   frame[3] = r13
-     *   frame[4] = r14
-     *   frame[5] = r15
-     *   frame[6] = rip   (pushed by the call instruction, highest addr)
-     *
-     * context_switch pops in the reverse order:
-     *   pop rbp → frame[0]
-     *   pop rbx → frame[1]
-     *   pop r12 → frame[2]
-     *   pop r13 → frame[3]
-     *   pop r14 → frame[4]
-     *   pop r15 → frame[5]
-     *   ret     → frame[6] = process_trampoline
-     */
     uint64_t *frame = (uint64_t *)(proc->kernel_stack_top -
                                    sizeof(struct cpu_context));
-    frame[0] = 0;  /* rbp */
-    frame[1] = 0;  /* rbx */
-    frame[2] = 0;  /* r12 */
-    frame[3] = 0;  /* r13 */
-    frame[4] = 0;  /* r14 */
-    frame[5] = 0;  /* r15 */
-    frame[6] = (uint64_t)(uintptr_t)process_trampoline;   /* rip */
+    frame[0] = 0;                                         /* rbp */
+    frame[1] = 0;                                         /* rbx */
+    frame[2] = 0;                                         /* r12 */
+    frame[3] = 0;                                         /* r13 */
+    frame[4] = 0;                                         /* r14 */
+    frame[5] = 0;                                         /* r15 */
+    frame[6] = (uint64_t)(uintptr_t)process_trampoline;  /* rip */
 
     proc->context = (struct cpu_context *)frame;
     return 0;
 }
 
 /* =========================================================================
- * Static PID counter
+ * Public API
  * ======================================================================= */
-static int next_pid = 1;
 
-static int alloc_pid(void) {
-    return next_pid++;
-}
-
-/* =========================================================================
- * scheduler_init
- * ======================================================================= */
+/*
+ * scheduler_init - create the idle process and prepare the run-queue.
+ * Must be called once during kernel_init() before any process is spawned.
+ */
 void scheduler_init(void) {
     memset(process_table, 0, sizeof(process_table));
     memset(&stats, 0, sizeof(stats));
-    run_queue_head  = NULL;
-    current_proc    = NULL;
+    run_queue_head   = NULL;
+    current_proc     = NULL;
     scheduler_active = 0;
 
-    /* Create the idle process (pid 0) */
     idle_proc = alloc_process();
-    idle_proc->pid   = 0;
-    strncpy(idle_proc->name, "idle", PROCESS_NAME_LEN);
-    idle_proc->state = PROC_READY;
+    idle_proc->pid             = 0;
+    idle_proc->state           = PROC_READY;
     idle_proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
     idle_proc->load_base       = (uint64_t)(uintptr_t)idle_loop;
+    idle_proc->user_entry      = 0;  /* 0 = kernel process in trampoline */
+    strncpy(idle_proc->name, "idle", PROCESS_NAME_LEN);
 
     if (setup_kernel_stack(idle_proc) != 0) {
-        panic("scheduler_init: cannot allocate idle stack");
+        panic("scheduler_init: cannot allocate idle kernel stack");
     }
 
-    /* Idle uses a kernel function, not a user entry */
-    idle_proc->user_entry = 0;
-
     enqueue(idle_proc);
-    current_proc = idle_proc;
+    current_proc        = idle_proc;
     current_proc->state = PROC_RUNNING;
-    scheduler_active = 1;
+    scheduler_active    = 1;
 
     vga_writestring("Scheduler: Initialized (max ");
     print_dec(MAX_PROCESSES);
@@ -339,9 +306,10 @@ void scheduler_init(void) {
     vga_writestring(" ticks/slice)\n");
 }
 
-/* =========================================================================
- * process_create_kernel
- * ======================================================================= */
+/*
+ * process_create_kernel - create a kernel-mode process running func().
+ * Returns the new PCB, or NULL if the process table is full.
+ */
 struct process *process_create_kernel(const char *name, void (*func)(void)) {
     struct process *proc = alloc_process();
     if (!proc) {
@@ -349,15 +317,13 @@ struct process *process_create_kernel(const char *name, void (*func)(void)) {
         return NULL;
     }
 
-    proc->pid   = alloc_pid();
+    proc->pid            = alloc_pid();
+    proc->state          = PROC_READY;
+    proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
+    proc->created_at_ms  = timer_get_uptime_ms();
+    proc->load_base      = (uint64_t)(uintptr_t)func;
+    proc->user_entry     = 0;  /* 0 = kernel process */
     strncpy(proc->name, name, PROCESS_NAME_LEN);
-    proc->state            = PROC_READY;
-    proc->ticks_remaining  = SCHED_TICKS_PER_SLICE;
-    proc->created_at_ms    = timer_get_uptime_ms();
-
-    /* For kernel processes we reuse load_base to store the function ptr */
-    proc->load_base  = (uint64_t)(uintptr_t)func;
-    proc->user_entry = 0;   /* 0 → kernel process in trampoline */
 
     if (setup_kernel_stack(proc) != 0) {
         free_process(proc);
@@ -377,27 +343,30 @@ struct process *process_create_kernel(const char *name, void (*func)(void)) {
     return proc;
 }
 
-/* =========================================================================
- * process_create_user
- * ======================================================================= */
+/*
+ * process_create_user - create a user-mode process from a loaded ELF image.
+ * entry:        virtual address of _start
+ * stack_top:    initial RSP value (top of the user stack)
+ * stack_bottom: lowest mapped virtual address of the user stack
+ */
 struct process *process_create_user(const char *name,
-                                    uint64_t entry,
-                                    uint64_t stack_top,
-                                    uint64_t stack_bottom) {
+                                    uint64_t    entry,
+                                    uint64_t    stack_top,
+                                    uint64_t    stack_bottom) {
     struct process *proc = alloc_process();
     if (!proc) {
         vga_writestring("Scheduler: process table full\n");
         return NULL;
     }
 
-    proc->pid   = alloc_pid();
-    strncpy(proc->name, name, PROCESS_NAME_LEN);
-    proc->state            = PROC_READY;
-    proc->ticks_remaining  = SCHED_TICKS_PER_SLICE;
-    proc->created_at_ms    = timer_get_uptime_ms();
-    proc->user_entry        = entry;
-    proc->user_stack_top    = stack_top;
+    proc->pid             = alloc_pid();
+    proc->state           = PROC_READY;
+    proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
+    proc->created_at_ms   = timer_get_uptime_ms();
+    proc->user_entry       = entry;
+    proc->user_stack_top   = stack_top;
     proc->user_stack_bottom = stack_bottom;
+    strncpy(proc->name, name, PROCESS_NAME_LEN);
 
     if (setup_kernel_stack(proc) != 0) {
         free_process(proc);
@@ -421,19 +390,20 @@ struct process *process_create_user(const char *name,
     return proc;
 }
 
-/* =========================================================================
- * process_spawn – convenience wrapper used by the ELF loader path
- * ======================================================================= */
+/*
+ * process_spawn - convenience wrapper: create a user process and make it READY.
+ */
 struct process *process_spawn(const char *name,
-                               uint64_t entry,
-                               uint64_t stack_top,
-                               uint64_t stack_bottom) {
+                              uint64_t    entry,
+                              uint64_t    stack_top,
+                              uint64_t    stack_bottom) {
     return process_create_user(name, entry, stack_top, stack_bottom);
 }
 
-/* =========================================================================
- * process_mark_zombie – called by sys_exit() in syscall.c
- * ======================================================================= */
+/*
+ * process_mark_zombie - transition proc to ZOMBIE, dequeue it, and free its
+ * virtual address space.  Called from sys_exit() and the exception handler.
+ */
 void process_mark_zombie(struct process *proc, int exit_code) {
     proc->exit_code = exit_code;
     proc->state     = PROC_ZOMBIE;
@@ -441,44 +411,33 @@ void process_mark_zombie(struct process *proc, int exit_code) {
     stats.processes_exited++;
     if (stats.active_processes > 0) stats.active_processes--;
 
-    /*
-     * Free all user virtual pages so the address range can be reused
-     * when the ELF is loaded again (e.g. via [R] in interactive mode).
-     *
-     * ELF segment pages:   [load_base, load_end)
-     * Stack pages:         [user_stack_bottom, USER_STACK_TOP)
-     *
-     * user_stack_top is the *usable* top (aligned-8); the full page-aligned
-     * top is USER_STACK_TOP.  We pass user_stack_bottom and USER_STACK_TOP
-     * (as a page-aligned value) to elf_unload().
-     */
-    if (proc->user_entry != 0) {   /* only for user processes */
-        uint64_t stack_page_top = paging_align_up(proc->user_stack_top + 8,
-                                                   PAGE_SIZE);
-        elf_unload(proc->load_base, proc->load_end,
+    /* Free user virtual pages so the address range can be reused */
+    if (proc->user_entry != 0) {
+        uint64_t stack_page_top =
+            paging_align_up(proc->user_stack_top + 8, PAGE_SIZE);
+        elf_unload(proc->load_base,       proc->load_end,
                    proc->user_stack_bottom, stack_page_top);
     }
 }
 
+/*
+ * process_reap - free the kernel stack and mark the PCB slot UNUSED.
+ * Call after process_mark_zombie() once the exit code has been read.
+ */
 void process_reap(struct process *proc) {
     if (!proc) return;
 
     __asm__ volatile("cli");
     if (proc->state == PROC_ZOMBIE) {
-        /*
-         * ZOMBIE processes are dequeued by process_mark_zombie().
-         * Dequeue again defensively.
-         */
-        dequeue(proc);
+        dequeue(proc);     /* defensive: already dequeued by mark_zombie */
         free_process(proc);
     }
     __asm__ volatile("sti");
 }
 
-/* =========================================================================
- * process_exit – called from process code (or process_trampoline)
- * Never returns.
- * ======================================================================= */
+/*
+ * process_exit - terminate the calling process.  Never returns.
+ */
 void process_exit(int exit_code) {
     __asm__ volatile("cli");
 
@@ -494,33 +453,31 @@ void process_exit(int exit_code) {
         process_mark_zombie(current_proc, exit_code);
     }
 
-    /* Force a reschedule – will never return to this process */
     __asm__ volatile("sti");
     schedule();
 
-    /* Should never reach here */
-    while (1) __asm__ volatile("hlt");
+    while (1) __asm__ volatile("hlt");  /* unreachable */
 }
 
-/* =========================================================================
- * process_sleep_until
- * ======================================================================= */
+/*
+ * process_sleep_until - block the calling process until uptime_ms >= wake_ms.
+ */
 void process_sleep_until(uint64_t wake_ms) {
     __asm__ volatile("cli");
     if (current_proc && current_proc != idle_proc) {
         current_proc->state      = PROC_BLOCKED;
         current_proc->wake_at_ms = wake_ms;
         dequeue(current_proc);
-        /* Re-enqueue as blocked (pick_next will re-check wake time) */
-        enqueue(current_proc);
+        enqueue(current_proc);  /* re-enqueue as BLOCKED so pick_next can see it */
     }
     __asm__ volatile("sti");
     schedule();
 }
 
-/* =========================================================================
- * schedule – pick the next READY process and switch to it
- * ======================================================================= */
+/*
+ * schedule - pick the next READY process and perform a context switch.
+ * Safe to call from both voluntary yield and timer-IRQ preemption.
+ */
 void schedule(void) {
     if (!scheduler_active) return;
 
@@ -529,23 +486,19 @@ void schedule(void) {
     struct process *next = pick_next();
 
     if (next == current_proc) {
-        /* Nothing to switch to */
         __asm__ volatile("sti");
-        return;
+        return;  /* nothing to switch to */
     }
 
-    struct process *old   = current_proc;
-    current_proc          = next;
+    struct process *old = current_proc;
+    current_proc        = next;
 
-    if (old->state == PROC_RUNNING) {
-        old->state = PROC_READY;
-    }
+    if (old->state == PROC_RUNNING) old->state = PROC_READY;
     next->state            = PROC_RUNNING;
     next->ticks_remaining  = SCHED_TICKS_PER_SLICE;
 
-    /* Ensure ring3 interrupts and SYSCALL both land on the correct kernel stack */
+    /* Update both ring-3 entry paths to use the new kernel stack */
     tss_set_rsp0((uint64_t)(uintptr_t)next->kernel_stack_top);
-    extern uint8_t *syscall_kernel_stack_top;
     syscall_kernel_stack_top = next->kernel_stack_top;
 
     stats.context_switches++;
@@ -553,26 +506,22 @@ void schedule(void) {
 
     __asm__ volatile("sti");
 
-    /* Perform the actual CPU context switch */
+    /* Perform the CPU context switch; returns when old is scheduled again */
     context_switch(&old->context, next->context);
-
-    /*
-     * We return here when 'old' is scheduled again.
-     * At that point current_proc == old (restored by the next
-     * context_switch call that picks us).
-     */
 }
 
-/* =========================================================================
- * scheduler_tick – called from the timer IRQ every tick
- * ======================================================================= */
+/*
+ * scheduler_tick - called from the timer IRQ every tick.
+ * Wakes sleeping processes and preempts the current process when its
+ * time slice expires.
+ */
 void scheduler_tick(void) {
     if (!scheduler_active || !current_proc) return;
 
     current_proc->total_ticks++;
     stats.total_ticks++;
 
-    /* Unblock any sleeping processes */
+    /* Unblock sleeping processes that are due */
     uint64_t now = timer_get_uptime_ms();
     if (run_queue_head) {
         struct process *p = run_queue_head;
@@ -586,11 +535,10 @@ void scheduler_tick(void) {
         } while (p != run_queue_head);
     }
 
-    /* Decrement the current slice */
+    /* Preempt if the time slice has expired */
     if (current_proc->ticks_remaining > 0) {
         current_proc->ticks_remaining--;
     }
-
     if (current_proc->ticks_remaining == 0) {
         schedule();
     }
@@ -599,44 +547,32 @@ void scheduler_tick(void) {
 /* =========================================================================
  * Public accessors
  * ======================================================================= */
-struct process *scheduler_current(void) {
-    return current_proc;
-}
 
-struct process *scheduler_get_idle(void) {
-    return idle_proc;
-}
-
-struct sched_stats scheduler_get_stats(void) {
-    return stats;
-}
+struct process *scheduler_current(void)   { return current_proc; }
+struct process *scheduler_get_idle(void)  { return idle_proc;    }
+struct sched_stats scheduler_get_stats(void) { return stats;     }
 
 /* =========================================================================
  * Diagnostics
  * ======================================================================= */
+
 void scheduler_print_stats(void) {
     vga_writestring("\nScheduler Statistics:\n");
-    vga_writestring("  Context switches:  ");
-    print_dec(stats.context_switches);
-    vga_writestring("\n  Total ticks:       ");
-    print_dec(stats.total_ticks);
-    vga_writestring("\n  Processes created: ");
-    print_dec(stats.processes_created);
-    vga_writestring("\n  Processes exited:  ");
-    print_dec(stats.processes_exited);
-    vga_writestring("\n  Active processes:  ");
-    print_dec(stats.active_processes);
-    vga_writestring("\n");
+    vga_writestring("  Context switches:  "); print_dec(stats.context_switches);  vga_writestring("\n");
+    vga_writestring("  Total ticks:       "); print_dec(stats.total_ticks);        vga_writestring("\n");
+    vga_writestring("  Processes created: "); print_dec(stats.processes_created);  vga_writestring("\n");
+    vga_writestring("  Processes exited:  "); print_dec(stats.processes_exited);   vga_writestring("\n");
+    vga_writestring("  Active processes:  "); print_dec(stats.active_processes);   vga_writestring("\n");
 }
 
 void scheduler_print_processes(void) {
+    static const char *state_names[] = {
+        "UNUSED  ", "READY   ", "RUNNING ", "BLOCKED ", "ZOMBIE  "
+    };
+
     vga_writestring("\nProcess Table:\n");
     vga_writestring("  PID  STATE     TICKS  NAME\n");
     vga_writestring("  ---  --------  -----  ----\n");
-
-    const char *state_names[] = {
-        "UNUSED  ", "READY   ", "RUNNING ", "BLOCKED ", "ZOMBIE  "
-    };
 
     for (int i = 0; i < MAX_PROCESSES; i++) {
         struct process *p = &process_table[i];
@@ -647,8 +583,7 @@ void scheduler_print_processes(void) {
         vga_writestring("    ");
 
         uint8_t st = (uint8_t)p->state;
-        if (st < 5) vga_writestring(state_names[st]);
-        else        vga_writestring("?       ");
+        vga_writestring(st < 5 ? state_names[st] : "?       ");
 
         vga_writestring("  ");
         print_dec(p->total_ticks);

@@ -1,72 +1,112 @@
+/*
+ * pic.c - Programmable Interrupt Controller (8259A) driver
+ *
+ * Remaps IRQ 0-7  to IDT vectors 32-39 (master PIC)
+ * Remaps IRQ 8-15 to IDT vectors 40-47 (slave PIC)
+ *
+ * Default x86 mapping (IRQ 0-7 -> vectors 8-15) conflicts with CPU
+ * exception vectors and must be changed before enabling interrupts.
+ *
+ * ICW sequence (Initialization Command Words):
+ *   ICW1: start initialization, cascade mode, ICW4 required
+ *   ICW2: interrupt base vector for this PIC
+ *   ICW3: master -> slave IRQ line (4); slave -> cascade identity (2)
+ *   ICW4: 8086 mode (not MCS-80), not-auto-EOI
+ *
+ * After init all IRQs are masked.  Callers use pic_unmask_irq() to
+ * enable individual lines.
+ */
+
 #include "drivers/pic.h"
 #include "drivers/vga.h"
 
+/* =========================================================================
+ * Initialisation
+ * ======================================================================= */
+
+/*
+ * pic_init - reinitialise both PICs and remap vectors to 32-47.
+ * All IRQs start masked except IRQ 2 (cascade) on the master.
+ */
 void pic_init(void) {
-    /* Start initialization sequence (ICW1) */
+    /* ICW1: start initialization in cascade mode, ICW4 needed */
     outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4);
     outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4);
-    
-    /* ICW2: Master PIC vector offset (IRQ0-7 mapped to interrupts 32-39) */
+
+    /* ICW2: base interrupt vector
+     *   Master: IRQ 0-7  -> vectors 32-39
+     *   Slave:  IRQ 8-15 -> vectors 40-47 */
     outb(PIC1_DATA, 32);
-    /* ICW2: Slave PIC vector offset (IRQ8-15 mapped to interrupts 40-47) */
     outb(PIC2_DATA, 40);
-    
-    /* ICW3: Tell Master PIC there's a slave PIC at IRQ2 (0000 0100) */
+
+    /* ICW3: cascade wiring
+     *   Master: slave connected at IRQ 2 (bit 2 = 0b00000100)
+     *   Slave:  cascade identity = 2 */
     outb(PIC1_DATA, 4);
-    /* ICW3: Tell Slave PIC its cascade identity (0000 0010) */
     outb(PIC2_DATA, 2);
-    
-    /* ICW4: 8086/88 (MCS-80/85) mode */
+
+    /* ICW4: 8086/88 mode, normal (non-auto) EOI */
     outb(PIC1_DATA, ICW4_8086);
     outb(PIC2_DATA, ICW4_8086);
-    
-    /* Mask all interrupts except cascade (initially) */
-    outb(PIC1_DATA, 0xFB); /* Mask all except IRQ2 (cascade) */
-    outb(PIC2_DATA, 0xFF); /* Mask all slave IRQs */
+
+    /* Mask all IRQs; callers must explicitly unmask what they need.
+     * Keep IRQ 2 (cascade) unmasked on the master so the slave can fire. */
+    outb(PIC1_DATA, 0xFB);   /* 1111 1011: all masked except IRQ 2 */
+    outb(PIC2_DATA, 0xFF);   /* 1111 1111: all slave IRQs masked    */
 }
 
+/* =========================================================================
+ * EOI
+ * ======================================================================= */
+
+/*
+ * pic_send_eoi - acknowledge the end of an interrupt.
+ * For slave IRQs (8-15) both PICs must receive an EOI command.
+ */
 void pic_send_eoi(uint8_t irq) {
-    /* If this was a slave IRQ (8-15), send EOI to slave controller too */
     if (irq >= 8) {
-        outb(PIC2_COMMAND, PIC_EOI);
+        outb(PIC2_COMMAND, PIC_EOI);  /* slave first */
     }
-    
-    /* Send EOI to master PIC */
-    outb(PIC1_COMMAND, PIC_EOI);
+    outb(PIC1_COMMAND, PIC_EOI);      /* master always */
 }
 
+/* =========================================================================
+ * IRQ masking
+ * ======================================================================= */
+
+/*
+ * pic_mask_irq - set the mask bit for irq (0-15), disabling that IRQ.
+ */
 void pic_mask_irq(uint8_t irq) {
     uint16_t port;
-    uint8_t value;
-    
     if (irq < 8) {
         port = PIC1_DATA;
     } else {
         port = PIC2_DATA;
         irq -= 8;
     }
-    
-    value = inb(port) | (1 << irq);
-    outb(port, value);
+    outb(port, inb(port) | (uint8_t)(1 << irq));
 }
 
+/*
+ * pic_unmask_irq - clear the mask bit for irq (0-15), enabling that IRQ.
+ */
 void pic_unmask_irq(uint8_t irq) {
     uint16_t port;
-    uint8_t value;
-    
     if (irq < 8) {
         port = PIC1_DATA;
     } else {
         port = PIC2_DATA;
         irq -= 8;
     }
-    
-    value = inb(port) & ~(1 << irq);
-    outb(port, value);
+    outb(port, inb(port) & (uint8_t)~(1 << irq));
 }
 
+/*
+ * pic_disable - mask all IRQs on both PICs.
+ * Used before switching to APIC or when halting.
+ */
 void pic_disable(void) {
-    /* Mask all interrupts on both PICs */
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
 }

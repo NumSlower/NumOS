@@ -1,13 +1,22 @@
 /*
- * kmain.c - NumOS Kernel Main
+ * kmain.c - NumOS Kernel Entry Point
  *
  * Boot sequence:
- *   1. VGA, GDT, IDT, Paging, Heap, Timer, Keyboard
- *   2. Syscall subsystem (SYSCALL/SYSRET via MSRs)
- *   3. Scheduler (round-robin, preemptive via timer IRQ)
- *   4. ATA + FAT32 filesystem
- *   5. Self-tests
- *   6. Load /init/SHELL ELF -> spawn user process -> schedule()
+ *   1. VGA driver
+ *   2. GDT (segment descriptors + TSS)
+ *   3. IDT (exception and IRQ handlers)
+ *   4. Paging (PMM + VMM + region tracking)
+ *   5. Heap allocator
+ *   6. PIT timer (100 Hz)
+ *   7. IDT second pass (picks up timer callback)
+ *   8. Keyboard driver + unmask IRQ 0/1
+ *   9. SYSCALL/SYSRET subsystem
+ *  10. Process scheduler
+ *  11. ATA disk + FAT32 filesystem
+ *
+ * After init, self-tests run, then the ELF at /init/SHELL is loaded and
+ * executed as the first user process.  When it exits, the kernel enters an
+ * interactive menu that supports re-running the ELF, scrollback, and more.
  */
 
 #include "kernel/kernel.h"
@@ -26,8 +35,207 @@
 #include "fs/fat32.h"
 
 /* =========================================================================
- * kernel_init - hardware + subsystem setup
+ * Self-test helpers
  * ======================================================================= */
+
+/*
+ * test_memory_allocation - exercise kmalloc/kzalloc and print heap stats.
+ */
+static void test_memory_allocation(void) {
+    vga_writestring("\n=== Memory Allocation Test ===\n");
+
+    vga_writestring("Testing kmalloc(1024)... ");
+    void *ptr1 = kmalloc(1024);
+    if (ptr1) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("OK 0x"); print_hex((uint64_t)ptr1); vga_putchar('\n');
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        memset(ptr1, 0xAB, 1024);
+        kfree(ptr1);
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("FAILED\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+
+    vga_writestring("Testing kzalloc(2048)... ");
+    void *ptr2 = kzalloc(2048);
+    if (ptr2) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("OK 0x"); print_hex((uint64_t)ptr2); vga_putchar('\n');
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        kfree(ptr2);
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("FAILED\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+
+    vga_putchar('\n');
+    heap_print_stats();
+}
+
+/*
+ * test_filesystem - print FAT32 volume info and list the root directory.
+ */
+static void test_filesystem(void) {
+    vga_writestring("\n=== Filesystem Test ===\n");
+    fat32_print_info();
+    vga_putchar('\n');
+    fat32_list_directory("/");
+}
+
+/*
+ * test_syscalls - exercise each syscall implementation directly from C
+ * and print a pass/fail result for each.
+ */
+static void test_syscalls(void) {
+    vga_writestring("\n=== Syscall Subsystem Test ===\n");
+
+    /* sys_write: write to stdout */
+    vga_writestring("sys_write(stdout)... ");
+    const char *hello     = "Hello from sys_write!\n";
+    int64_t     written   = sys_write(FD_STDOUT, hello, strlen(hello));
+    if (written == (int64_t)strlen(hello)) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("[PASS]\n");
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("[FAIL]\n");
+    }
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    /* sys_write: bad file descriptor should return EBADF */
+    vga_writestring("sys_write(bad_fd)... ");
+    if (sys_write(99, "x", 1) == SYSCALL_EBADF) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("[PASS] EBADF\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+    }
+
+    /* sys_getpid */
+    vga_writestring("sys_getpid()... ");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("[PASS] pid=");
+    print_dec((uint64_t)sys_getpid());
+    vga_writestring("\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    /* sys_uptime_ms */
+    vga_writestring("sys_uptime_ms()... ");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("[PASS] uptime=");
+    print_dec((uint64_t)sys_uptime_ms());
+    vga_writestring(" ms\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    /* sys_puts */
+    vga_writestring("sys_puts()... ");
+    sys_puts("[PASS] sys_puts: this line via the syscall handler");
+
+    syscall_print_stats();
+}
+
+/*
+ * run_system_tests - run all built-in self-tests in sequence.
+ */
+static void run_system_tests(void) {
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("\n=========================================\n");
+    vga_writestring("    NumOS System Tests\n");
+    vga_writestring("=========================================\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    test_memory_allocation();
+    test_filesystem();
+    test_syscalls();
+
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("=========================================\n");
+    vga_writestring("    Tests Complete\n");
+    vga_writestring("=========================================\n\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
+/* =========================================================================
+ * ELF launcher
+ * ======================================================================= */
+
+/*
+ * launch_init_elf - load /init/SHELL from FAT32 and run it as a user process.
+ *
+ * Returns after the user process exits.  If loading fails, returns immediately
+ * so the caller drops into interactive mode.
+ *
+ * The kernel busy-waits in a "sti; hlt" loop while the process runs so it
+ * does not consume a scheduler slot.  It calls schedule() on each wakeup
+ * in case the process is blocked and needs another runnable process to run.
+ */
+static void launch_init_elf(void) {
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("\n========================================\n");
+    vga_writestring("  Launching ELF: /init/SHELL\n");
+    vga_writestring("========================================\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    struct elf_load_result result;
+    int rc = elf_load_from_file("init/SHELL", &result);
+
+    if (rc != ELF_OK) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("ELF load FAILED: ");
+        vga_writestring(result.error);
+        vga_writestring("\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        vga_writestring("Continuing in interactive mode.\n");
+        return;
+    }
+
+    /* Create a READY user process; enqueued by process_spawn() */
+    struct process *proc = process_spawn("elftest",
+                                         result.entry,
+                                         result.stack_top,
+                                         result.stack_bottom);
+    if (!proc) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("process_spawn FAILED (process table full)\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    /* Store the ELF load extent for virtual memory cleanup on exit */
+    proc->load_base = result.load_base;
+    proc->load_end  = result.load_end;
+
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("User process spawned (pid ");
+    print_dec((uint64_t)proc->pid);
+    vga_writestring("). Yielding CPU...\n\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    /* Yield and keep re-scheduling until the process terminates */
+    while (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
+        schedule();
+        if (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
+            __asm__ volatile("sti; hlt" ::: "memory");
+        }
+    }
+
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("\nUser process finished. Kernel regained control.\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    /* Free the PCB slot so repeated [R] does not exhaust the process table */
+    process_reap(proc);
+}
+
+/* =========================================================================
+ * Subsystem initialisation
+ * ======================================================================= */
+
+/*
+ * kernel_init - initialise all hardware and kernel subsystems in order.
+ */
 void kernel_init(void) {
     vga_init();
 
@@ -51,14 +259,16 @@ void kernel_init(void) {
     vga_writestring("[ 5/9] Initializing timer (100 Hz)...\n");
     timer_init(100);
 
-    /* Re-init IDT after timer to pick up any changes, then re-enable irqs */
+    /* Re-init the IDT after the timer to pick up any late changes,
+     * then re-enable interrupts. */
     idt_init();
 
     vga_writestring("[ 6/9] Initializing keyboard driver...\n");
     keyboard_init();
 
-    pic_unmask_irq(0);  /* Timer    */
-    pic_unmask_irq(1);  /* Keyboard */
+    /* Unmask timer (IRQ 0) and keyboard (IRQ 1) now that handlers are ready */
+    pic_unmask_irq(0);
+    pic_unmask_irq(1);
 
     vga_writestring("[ 7/9] Initializing syscall subsystem (SYSCALL/SYSRET)...\n");
     syscall_init();
@@ -68,16 +278,16 @@ void kernel_init(void) {
 
     vga_writestring("[ 9/9] Initializing ATA + FAT32...\n");
     ata_init();
+
     if (fat32_init() == 0) {
         if (fat32_mount() == 0) {
             vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
             vga_writestring("       FAT32 filesystem mounted OK\n");
-            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
         } else {
             vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
             vga_writestring("       FAT32 mount FAILED\n");
-            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
         }
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
     }
 
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
@@ -86,191 +296,16 @@ void kernel_init(void) {
 }
 
 /* =========================================================================
- * Test helpers
+ * Kernel entry point
  * ======================================================================= */
-void test_memory_allocation(void) {
-    vga_writestring("\n=== Memory Allocation Test ===\n");
 
-    vga_writestring("Testing kmalloc(1024)... ");
-    void *ptr1 = kmalloc(1024);
-    if (ptr1) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("OK ");
-        print_hex((uint64_t)ptr1);
-        vga_putchar('\n');
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        memset(ptr1, 0xAB, 1024);
-        kfree(ptr1);
-    } else {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("FAILED\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    }
-
-    vga_writestring("Testing kzalloc(2048)... ");
-    void *ptr2 = kzalloc(2048);
-    if (ptr2) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("OK ");
-        print_hex((uint64_t)ptr2);
-        vga_putchar('\n');
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        kfree(ptr2);
-    } else {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("FAILED\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    }
-
-    vga_putchar('\n');
-    heap_print_stats();
-}
-
-void test_filesystem(void) {
-    vga_writestring("\n=== Filesystem Test ===\n");
-    fat32_print_info();
-    vga_writestring("\n");
-    fat32_list_directory("/");
-}
-
-void test_syscalls(void) {
-    vga_writestring("\n=== Syscall Subsystem Test ===\n");
-
-    vga_writestring("sys_write(stdout)... ");
-    const char *hello = "Hello from sys_write!\n";
-    int64_t n = sys_write(FD_STDOUT, hello, strlen(hello));
-    if (n == (int64_t)strlen(hello)) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("[PASS]\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    } else {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("[FAIL]\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    }
-
-    vga_writestring("sys_write(bad_fd)... ");
-    if (sys_write(99, "x", 1) == SYSCALL_EBADF) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-        vga_writestring("[PASS] EBADF\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-    }
-
-    vga_writestring("sys_getpid()... ");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("[PASS] pid=");
-    print_dec((uint64_t)sys_getpid());
-    vga_writestring("\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-
-    vga_writestring("sys_uptime_ms()... ");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("[PASS] uptime=");
-    print_dec((uint64_t)sys_uptime_ms());
-    vga_writestring(" ms\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-
-    vga_writestring("sys_puts()... ");
-    sys_puts("[PASS] sys_puts: this line via the syscall handler");
-
-    syscall_print_stats();
-}
-
-void run_system_tests(void) {
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("\n=========================================\n");
-    vga_writestring("    NumOS System Tests\n");
-    vga_writestring("=========================================\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-
-    test_memory_allocation();
-    test_filesystem();
-    test_syscalls();
-
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("=========================================\n");
-    vga_writestring("    Tests Complete\n");
-    vga_writestring("=========================================\n\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-}
-
-/* =========================================================================
- * launch_init_elf
+/*
+ * kernel_main - called from the 64-bit boot stub in entry64.asm.
  *
- * Loads /init/SHELL from FAT32, creates a user process, then calls
- * schedule() to hand the CPU to it immediately.  Returns only after the
- * user process has exited and the scheduler puts the kernel back in control.
- * ======================================================================= */
-static void launch_init_elf(void) {
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-    vga_writestring("\n========================================\n");
-    vga_writestring("  Launching ELF: /init/SHELL\n");
-    vga_writestring("========================================\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-
-    struct elf_load_result result;
-    int rc = elf_load_from_file("init/SHELL", &result);
-
-    if (rc != ELF_OK) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("ELF load FAILED: ");
-        vga_writestring(result.error);
-        vga_writestring("\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        vga_writestring("Continuing in interactive mode.\n");
-        return;
-    }
-
-    /*
-     * Create a READY user process.
-     * process_spawn() calls process_create_user() which enqueues it in
-     * the run-queue.  schedule() will then switch to it.
-     */
-    struct process *proc = process_spawn("elftest",
-                                         result.entry,
-                                         result.stack_top,
-                                         result.stack_bottom);
-    if (!proc) {
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
-        vga_writestring("process_spawn FAILED (table full?)\n");
-        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-        return;
-    }
-
-    /* Store ELF load extent for page cleanup on exit */
-    proc->load_base = result.load_base;
-    proc->load_end  = result.load_end;
-
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
-    vga_writestring("User process spawned (pid ");
-    print_dec((uint64_t)proc->pid);
-    vga_writestring("). Yielding CPU...\n\n");
-    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-
-	    /*
-	     * Voluntarily yield.  The scheduler will switch to the new user process
-	     * via context_switch() -> process_trampoline() -> SYSRETQ -> Ring 3.
-	     * schedule() can also return due to preemption, so we must wait until
-	     * the process reaches ZOMBIE before continuing.
-	     */
-	    while (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
-	        schedule();
-	        if (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
-	            __asm__ volatile("sti; hlt" ::: "memory");
-	        }
-	    }
-
-	    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-	    vga_writestring("\nUser process finished. Kernel regained control.\n");
-	    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
-
-	    /* Free the PCB slot so repeated [R] does not exhaust the process table */
-	    process_reap(proc);
-	}
-
-/* =========================================================================
- * kernel_main - entry point from boot stub
- * ======================================================================= */
+ * Runs subsystem init, self-tests, and the ELF launcher.
+ * Falls into an interactive menu after the user process exits (or if the
+ * ELF could not be loaded).
+ */
 void kernel_main(void) {
     kernel_init();
 
@@ -281,13 +316,11 @@ void kernel_main(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 
     run_system_tests();
-
-    /* Load the ELF binary from disk and run it */
     launch_init_elf();
 
-    /* ------------------------------------------------------------------
-     * Interactive mode: reached after ELF exits or if load failed
-     * ------------------------------------------------------------------ */
+    /* -------------------------------------------------------------------------
+     * Interactive mode - reached after ELF exits or if ELF failed to load
+     * ---------------------------------------------------------------------- */
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("\n========================================\n");
     vga_writestring("  Kernel Interactive Mode\n");
@@ -300,37 +333,47 @@ void kernel_main(void) {
 
     while (1) {
         uint8_t scan_code = keyboard_read_scan_code();
-        char c = scan_code_to_ascii(scan_code);
+        char    c         = scan_code_to_ascii(scan_code);
         if (c == 0) continue;
 
-        if (c == 's' || c == 'S') {
-            vga_writestring("\nEntering scroll mode...\n");
-            vga_enter_scroll_mode();
-            vga_writestring("\nPress S/L/I/P/R/H: ");
+        switch (c) {
+            case 's': case 'S':
+                vga_writestring("\nEntering scroll mode...\n");
+                vga_enter_scroll_mode();
+                vga_writestring("\nPress S/L/I/P/R/H: ");
+                break;
 
-        } else if (c == 'l' || c == 'L') {
-            vga_writestring("\n");
-            fat32_list_directory("/");
-            vga_writestring("\nPress S/L/I/P/R/H: ");
+            case 'l': case 'L':
+                vga_putchar('\n');
+                fat32_list_directory("/");
+                vga_writestring("\nPress S/L/I/P/R/H: ");
+                break;
 
-        } else if (c == 'i' || c == 'I') {
-            syscall_print_stats();
-            vga_writestring("\nPress S/L/I/P/R/H: ");
+            case 'i': case 'I':
+                syscall_print_stats();
+                vga_writestring("\nPress S/L/I/P/R/H: ");
+                break;
 
-        } else if (c == 'p' || c == 'P') {
-            scheduler_print_processes();
-            scheduler_print_stats();
-            vga_writestring("\nPress S/L/I/P/R/H: ");
+            case 'p': case 'P':
+                scheduler_print_processes();
+                scheduler_print_stats();
+                vga_writestring("\nPress S/L/I/P/R/H: ");
+                break;
 
-        } else if (c == 'r' || c == 'R') {
-            vga_writestring("\nRe-running ELF...\n");
-            launch_init_elf();
-            vga_writestring("\nPress S/L/I/P/R/H: ");
+            case 'r': case 'R':
+                vga_writestring("\nRe-running ELF...\n");
+                launch_init_elf();
+                vga_writestring("\nPress S/L/I/P/R/H: ");
+                break;
 
-        } else if (c == 'h' || c == 'H') {
-            vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
-            vga_writestring("\nSystem halted.\n");
-            hang();
+            case 'h': case 'H':
+                vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+                vga_writestring("\nSystem halted.\n");
+                hang();
+                break;
+
+            default:
+                break;
         }
     }
 }
