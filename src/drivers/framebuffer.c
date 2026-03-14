@@ -225,6 +225,13 @@ void fb_init(void) {
 }
 
 int fb_is_available(void) { return fb_ready; }
+int fb_get_width(void)    { return FB_WIDTH;  }
+int fb_get_height(void)   { return FB_HEIGHT; }
+
+void fb_con_set_color(uint32_t fg, uint32_t bg) {
+    con_fg = fg;
+    con_bg = bg;
+}
 
 /* =========================================================================
  * Pixel / fill
