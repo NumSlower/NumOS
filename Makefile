@@ -119,7 +119,7 @@ user_space:
 disk: user_space
 	@echo "[DISK] Creating FAT32 disk image..."
 	@mkdir -p $(BUILD_DIR)
-	@python3 $(TOOLS_DIR)/create_disk_fixed.py $(DISK_IMAGE) $(SHELL_ELF)
+	@python3 $(TOOLS_DIR)/create_disk.py $(DISK_IMAGE) $(SHELL_ELF)
 	@echo "[OK] Disk image: $(DISK_IMAGE)"
 
 # ==============================
@@ -144,23 +144,33 @@ $(ISO_FILE): $(KERNEL)
 
 # ==============================
 #  RUN IN QEMU
+#
+#  -vga std        : exposes the Bochs VGA (BGA) device on PCI 0x1234:0x1111
+#                    with I/O ports 0x01CE/0x01CF for mode switching and
+#                    BAR0 pointing to the linear framebuffer.
+#                    Do NOT use -device virtio-gpu-pci alongside -vga std,
+#                    as virtio-gpu can conflict with BGA register access.
 # ==============================
 .PHONY: run
 run: iso disk
-	@echo "[QEMU] Starting NumOS..."
+	@echo "[QEMU] Starting NumOS (BGA framebuffer mode)..."
 	@qemu-system-x86_64 -m 4096 \
 		-boot order=dc \
 		-smp 2 \
-		-device virtio-gpu-pci \
+		-vga std \
 		-display gtk \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
 		-serial stdio
 
+# ==============================
+#  RUN WITHOUT DISPLAY (serial only)
+# ==============================
 .PHONY: run-nographic
 run-nographic: iso disk
 	qemu-system-x86_64 -m 128M \
 		-boot order=dc \
+		-vga std \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
 		-nographic
@@ -173,6 +183,7 @@ debug: iso disk
 	@echo "[QEMU] GDB mode..."
 	@qemu-system-x86_64 -m 128M \
 		-boot order=dc \
+		-vga std \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=1 \
 		-serial stdio -s -S
@@ -215,32 +226,18 @@ help:
 	@echo "  user_space   - delegates to user/Makefile"
 	@echo "  disk         - FAT32 disk image (embeds user/elftest.elf as /init/SHELL)"
 	@echo "  iso          - bootable ISO via GRUB"
-	@echo "  run          - build + boot in QEMU"
+	@echo "  run          - build + boot in QEMU  [BGA -vga std]"
 	@echo "  debug        - build + QEMU with GDB stub on :1234"
 	@echo "  clean        - remove all build artefacts (kernel + user)"
+	@echo ""
+	@echo "QEMU display flags:"
+	@echo "  -vga std     Bochs VGA / BGA — required for the framebuffer driver."
+	@echo "               BGA I/O ports: 0x01CE (index), 0x01CF (data)."
+	@echo "               Linear framebuffer base from PCI 0x1234:0x1111 BAR0."
 	@echo ""
 	@echo "User targets (user/Makefile, also callable directly):"
 	@echo "  make -C user         - build all user programs"
 	@echo "  make -C user install - build + copy to build/user/"
 	@echo "  make -C user clean   - remove user build artefacts"
-	@echo ""
-	@echo "Project layout:"
-	@echo "  src/          Kernel C and boot ASM sources"
-	@echo "  Include/      Kernel headers"
-	@echo "  user/         User-space programs (elftest.asm, linker.ld, Makefile)"
-	@echo "  build/kernel/ Kernel object files"
-	@echo "  build/user/   User ELF binaries (produced by user/Makefile)"
-	@echo "  tools/        Disk image creation scripts"
-	@echo ""
-	@echo "Syscall numbers:"
-	@echo "  0   SYS_READ       – read from fd"
-	@echo "  1   SYS_WRITE      – write to fd (stdout/stderr → VGA)"
-	@echo "  2   SYS_OPEN       – open file on FAT32 volume"
-	@echo "  3   SYS_CLOSE      – close file descriptor"
-	@echo "  35  SYS_SLEEP_MS   – sleep N milliseconds"
-	@echo "  39  SYS_GETPID     – return process ID (always 1)"
-	@echo "  60  SYS_EXIT       – terminate process"
-	@echo "  96  SYS_UPTIME_MS  – return kernel uptime in ms"
-	@echo "  200 SYS_PUTS       – write null-terminated string + newline"
 	@echo ""
 	@echo "OS: $(OS_TYPE)"

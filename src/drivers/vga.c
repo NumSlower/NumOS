@@ -48,7 +48,7 @@ static uint8_t   vga_text_color;   /* current attribute byte                */
 static uint16_t *vga_buffer;       /* pointer to VGA MMIO text buffer       */
 
 /* ---- Scrollback ring buffer -------------------------------------------- */
-#define SCROLLBACK_LINES 4096 
+#define SCROLLBACK_LINES 4096
 
 static uint16_t scrollback_buffer[SCROLLBACK_LINES * VGA_WIDTH];
 static size_t   scrollback_current_line = 0; /* total lines ever saved      */

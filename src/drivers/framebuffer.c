@@ -453,7 +453,7 @@ void fb_draw_rounded_rect(int x, int y, int w, int h, int r, uint32_t color) {
 
 void fb_draw_char(char c, int x, int y, uint32_t fg, uint32_t bg, int scale) {
     if (!fb_ready) return;
-    if (c < 0x20 || c > 0x7F) c = '?';
+    if ((unsigned char)c > 0x7F) c = '?';
     const uint8_t *glyph = font8x8[c - 0x20];
 
     for (int row = 0; row < 8; row++) {
