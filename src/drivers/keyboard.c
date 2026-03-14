@@ -153,4 +153,8 @@ void keyboard_read_line(char *buffer, size_t max_size) {
     }
 
     if (pos >= max_size - 1) buffer[max_size - 1] = '\0';
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 34c67df (Updating NumOS)
