@@ -1,17 +1,6 @@
 ; =============================================================================
-; user/elftest.asm  –  NumOS userland test program
-;
-; Exercises every syscall currently implemented by the kernel:
-;   SYS_WRITE    (1)   – write bytes to stdout
-;   SYS_GETPID   (39)  – return current PID
-;   SYS_UPTIME_MS(96)  – return kernel uptime in milliseconds
-;   SYS_SLEEP_MS (35)  – sleep N milliseconds
-;   SYS_PUTS     (200) – write null-terminated string + newline
-;   SYS_EXIT     (60)  – terminate process
-;
-; Syscall ABI (x86-64, same as Linux):
-;   rax = number | rdi = arg1 | rsi = arg2 | rdx = arg3
-;   syscall  →  rax = return value
+; user/elftest.asm  –  NumOS userland shell prompt
+; All buffers on the stack to avoid BSS page-fault issues.
 ; =============================================================================
 
 bits 64
@@ -21,221 +10,197 @@ global _start
 ; ---------------------------------------------------------------------------
 section .rodata
 
-; ---- raw byte strings used with SYS_WRITE --------------------------------
-msg_hello:     db  "=== NumOS Userland Test Program ===", 0x0A
-msg_hello_len  equ $ - msg_hello
+; 50 newlines guarantees the screen is visually clear regardless of
+; how many lines the kernel boot sequence printed before us.
+msg_cls:       times 50 db 0x0A
+msg_cls_len    equ 50
 
-msg_write_ok:  db  "[PASS] sys_write: output works", 0x0A
-msg_write_len  equ $ - msg_write_ok
+msg_banner:    db  "NumOS Userspace v1.0.0-beta", 0x0A, 0x0A
+msg_banner_len equ $ - msg_banner
 
-msg_pid_prefix:db  "[INFO] sys_getpid returned: "
-msg_pid_pfxlen equ $ - msg_pid_prefix
+msg_prompt:    db  "> "
+msg_prompt_len equ 2
 
 msg_newline:   db  0x0A
 msg_nl_len     equ 1
 
-msg_uptime_pre:db  "[INFO] sys_uptime_ms returned: "
-msg_uptime_len equ $ - msg_uptime_pre
+msg_bs:        db  0x08, 0x20, 0x08
+msg_bs_len     equ 3
 
-msg_ms:        db  " ms", 0x0A
-msg_ms_len     equ $ - msg_ms
+msg_cls2:      times 50 db 0x0A
+msg_cls2_len   equ 50
 
-msg_sleep_pre: db  "[INFO] sys_sleep_ms(200): sleeping...", 0x0A
-msg_sleep_prelen equ $ - msg_sleep_pre
+msg_unknown:   db  "Unknown command.", 0x0A
+msg_unknown_len equ $ - msg_unknown
 
-msg_sleep_done:db  "[PASS] sys_sleep_ms: woke up", 0x0A
-msg_sleep_len  equ $ - msg_sleep_done
-
-; ---- null-terminated strings used with SYS_PUTS --------------------------
-str_puts_test: db  "[PASS] sys_puts: null-terminated string write works", 0
-str_exit_msg:  db  "[INFO] sys_exit: calling exit(0) now...", 0
-
-; ---------------------------------------------------------------------------
-section .bss
-
-; Scratch buffer for formatting numbers as ASCII
-num_buf: resb 24
+cmd_clear:     db  "clear"
+cmd_clear_len  equ 5
 
 ; ---------------------------------------------------------------------------
 section .text
 
 ; ---------------------------------------------------------------------------
-; _start – entry point
+; _start
 ; ---------------------------------------------------------------------------
 _start:
-    ; ====================================================================
-    ; 1.  SYS_WRITE: print banner
-    ; ====================================================================
-    mov     rax, 1                  ; SYS_WRITE
-    mov     rdi, 1                  ; fd = stdout
-    lea     rsi, [rel msg_hello]
-    mov     rdx, msg_hello_len
-    syscall
+    ; Allocate 256-byte line buffer on the stack
+    sub     rsp, 256
 
-    ; ====================================================================
-    ; 2.  SYS_WRITE: write_ok message
-    ; ====================================================================
+    ; Clear screen (50 newlines scrolls all kernel boot text off screen)
     mov     rax, 1
     mov     rdi, 1
-    lea     rsi, [rel msg_write_ok]
-    mov     rdx, msg_write_len
+    lea     rsi, [rel msg_cls]
+    mov     rdx, msg_cls_len
     syscall
 
-    ; ====================================================================
-    ; 3.  SYS_GETPID: retrieve PID and print it
-    ; ====================================================================
-    mov     rax, 1                  ; SYS_WRITE – prefix
-    mov     rdi, 1
-    lea     rsi, [rel msg_pid_prefix]
-    mov     rdx, msg_pid_pfxlen
-    syscall
-
-    mov     rax, 39                 ; SYS_GETPID
-    syscall
-    ; rax now holds PID (1 in current kernel)
-
-    mov     rdi, rax                ; value to format
-    lea     rsi, [rel num_buf]      ; output buffer
-    call    uint64_to_str           ; returns length in rax
-    mov     rdx, rax                ; length
+    ; Print banner
     mov     rax, 1
     mov     rdi, 1
-    lea     rsi, [rel num_buf]
+    lea     rsi, [rel msg_banner]
+    mov     rdx, msg_banner_len
     syscall
 
-    mov     rax, 1                  ; newline
+.prompt_loop:
+    ; Print "> "
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rel msg_prompt]
+    mov     rdx, msg_prompt_len
+    syscall
+
+    ; Read line into stack buffer, length returned in rbx
+    mov     rdi, rsp
+    call    read_line
+
+    ; Execute command
+    mov     rdi, rsp
+    mov     rsi, rbx
+    call    execute_cmd
+
+    jmp     .prompt_loop
+
+    ; Never reached
+    add     rsp, 256
+    mov     rax, 60
+    xor     rdi, rdi
+    syscall
+
+; ---------------------------------------------------------------------------
+; read_line(rdi = buffer ptr)
+;   Returns length in rbx.
+; ---------------------------------------------------------------------------
+read_line:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 16
+
+    mov     r12, rdi
+    xor     rbx, rbx
+
+.rl_loop:
+    mov     rax, 0
+    mov     rdi, 0
+    lea     rsi, [rbp-8]
+    mov     rdx, 1
+    syscall
+
+    movzx   eax, byte [rbp-8]
+
+    cmp     al, 0x0A
+    je      .rl_done
+    cmp     al, 0x0D
+    je      .rl_done
+
+    cmp     al, 0x08
+    je      .rl_bs
+    cmp     al, 0x7F
+    je      .rl_bs
+
+    cmp     rbx, 254
+    jge     .rl_loop
+
+    mov     [r12 + rbx], al
+    inc     rbx
+
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rbp-8]
+    mov     rdx, 1
+    syscall
+
+    jmp     .rl_loop
+
+.rl_bs:
+    test    rbx, rbx
+    jz      .rl_loop
+    dec     rbx
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rel msg_bs]
+    mov     rdx, msg_bs_len
+    syscall
+    jmp     .rl_loop
+
+.rl_done:
+    mov     byte [r12 + rbx], 0
+    mov     rax, 1
     mov     rdi, 1
     lea     rsi, [rel msg_newline]
     mov     rdx, msg_nl_len
     syscall
 
-    ; ====================================================================
-    ; 4.  SYS_UPTIME_MS: get uptime and print it
-    ; ====================================================================
-    mov     rax, 1                  ; SYS_WRITE – prefix
-    mov     rdi, 1
-    lea     rsi, [rel msg_uptime_pre]
-    mov     rdx, msg_uptime_len
-    syscall
-
-    mov     rax, 96                 ; SYS_UPTIME_MS
-    syscall
-    ; rax = uptime in ms
-
-    mov     rdi, rax
-    lea     rsi, [rel num_buf]
-    call    uint64_to_str
-    mov     rdx, rax
-    mov     rax, 1
-    mov     rdi, 1
-    lea     rsi, [rel num_buf]
-    syscall
-
-    mov     rax, 1                  ; " ms\n"
-    mov     rdi, 1
-    lea     rsi, [rel msg_ms]
-    mov     rdx, msg_ms_len
-    syscall
-
-    ; ====================================================================
-    ; 5.  SYS_SLEEP_MS: sleep 200 ms
-    ; ====================================================================
-    mov     rax, 1
-    mov     rdi, 1
-    lea     rsi, [rel msg_sleep_pre]
-    mov     rdx, msg_sleep_prelen
-    syscall
-
-    mov     rax, 35                 ; SYS_SLEEP_MS
-    mov     rdi, 200                ; 200 ms
-    syscall
-
-    mov     rax, 1
-    mov     rdi, 1
-    lea     rsi, [rel msg_sleep_done]
-    mov     rdx, msg_sleep_len
-    syscall
-
-    ; ====================================================================
-    ; 6.  SYS_PUTS: write a null-terminated string (kernel adds newline)
-    ; ====================================================================
-    mov     rax, 200                ; SYS_PUTS
-    lea     rdi, [rel str_puts_test]
-    syscall
-
-    ; ====================================================================
-    ; 7.  SYS_PUTS: farewell message before exit
-    ; ====================================================================
-    mov     rax, 200
-    lea     rdi, [rel str_exit_msg]
-    syscall
-
-    ; ====================================================================
-    ; 8.  SYS_EXIT: terminate with status 0
-    ; ====================================================================
-    mov     rax, 60                 ; SYS_EXIT
-    xor     rdi, rdi                ; status = 0
-    syscall
-
-.hang:
-    ; Should never reach here – kernel's sys_exit spins forever
-    jmp     .hang
-
-; ---------------------------------------------------------------------------
-; uint64_to_str
-;   in:  rdi = unsigned 64-bit value
-;        rsi = pointer to output buffer (at least 21 bytes)
-;   out: rax = number of characters written (no null terminator)
-;   clobbers: rcx, rdx, r8
-; ---------------------------------------------------------------------------
-uint64_to_str:
-    push    rbx
-    push    rbp
-    mov     rbx, rsi                ; save base pointer
-    mov     rbp, rsi
-    add     rbp, 20                 ; point to end of scratch space
-    mov     byte [rbp], 0           ; null terminator
-
-    test    rdi, rdi
-    jnz     .convert
-    ; special case: value is 0
-    mov     byte [rbx], '0'
-    mov     rax, 1
+    add     rsp, 16
     pop     rbp
-    pop     rbx
     ret
 
-.convert:
-    ; Build digits in reverse at the end of the scratch area
-    mov     rax, rdi                ; value
-    mov     r8,  rbp                ; cursor (working backwards)
-.digit_loop:
-    test    rax, rax
-    jz      .done_digits
-    xor     rdx, rdx
-    mov     rcx, 10
-    div     rcx                     ; rax = quotient, rdx = remainder
-    dec     r8
-    add     dl, '0'
-    mov     [r8], dl
-    jmp     .digit_loop
+; ---------------------------------------------------------------------------
+; execute_cmd(rdi = buffer, rsi = length)
+; ---------------------------------------------------------------------------
+execute_cmd:
+    push    rbp
+    mov     rbp, rsp
 
-.done_digits:
-    ; Copy from r8 to rbx (forward into output buffer)
-    mov     rdi, rbx                ; destination
-    mov     rsi, r8                 ; source
-    xor     rcx, rcx
-.copy_loop:
-    mov     dl, [rsi]
-    test    dl, dl
-    jz      .copy_done
-    mov     [rdi], dl
-    inc     rsi
-    inc     rdi
-    inc     rcx
-    jmp     .copy_loop
-.copy_done:
-    mov     rax, rcx                ; return length
+    test    rsi, rsi
+    jz      .done
+
+    cmp     rsi, cmd_clear_len
+    jne     .unknown
+
+    lea     r8,  [rel cmd_clear]
+    mov     r9,  rdi
+    mov     rcx, cmd_clear_len
+
+.cmp_loop:
+    movzx   eax,  byte [r9]
+    movzx   r10d, byte [r8]
+    cmp     eax,  r10d
+    jne     .unknown
+    inc     r9
+    inc     r8
+    dec     rcx
+    jnz     .cmp_loop
+
+    ; Clear screen then reprint banner
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rel msg_cls2]
+    mov     rdx, msg_cls2_len
+    syscall
+
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rel msg_banner]
+    mov     rdx, msg_banner_len
+    syscall
+    jmp     .done
+
+.unknown:
+    mov     rax, 1
+    mov     rdi, 1
+    lea     rsi, [rel msg_unknown]
+    mov     rdx, msg_unknown_len
+    syscall
+
+.done:
     pop     rbp
-    pop     rbx
     ret
