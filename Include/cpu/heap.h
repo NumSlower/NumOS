@@ -5,7 +5,7 @@
 
 /* Heap Configuration Constants */
 #define HEAP_START          0xFFFFFFFF90000000UL  /* Kernel heap start address */
-#define HEAP_SIZE           (64 * 1024 * 1024)    /* 64MB heap size */
+#define HEAP_SIZE           (128 * 1024 * 1024)    /* 64MB heap size */
 #define HEAP_MIN_SIZE       16                     /* Minimum allocation size */
 #define HEAP_ALIGNMENT      16                     /* Memory alignment (16-byte for 64-bit) */
 
@@ -49,31 +49,14 @@ struct heap_stats {
 void heap_init(void);
 void* kmalloc(size_t size);
 void* kzalloc(size_t size);
-void* krealloc(void* ptr, size_t new_size);
 void kfree(void* ptr);
 
 /* Aligned Memory Allocation */
 void* kmalloc_aligned(size_t size, size_t alignment);
-void* kzalloc_aligned(size_t size, size_t alignment);
-
-/* Array and String Allocation Helpers */
-void* kcalloc(size_t count, size_t size);
-char* kstrdup(const char* str);
-
-/* Page-based Allocation */
-void* kmalloc_pages(size_t pages);
-void kfree_pages(void* ptr, size_t pages);
 
 /* Heap Information and Debugging */
-struct heap_stats heap_get_stats(void);
 void heap_print_stats(void);
-void heap_print_blocks(void);
 int heap_validate(void);
-void heap_defragment(void);
-size_t heap_get_block_size(void* ptr);
-
-/* Heap Integrity Functions */
-int heap_check_corruption(void);
-void heap_enable_guards(int enable);
+void heap_get_stats(struct heap_stats *out);
 
 #endif /* HEAP_H */

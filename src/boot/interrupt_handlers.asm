@@ -192,8 +192,7 @@ isr_common_stub:
     ; Clean up error code and interrupt number from stack
     add rsp, 16
     
-    ; Enable interrupts and return
-    sti
+    ; Return with original RFLAGS restored by IRETQ
     iretq
 
 ;==============================================================================
@@ -267,6 +266,5 @@ irq_common_stub:
     ; Clean up error code and interrupt number from stack
     add rsp, 16
     
-    ; Enable interrupts and return
-    sti
+    ; Return with original RFLAGS restored by IRETQ
     iretq

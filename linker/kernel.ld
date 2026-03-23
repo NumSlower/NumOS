@@ -37,6 +37,13 @@ SECTIONS
         _rodata_end = .;
     } :text
 
+    .init_array ALIGN(8) : {
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        KEEP(*(.init_array.*))
+        __init_array_end = .;
+    } :data
+
     /* Initialized data (Read + Write) */
     .data ALIGN(4K) : {
         _data_start = .;

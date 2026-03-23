@@ -22,9 +22,9 @@
 
 /* Virtual Memory Layout Constants (Canonical addresses for 64-bit) */
 #define KERNEL_VIRTUAL_BASE 0xFFFFFFFF80000000UL   /* -2GB (canonical high) */
-#define USER_VIRTUAL_BASE   0x0000000000400000UL   /* 4MB (user space start) */
+#define USER_VIRTUAL_BASE   0x0000000060000000UL   /* 4MB (user space start) */
 #define KERNEL_HEAP_START   0xFFFFFFFF90000000UL   /* Kernel heap start */
-#define USER_STACK_TOP      0x0000000000800000UL   /* 8MB (user stack) */
+#define USER_STACK_TOP      0x0000000070000000UL      /* 1.25GB - above identity map */
 
 /* Page Table Entry Type */
 typedef uint64_t page_entry_t;
@@ -40,6 +40,22 @@ struct physical_memory_info {
     uint64_t available_memory;     /* Available physical memory */
     uint64_t kernel_start;         /* Kernel start address */
     uint64_t kernel_end;           /* Kernel end address */
+};
+
+struct pmm_stats {
+    uint64_t total_memory;
+    uint64_t available_memory;
+    uint64_t total_frames;
+    uint64_t used_frames;
+    uint64_t free_frames;
+};
+
+struct paging_stats {
+    uint64_t page_faults;
+    uint64_t pages_mapped;
+    uint64_t pages_unmapped;
+    uint64_t tlb_flushes;
+    uint64_t allocation_failures;
 };
 
 /* Page Frame Status Flags */
@@ -65,53 +81,46 @@ struct vm_region {
 };
 
 /* Core Paging Functions */
-void paging_init(void);
-void paging_enable(void);
-void paging_flush_tlb(void);
+void paging_init(uint64_t reserved_phys_end);
 void paging_flush_page(uint64_t virtual_addr);
 
 /* Page Mapping Functions */
 int paging_map_page(uint64_t virtual_addr, uint64_t physical_addr, uint64_t flags);
 int paging_unmap_page(uint64_t virtual_addr);
-int paging_map_range(uint64_t virtual_start, uint64_t physical_start, size_t pages, uint64_t flags);
-int paging_unmap_range(uint64_t virtual_start, size_t pages, int free_physical);
-int paging_change_protection(uint64_t virtual_addr, uint64_t new_flags);
 int paging_is_mapped(uint64_t virtual_addr);
 uint64_t paging_get_physical_address(uint64_t virtual_addr);
 
 /* Virtual Memory Region Management */
 int paging_create_vm_region(uint64_t start, uint64_t end, uint64_t flags);
-void paging_destroy_vm_region(uint64_t start, uint64_t end);
 struct vm_region* paging_find_vm_region(uint64_t addr);
 
 /* Page Table Management */
 struct page_table* paging_get_page_table(uint64_t virtual_addr, int create);
 page_entry_t* paging_get_page_entry(uint64_t virtual_addr, int create);
-struct page_table* paging_create_page_table(void);
-void paging_destroy_page_table(struct page_table* table);
 
 /* Physical Memory Manager */
 void pmm_init(struct physical_memory_info *mem_info);
 uint64_t pmm_alloc_frame(void);
 void pmm_free_frame(uint64_t frame_addr);
-uint64_t pmm_get_total_frames(void);
-uint64_t pmm_get_free_frames(void);
-uint64_t pmm_get_used_frames(void);
+void pmm_get_stats(struct pmm_stats *out);
 
 /* Virtual Memory Manager */
 void vmm_init(void);
 void* vmm_alloc_pages(size_t num_pages, uint64_t flags);
 void vmm_free_pages(void* virtual_addr, size_t num_pages);
 
+void paging_get_stats(struct paging_stats *out);
+
+uint64_t paging_get_kernel_cr3(void);
+uint64_t paging_get_current_cr3(void);
+void paging_switch_to(uint64_t cr3);
+uint64_t paging_create_user_pml4(void);
+struct page_table *paging_get_active_pml4(void);
+void paging_set_active_pml4(struct page_table *pml4);
+
 /* Utility Functions */
 uint64_t paging_align_up(uint64_t addr, uint64_t alignment);
 uint64_t paging_align_down(uint64_t addr, uint64_t alignment);
-int paging_is_aligned(uint64_t addr, uint64_t alignment);
-int paging_validate_range(uint64_t virtual_start, size_t pages);
-
-/* Debug and Information Functions */
-void paging_print_stats(void);
-void paging_print_vm_regions(void);
 
 /* Exception Handler */
 void page_fault_handler(uint64_t error_code, uint64_t fault_addr);

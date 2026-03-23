@@ -2,8 +2,12 @@
 
 A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, hardware drivers, and an interactive scrollback system.
 
+Current build support:
+- AMD64 and Intel x86-64 PCs through GRUB Multiboot2
+- Raspberry Pi 5 support is planned as a separate ARM64 port, see `docs/PORTING_RPI5_ARM64.md`
+
 ![NumOS Version](https://img.shields.io/badge/version-2.5-blue)
-![Architecture](https://img.shields.io/badge/architecture-x86__64-green)
+![Architecture](https://img.shields.io/badge/architecture-x86__64_current-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
 ## 🎯 Features
@@ -77,6 +81,11 @@ A 64-bit operating system kernel written from scratch in C and Assembly, featuri
 
 ### Prerequisites
 
+Current target:
+- `NUMOS_ARCH=x86_64`
+- `NUMOS_MACHINE=pc`
+- `make arch-status` prints the active target and support state
+
 **Cross-Compiler Toolchain:**
 - `x86_64-elf-gcc` (cross-compiler)
 - `x86_64-elf-ld` (linker)
@@ -135,6 +144,34 @@ make run
 make debug
 ```
 
+### Partitioning a Drive or Image
+
+```bash
+# 1) List host drives
+make partition-list
+
+# 2) Dry run on a disk image (prints commands only)
+make partition PART_TARGET=build/disk.img
+
+# 3) Apply changes and format partition 1 as FAT32
+make partition PART_TARGET=build/disk.img PART_APPLY=1 PART_FORMAT=1
+
+# 4) Example for SSD or micro SD (replace with your device path)
+make partition PART_TARGET=/dev/sdX PART_APPLY=1 PART_FORMAT=1
+
+# 5) Boot NumOS from a partitioned image
+make run-partition PART_TARGET=build/disk.img
+```
+
+Notes:
+- Default layout uses one partition from `1MiB` to `100%`
+- Default partition table is `gpt`
+- Use `PART_TABLE=msdos` if you need MBR
+- Use `PART_FS=ext4` for ext4 formatting
+- `PART_POPULATE=1` writes NumOS files into FAT32 partition 1
+- GRUB mode choice in `run-partition` persists in `/run/grubenv` on the disk image
+- Keep `PART_APPLY=0` for a safe preview
+
 ### Project Structure
 
 ```
@@ -152,7 +189,7 @@ NumOS/
 ├── preboot/             # GRUB configuration
 ├── build/               # Build output directory
 ├── Makefile             # Main build system
-└── linker.ld            # Linker script
+└── linker/kernel.ld     # Linker script
 ```
 
 ## 🚀 Running
@@ -175,7 +212,9 @@ gdb build/kernel.bin
 1. Create a new VM with:
    - Type: Other/Unknown (64-bit)
    - Memory: 128MB minimum
-   - Storage: Attach `NumOS.iso` as optical drive
+   - Display: Use `VBoxVGA`
+   - Storage: Attach `NumOS.iso` as optical drive only
+   - Do not attach `disk.img` separately. The ISO already includes it as a multiboot ramdisk module.
 2. Boot the VM
 
 ### Real Hardware (Advanced)
@@ -222,22 +261,16 @@ NumOS includes built-in tests for:
 ## 🐛 Known Issues
 
 - No networking support
-- Basic single-core only (no SMP)
-- No persistent storage
+- No sound support
+- No USB stack
+- No NumOS specific libc or toolchain target yet
+- No `fork`, user thread API, or TLS yet
+- No graphical window system yet
+- Not self hosting yet
 
 ## 🗺️ Roadmap
 
-- [ ] Multi-tasking and scheduling
-- [ ] User space support
-- [ ] System calls and IPC
-- [ ] Filesystem support (FAT32, ext2)
-- [ ] Network stack (TCP/IP)
-- [ ] USB support
-- [ ] Graphics mode (VESA/GOP)
-- [ ] SMP support
-- [ ] ACPI implementation
-- [x] Scrollback buffer for kernel output
-- [x] Arrow key support for navigation
+See `docs/OSDEV_CHECKLIST.md` for a phase by phase audit against the OSDev operating system roadmap.
 
 ## 🔧 Development
 

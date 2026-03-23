@@ -5,6 +5,8 @@ bits 64
 
 global long_mode_start
 extern kernel_main
+extern runtime_init
+extern mb2_info_ptr
 
 section .text
 long_mode_start:
@@ -24,6 +26,12 @@ long_mode_start:
     
     ; Clear the direction flag (C code expects this)
     cld
+
+    ; Seed the global stack protector guard before entering protected C code.
+    call runtime_init
+
+    ; Restore the original multiboot2 info pointer for kernel_main().
+    mov rdi, [rel mb2_info_ptr]
     
     ; Call kernel main function
     call kernel_main

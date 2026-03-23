@@ -7,6 +7,7 @@ global _start
 global p4_table
 global p3_table  
 global p2_table
+global mb2_info_ptr
 extern long_mode_start
 
 section .bss
@@ -20,14 +21,19 @@ p2_table:
 stack_bottom:
     resb 16384      ; 16KB stack
 stack_top:
+align 8
+mb2_info_ptr:
+    resq 1
 
 section .text
 _start:
     ; Set up stack
     mov esp, stack_top
     
-    ; Store multiboot info pointer
-    mov edi, ebx
+    ; Save the multiboot info pointer in memory.
+    ; The setup helpers below reuse EDI, so keeping the pointer only in a
+    ; register breaks the handoff into 64-bit C code.
+    mov [mb2_info_ptr], ebx
     
     ; Check multiboot magic
     call check_multiboot

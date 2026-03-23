@@ -77,8 +77,6 @@ struct idt_ptr {
 void idt_init(void);
 void idt_set_gate(int num, uint64_t handler, uint16_t selector, uint8_t type_attr);
 void idt_flush(uint64_t idt_ptr_addr);
-void idt_print_info(void);
-void idt_print_stats(void);
 
 /* Exception handlers */
 void exception_handler(uint32_t exception_num, uint64_t error_code);
