@@ -184,6 +184,24 @@ endif
 		false; \
 	fi
 
+.PHONY: check-iso-tools
+check-iso-tools:
+	@if ! command -v grub-mkrescue >/dev/null 2>&1; then \
+		echo "[ERROR] Missing ISO tool: grub-mkrescue"; \
+		echo "Ubuntu or Debian: sudo apt update && sudo apt install grub-common grub-pc-bin xorriso mtools"; \
+		false; \
+	fi
+	@if ! command -v xorriso >/dev/null 2>&1; then \
+		echo "[ERROR] Missing ISO tool: xorriso"; \
+		echo "Ubuntu or Debian: sudo apt update && sudo apt install xorriso"; \
+		false; \
+	fi
+	@if ! command -v mformat >/dev/null 2>&1; then \
+		echo "[ERROR] Missing ISO tool: mformat"; \
+		echo "Ubuntu or Debian: sudo apt update && sudo apt install mtools"; \
+		false; \
+	fi
+
 # ---- Kernel ----------------------------------------------------------------
 .PHONY: kernel
 kernel: check-arch check-host-tools $(KERNEL) $(KERNEL_VESA)
@@ -268,7 +286,7 @@ partition:
 
 # ---- Kernel-only ISO (no ramdisk module) ----------------------------------
 .PHONY: iso-kernel-only
-iso-kernel-only: check-arch $(ISO_KERNEL_ONLY_FILE)
+iso-kernel-only: check-arch check-iso-tools $(ISO_KERNEL_ONLY_FILE)
 
 $(ISO_KERNEL_ONLY_FILE): $(KERNEL) $(KERNEL_VESA)
 	@mkdir -p $(GRUB_KERNEL_DIR)
@@ -319,13 +337,12 @@ $(ISO_KERNEL_ONLY_FILE): $(KERNEL) $(KERNEL_VESA)
 	  '    boot' \
 	  '}' \
 	  > $(GRUB_KERNEL_DIR)/grub.cfg
-	@grub-mkrescue -o $(ISO_KERNEL_ONLY_FILE) $(ISO_KERNEL_DIR) 2>/dev/null || \
-		(echo "[ERROR] Install grub-pc-bin and xorriso" && false)
+	@grub-mkrescue -o $(ISO_KERNEL_ONLY_FILE) $(ISO_KERNEL_DIR)
 	@echo "[OK]  $(ISO_KERNEL_ONLY_FILE)"
 
 # ---- ISO -------------------------------------------------------------------
 .PHONY: iso
-iso: check-arch $(ISO_FILE)
+iso: check-arch check-iso-tools $(ISO_FILE)
 
 $(ISO_FILE): $(KERNEL) $(KERNEL_VESA) disk
 	@mkdir -p $(GRUB_DIR)
@@ -437,8 +454,7 @@ else
 	  '}' \
 	  > $(GRUB_DIR)/grub.cfg
 endif
-	@grub-mkrescue -o $(ISO_FILE) $(ISO_DIR) 2>/dev/null || \
-		(echo "[ERROR] Install grub-pc-bin and xorriso" && false)
+	@grub-mkrescue -o $(ISO_FILE) $(ISO_DIR)
 	@echo "[OK]  $(ISO_FILE)  (FB=$(FB_ENABLED))"
 
 # ---- QEMU ------------------------------------------------------------------
