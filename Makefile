@@ -53,9 +53,9 @@ else
 endif
 
 NUMOS_TARGET ?= $(NUMOS_TARGET_TRIPLE)
-NUMOS_AS ?= $(or $(shell command -v nasm 2>/dev/null),$(shell command -v yasm 2>/dev/null))
-NUMOS_CC ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v gcc 2>/dev/null),$(shell command -v clang 2>/dev/null))
-NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v ld 2>/dev/null),$(shell command -v ld.lld 2>/dev/null))
+NUMOS_AS ?= $(or $(shell command -v nasm 2>/dev/null),$(shell command -v yasm 2>/dev/null),nasm)
+NUMOS_CC ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v gcc 2>/dev/null),$(shell command -v clang 2>/dev/null),$(NUMOS_TARGET)-gcc)
+NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v ld 2>/dev/null),$(shell command -v ld.lld 2>/dev/null),$(NUMOS_TARGET)-ld)
 
 SRC_DIR      := src
 BUILD_DIR    := build
@@ -164,9 +164,29 @@ arch-status:
 	@echo "Boot protocol: $(NUMOS_BOOT_PROTOCOL_NAME)"
 	@echo "Status: $(ARCH_STATUS)"
 
+.PHONY: check-host-tools
+check-host-tools:
+ifeq ($(NUMOS_ARCH),x86_64)
+	@if ! command -v $(NUMOS_AS) >/dev/null 2>&1; then \
+		echo "[ERROR] Missing assembler: $(NUMOS_AS)"; \
+		echo "Install nasm or yasm, or set NUMOS_AS=/path/to/nasm"; \
+		false; \
+	fi
+endif
+	@if ! command -v $(NUMOS_CC) >/dev/null 2>&1; then \
+		echo "[ERROR] Missing compiler: $(NUMOS_CC)"; \
+		echo "Install $(NUMOS_TARGET)-gcc, gcc, or clang, or set NUMOS_CC=/path/to/compiler"; \
+		false; \
+	fi
+	@if ! command -v $(NUMOS_LD) >/dev/null 2>&1; then \
+		echo "[ERROR] Missing linker: $(NUMOS_LD)"; \
+		echo "Install $(NUMOS_TARGET)-ld, ld, or ld.lld, or set NUMOS_LD=/path/to/linker"; \
+		false; \
+	fi
+
 # ---- Kernel ----------------------------------------------------------------
 .PHONY: kernel
-kernel: check-arch $(KERNEL) $(KERNEL_VESA)
+kernel: check-arch check-host-tools $(KERNEL) $(KERNEL_VESA)
 
 $(BUILD_KERNEL)/boot/%.o: $(SRC_DIR)/boot/%.asm
 	@echo "[AS]  $<"
@@ -216,7 +236,7 @@ $(KERNEL_VESA): $(COMMON_KERNEL_OBJECTS) $(MULTIBOOT_OBJECT_VESA)
 	@echo "[OK]  $(KERNEL_VESA)"
 
 .PHONY: user_space
-user_space: check-arch
+user_space: check-arch check-host-tools
 	@$(MAKE) -C $(USER_DIR) install \
 		NUMOS_ARCH=$(NUMOS_ARCH) \
 		NUMOS_TARGET=$(NUMOS_TARGET) \
