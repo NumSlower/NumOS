@@ -2,7 +2,7 @@
 # Cross-Compiler Build Script for x86_64-elf
 # This builds GCC and binutils for bare-metal x86-64 development
 
-set -e
+set -euo pipefail
 
 # Configuration
 export PREFIX="$HOME/opt/cross"
@@ -13,9 +13,21 @@ export PATH="$PREFIX/bin:$PATH"
 BINUTILS_VERSION=2.41
 GCC_VERSION=13.2.0
 
+# Validate host tools before starting a long build.
+if ! command -v makeinfo >/dev/null 2>&1; then
+    echo "Missing required host tool: makeinfo"
+    echo "Install Texinfo first, then rerun this script."
+    echo "Ubuntu or Debian: sudo apt install texinfo"
+    echo "Fedora: sudo dnf install texinfo"
+    echo "Arch: sudo pacman -S texinfo"
+    exit 1
+fi
+
+NPROC="$(nproc)"
+
 # Create directories
-mkdir -p $HOME/src
-cd $HOME/src
+mkdir -p "$HOME/src"
+cd "$HOME/src"
 
 echo "=== Building x86_64-elf cross-compiler ==="
 echo "This will take 30-60 minutes depending on your system"
@@ -27,31 +39,31 @@ echo ""
 # Download binutils
 if [ ! -f "binutils-$BINUTILS_VERSION.tar.xz" ]; then
     echo "Downloading binutils $BINUTILS_VERSION..."
-    wget https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz
+    wget "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz"
 fi
 
 # Download GCC
 if [ ! -f "gcc-$GCC_VERSION.tar.xz" ]; then
     echo "Downloading GCC $GCC_VERSION..."
-    wget https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz
+    wget "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz"
 fi
 
 # Extract binutils
 echo ""
 echo "=== Building binutils ==="
-rm -rf binutils-$BINUTILS_VERSION
-tar -xf binutils-$BINUTILS_VERSION.tar.xz
+rm -rf "binutils-$BINUTILS_VERSION" build-binutils
+tar -xf "binutils-$BINUTILS_VERSION.tar.xz"
 mkdir -p build-binutils
 cd build-binutils
 
-../binutils-$BINUTILS_VERSION/configure \
-    --target=$TARGET \
+../"binutils-$BINUTILS_VERSION"/configure \
+    --target="$TARGET" \
     --prefix="$PREFIX" \
     --with-sysroot \
     --disable-nls \
     --disable-werror
 
-make -j$(nproc)
+make -j"$NPROC"
 make install
 
 cd ..
@@ -59,20 +71,20 @@ cd ..
 # Extract GCC
 echo ""
 echo "=== Building GCC ==="
-rm -rf gcc-$GCC_VERSION
-tar -xf gcc-$GCC_VERSION.tar.xz
+rm -rf "gcc-$GCC_VERSION" build-gcc
+tar -xf "gcc-$GCC_VERSION.tar.xz"
 mkdir -p build-gcc
 cd build-gcc
 
-../gcc-$GCC_VERSION/configure \
-    --target=$TARGET \
+../"gcc-$GCC_VERSION"/configure \
+    --target="$TARGET" \
     --prefix="$PREFIX" \
     --disable-nls \
     --enable-languages=c,c++ \
     --without-headers
 
-make -j$(nproc) all-gcc
-make -j$(nproc) all-target-libgcc
+make -j"$NPROC" all-gcc
+make -j"$NPROC" all-target-libgcc
 make install-gcc
 make install-target-libgcc
 
