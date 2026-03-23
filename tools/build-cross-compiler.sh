@@ -13,6 +13,41 @@ export PATH="$PREFIX/bin:$PATH"
 BINUTILS_VERSION=2.41
 GCC_VERSION=13.2.0
 
+download_archive() {
+    local url="$1"
+    local archive="$2"
+    local tmp_archive="${archive}.part"
+
+    if [ -f "$archive" ] && tar -tf "$archive" >/dev/null 2>&1; then
+        return
+    fi
+
+    if [ -f "$archive" ]; then
+        echo "Removing incomplete archive: $archive"
+        rm -f "$archive"
+    fi
+
+    rm -f "$tmp_archive"
+    echo "Downloading $(basename "$archive")..."
+
+    if command -v curl >/dev/null 2>&1; then
+        curl --fail --location --retry 3 -o "$tmp_archive" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget --tries=3 -O "$tmp_archive" "$url"
+    else
+        echo "Missing required host tool: curl or wget"
+        exit 1
+    fi
+
+    if ! tar -tf "$tmp_archive" >/dev/null 2>&1; then
+        echo "Downloaded archive is invalid: $archive"
+        rm -f "$tmp_archive"
+        exit 1
+    fi
+
+    mv "$tmp_archive" "$archive"
+}
+
 # Validate host tools before starting a long build.
 if ! command -v makeinfo >/dev/null 2>&1; then
     echo "Missing required host tool: makeinfo"
@@ -36,17 +71,13 @@ echo "Installation directory: $PREFIX"
 echo "Target: $TARGET"
 echo ""
 
-# Download binutils
-if [ ! -f "binutils-$BINUTILS_VERSION.tar.xz" ]; then
-    echo "Downloading binutils $BINUTILS_VERSION..."
-    wget "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz"
-fi
-
-# Download GCC
-if [ ! -f "gcc-$GCC_VERSION.tar.xz" ]; then
-    echo "Downloading GCC $GCC_VERSION..."
-    wget "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz"
-fi
+# Download source archives
+download_archive \
+    "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz" \
+    "binutils-$BINUTILS_VERSION.tar.xz"
+download_archive \
+    "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz" \
+    "gcc-$GCC_VERSION.tar.xz"
 
 # Extract binutils
 echo ""
@@ -73,6 +104,10 @@ echo ""
 echo "=== Building GCC ==="
 rm -rf "gcc-$GCC_VERSION" build-gcc
 tar -xf "gcc-$GCC_VERSION.tar.xz"
+(
+    cd "gcc-$GCC_VERSION"
+    bash contrib/download_prerequisites
+)
 mkdir -p build-gcc
 cd build-gcc
 
