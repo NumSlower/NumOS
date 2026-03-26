@@ -1,0 +1,15 @@
+# Build output
+/build/
+/user/build/
+
+# Nested local repo
+/user/programs/ocl/
+
+# Editor temp files
+*.swp
+*.swo
+*~
+
+# OS clutter
+.DS_Store
+Thumbs.db

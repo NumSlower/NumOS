@@ -161,7 +161,7 @@ static int fb_activate_mapped_mode(uint64_t phys, int width, int height,
     size_t pages = (fb_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
     for (size_t i = 0; i < pages; i++) {
         uint64_t a = (uint64_t)fb_phys + i * PAGE_SIZE;
-        paging_map_page(a, a, PAGE_PRESENT | PAGE_WRITABLE | PAGE_CACHE_DISABLE);
+        paging_map_page(a, a, PAGE_PRESENT | PAGE_WRITABLE);
     }
 
     fb_mem   = (uint8_t *)(uintptr_t)fb_phys;
@@ -444,17 +444,18 @@ static void con_redraw_from_scrollback(void) {
 }
 
 static void con_scroll_pixels(void) {
-    if (!fb_ready) return;
+    /* Redraw from the cell buffer to avoid slow framebuffer readback. */
+    if (!fb_ready || !con_screen) return;
 
+    int cw = font_char_width() * con_scale;
     int ch = font_char_height() * con_scale;
     for (int row = 0; row < con_rows - 1; row++) {
-        for (int py = 0; py < ch; py++) {
-            uint8_t *src = fb_row_bytes(con_y0 + (row + 1) * ch + py) +
-                           (size_t)con_x0 * (size_t)fb_bytespp;
-            uint8_t *dst = fb_row_bytes(con_y0 + row * ch + py) +
-                           (size_t)con_x0 * (size_t)fb_bytespp;
-            size_t row_bytes = (size_t)con_w * (size_t)fb_bytespp;
-            memmove(dst, src, row_bytes);
+        for (int col = 0; col < con_cols; col++) {
+            struct fb_con_cell cell =
+                con_screen[(size_t)row * (size_t)con_cols + (size_t)col];
+            int px = con_x0 + col * cw;
+            int py = con_y0 + row * ch;
+            fb_draw_char(cell.ch, px, py, cell.fg, cell.bg, con_scale);
         }
     }
     fb_fill_rect(con_x0, con_y0 + (con_rows - 1) * ch, con_w, ch, con_fill_bg);
