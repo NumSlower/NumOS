@@ -11,6 +11,7 @@
  */
 
 #include "drivers/timer.h"
+#include "drivers/network.h"
 #include "drivers/rtc.h"
 #include "drivers/graphices/vga.h"
 #include "kernel/kernel.h"
@@ -133,6 +134,7 @@ void timer_handler(void) {
 
     stats.uptime_ms = (timer_ticks * 1000) / timer_frequency;
     stats.seconds   = stats.uptime_ms / 1000;
+    net_poll();
 
 }
 

@@ -57,6 +57,7 @@
 #define PT_NOTE         4
 #define PT_SHLIB        5
 #define PT_PHDR         6
+#define PT_TLS          7
 #define PT_GNU_STACK    0x6474e551
 #define PT_GNU_RELRO    0x6474e552
 
@@ -99,14 +100,71 @@ struct elf64_phdr {
     uint64_t p_align;            /* Segment alignment                         */
 } __attribute__((packed));
 
+/* ELF64 dynamic table entry */
+struct elf64_dyn {
+    int64_t d_tag;
+    union {
+        uint64_t d_val;
+        uint64_t d_ptr;
+    } d_un;
+} __attribute__((packed));
+
+/* ELF64 RELA relocation entry */
+struct elf64_rela {
+    uint64_t r_offset;
+    uint64_t r_info;
+    int64_t  r_addend;
+} __attribute__((packed));
+
+/* ELF64 dynamic symbol entry */
+struct elf64_sym {
+    uint32_t st_name;
+    uint8_t  st_info;
+    uint8_t  st_other;
+    uint16_t st_shndx;
+    uint64_t st_value;
+    uint64_t st_size;
+} __attribute__((packed));
+
+#define ELF64_R_SYM(info)  ((uint32_t)((info) >> 32))
+#define ELF64_R_TYPE(info) ((uint32_t)(info))
+
+/* Dynamic segment tags */
+#define DT_NULL         0
+#define DT_PLTRELSZ     2
+#define DT_HASH         4
+#define DT_STRTAB       5
+#define DT_SYMTAB       6
+#define DT_RELA         7
+#define DT_RELASZ       8
+#define DT_RELAENT      9
+#define DT_STRSZ        10
+#define DT_SYMENT       11
+#define DT_JMPREL       23
+#define DT_GNU_HASH     0x6ffffef5
+#define DT_FLAGS_1      0x6ffffffb
+#define DT_RELACOUNT    0x6ffffff9
+
+/* x86-64 relocation types */
+#define R_X86_64_NONE      0
+#define R_X86_64_64        1
+#define R_X86_64_GLOB_DAT  6
+#define R_X86_64_JUMP_SLOT 7
+#define R_X86_64_RELATIVE  8
+
 /* ---- Result returned by elf_load() --------------------------------------- */
 struct elf_load_result {
     int      success;       /* Non-zero on success                            */
     uint64_t entry;         /* Virtual entry-point address (_start)           */
     uint64_t load_base;     /* Lowest virtual address mapped                  */
     uint64_t load_end;      /* Highest virtual address mapped (page-aligned)  */
+    uint64_t load_bias;     /* Base added to ET_DYN virtual addresses         */
     uint64_t stack_top;     /* Top of freshly-allocated user stack            */
     uint64_t stack_bottom;  /* Bottom of user stack (for cleanup/unmap)       */
+    uint64_t tls_image_start; /* Mapped TLS init image virtual address        */
+    uint64_t tls_filesz;    /* Bytes of TLS initialiser image                 */
+    uint64_t tls_memsz;     /* Total TLS bytes per thread                     */
+    uint64_t tls_align;     /* Required TLS alignment                         */
     char     error[64];     /* Human-readable error string on failure         */
 };
 

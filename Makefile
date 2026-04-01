@@ -11,6 +11,17 @@ else
     OS_TYPE := windows
 endif
 
+HOST_CPU_COUNT := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+NUMOS_BUILD_JOBS ?= $(HOST_CPU_COUNT)
+NUMOS_OPT_LEVEL ?= 3
+NUMOS_COMMON_OPT_FLAGS ?= -O$(NUMOS_OPT_LEVEL) -pipe
+
+ifneq ($(filter -j% --jobs=%,$(MAKEFLAGS)),)
+    NUMOS_PARALLEL_DEFAULT :=
+else
+    MAKEFLAGS += -j$(NUMOS_BUILD_JOBS)
+endif
+
 NUMOS_ARCH ?= x86_64
 NUMOS_MACHINE ?= pc
 ARCH_DOC := docs/PORTING_RPI5_ARM64.md
@@ -60,7 +71,9 @@ NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell comm
 SRC_DIR      := src
 BUILD_DIR    := build
 BUILD_KERNEL := $(BUILD_DIR)/kernel
+BUILD_KERNEL_ATA := $(BUILD_DIR)/kernel-ata
 BUILD_USER   := $(BUILD_DIR)/user
+BOOT_STAGE_DIR := $(BUILD_DIR)/stage/run
 ISO_DIR      := $(BUILD_DIR)/iso
 GRUB_DIR     := $(ISO_DIR)/boot/grub
 TOOLS_DIR    := tools
@@ -70,6 +83,7 @@ MULTIBOOT_FLAGS := $(BUILD_KERNEL)/boot/multiboot.flags
 OS_NAME       ?= NumOS
 KERNEL_NAME   ?= kernel.bin
 KERNEL_VESA_NAME ?= kernel-vesa.bin
+KERNEL_ATA_NAME ?= kernel-ata.bin
 DISK_NAME     ?= disk.img
 ISO_NAME      ?= $(OS_NAME).iso
 ISO_KERNEL_ONLY_NAME ?= $(OS_NAME)-kernel-only.iso
@@ -109,7 +123,7 @@ ASFLAGS_MULTIBOOT_VESA := -f elf64 -D ENABLE_FRAMEBUFFER=1
 
 KERNEL_CFLAGS := $(KERNEL_ARCH_CFLAGS) -ffreestanding -fstack-protector-strong \
                  -mstack-protector-guard=global -fno-pic \
-                 -Wall -Wextra -c -IInclude -O2 \
+                 -Wall -Wextra -c -IInclude $(NUMOS_COMMON_OPT_FLAGS) \
                  -DNUMOS_ARCH_NAME=\"$(NUMOS_ARCH_NAME)\" \
                  -DNUMOS_CPU_MODE_NAME=\"$(NUMOS_CPU_MODE_NAME)\" \
                  -DNUMOS_BOOT_PROTOCOL_NAME=\"$(NUMOS_BOOT_PROTOCOL_NAME)\" \
@@ -132,16 +146,19 @@ ASM_OBJECTS      := $(patsubst $(SRC_DIR)/boot/%.asm,$(BUILD_KERNEL)/boot/%.o,$(
 MULTIBOOT_OBJECT := $(BUILD_KERNEL)/boot/multiboot_header.o
 MULTIBOOT_OBJECT_VESA := $(BUILD_KERNEL)/boot/multiboot_header.vesa.o
 KERNEL_C_OBJECTS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL)/%.o,$(KERNEL_C_SOURCES))
+KERNEL_C_OBJECTS_ATA := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL_ATA)/%.o,$(KERNEL_C_SOURCES))
 COMMON_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS) $(TRAMPOLINE_OBJ)
 
 KERNEL     := $(BUILD_DIR)/$(KERNEL_NAME)
 KERNEL_VESA := $(BUILD_DIR)/$(KERNEL_VESA_NAME)
+KERNEL_ATA := $(BUILD_DIR)/$(KERNEL_ATA_NAME)
 ISO_FILE   := $(BUILD_DIR)/$(ISO_NAME)
 ISO_KERNEL_ONLY_FILE := $(BUILD_DIR)/$(ISO_KERNEL_ONLY_NAME)
 DISK_IMAGE := $(BUILD_DIR)/$(DISK_NAME)
 INIT_ELF   := $(BUILD_USER)/$(INIT_ELF_NAME)
 ISO_KERNEL_DIR := $(BUILD_DIR)/iso-kernel-only
 GRUB_KERNEL_DIR := $(ISO_KERNEL_DIR)/boot/grub
+BOOT_SUPPORT_STAMP := $(BUILD_DIR)/stage/.boot-support.stamp
 
 .PHONY: all
 all: iso
@@ -243,6 +260,11 @@ $(BUILD_KERNEL)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	@$(NUMOS_CC) $(KERNEL_CFLAGS) $< -o $@
 
+$(BUILD_KERNEL_ATA)/%.o: $(SRC_DIR)/%.c
+	@echo "[CC]  $< (ATA/VGA)"
+	@mkdir -p $(dir $@)
+	@$(NUMOS_CC) $(KERNEL_CFLAGS) -DNUMOS_ENABLE_FRAMEBUFFER=0 -DNUMOS_FB_DISABLE_ON_VBOX=1 $< -o $@
+
 $(KERNEL): $(COMMON_KERNEL_OBJECTS) $(MULTIBOOT_OBJECT)
 	@echo "[LD]  kernel"
 	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
@@ -253,6 +275,11 @@ $(KERNEL_VESA): $(COMMON_KERNEL_OBJECTS) $(MULTIBOOT_OBJECT_VESA)
 	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
 	@echo "[OK]  $(KERNEL_VESA)"
 
+$(KERNEL_ATA): $(ASM_OBJECTS) $(KERNEL_C_OBJECTS_ATA) $(TRAMPOLINE_OBJ) $(MULTIBOOT_OBJECT)
+	@echo "[LD]  kernel-ata"
+	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
+	@echo "[OK]  $(KERNEL_ATA)"
+
 .PHONY: user_space
 user_space: check-arch check-host-tools
 	@$(MAKE) -C $(USER_DIR) install \
@@ -262,9 +289,19 @@ user_space: check-arch check-host-tools
 		NUMOS_CC=$(NUMOS_CC) \
 		NUMOS_LD=$(NUMOS_LD)
 
+.PHONY: boot-support
+boot-support: check-arch $(BOOT_SUPPORT_STAMP)
+
+$(BOOT_SUPPORT_STAMP): $(KERNEL) $(KERNEL_VESA) $(TOOLS_DIR)/build_boot_support.py
+	@mkdir -p $(dir $(BOOT_SUPPORT_STAMP)) $(BOOT_STAGE_DIR)
+	@python3 $(TOOLS_DIR)/build_boot_support.py \
+		--output-dir $(BOOT_STAGE_DIR) \
+		--kernel $(KERNEL_VESA)
+	@touch $@
+
 # ---- Disk image ------------------------------------------------------------
 .PHONY: disk
-disk: user_space
+disk: user_space $(KERNEL) boot-support
 	@mkdir -p $(BUILD_DIR)
 	@python3 $(TOOLS_DIR)/create_disk.py $(DISK_IMAGE) $(INIT_ELF) $(INIT_ELF_NAME)
 	@echo "[OK]  $(DISK_IMAGE)"
@@ -474,6 +511,8 @@ run: iso
 		-vga std \
 		-display gtk \
 		-boot d \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=2 \
 		-serial stdio
@@ -487,6 +526,8 @@ run-partition: iso-kernel-only
 		-vga std \
 		-display gtk \
 		-boot d \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
 		-drive file=$(PART_TARGET),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_KERNEL_ONLY_FILE),if=ide,media=cdrom,index=2 \
 		-serial stdio
@@ -496,6 +537,8 @@ run-nographic: iso
 	$(NUMOS_QEMU) -m 128M \
 		-vga std \
 		-boot d \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=2 \
 		-nographic
@@ -506,6 +549,8 @@ debug: iso
 	@$(NUMOS_QEMU) -m 128M \
 		-vga std \
 		-boot d \
+		-netdev user,id=net0 \
+		-device e1000,netdev=net0 \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=2 \
 		-serial stdio -s -S

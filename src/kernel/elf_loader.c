@@ -58,7 +58,7 @@ int elf_validate(const struct elf64_hdr *hdr) {
     if (hdr->e_ident[EI_CLASS] != ELFCLASS64)  return ELF_ERR_CLASS;
     if (hdr->e_ident[EI_DATA]  != ELFDATA2LSB) return ELF_ERR_CLASS;
     if (hdr->e_machine         != EM_X86_64)   return ELF_ERR_MACHINE;
-    if (hdr->e_type            != ET_EXEC)      return ELF_ERR_TYPE;
+    if (hdr->e_type != ET_EXEC && hdr->e_type != ET_DYN) return ELF_ERR_TYPE;
     if (hdr->e_phnum           == 0)            return ELF_ERR_NOPHDR;
     return ELF_OK;
 }
@@ -66,6 +66,120 @@ int elf_validate(const struct elf64_hdr *hdr) {
 /* =========================================================================
  * Segment mapping
  * ======================================================================= */
+
+static uint64_t compute_load_bias(const struct elf64_hdr *hdr,
+                                  const struct elf64_phdr *phdrs) {
+    if (hdr->e_type != ET_DYN) return 0;
+
+    uint64_t min_vaddr = UINT64_MAX;
+    for (uint16_t i = 0; i < hdr->e_phnum; i++) {
+        const struct elf64_phdr *ph = &phdrs[i];
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0) continue;
+        uint64_t seg_start = paging_align_down(ph->p_vaddr, PAGE_SIZE);
+        if (seg_start < min_vaddr) min_vaddr = seg_start;
+    }
+
+    if (min_vaddr == UINT64_MAX) return 0;
+    return USER_VIRTUAL_BASE - min_vaddr;
+}
+
+static int apply_relocation_table(const struct elf64_rela *rela,
+                                  uint64_t count,
+                                  const struct elf64_sym *symtab,
+                                  uint64_t sym_ent_size,
+                                  uint64_t load_bias) {
+    for (uint64_t i = 0; i < count; i++) {
+        const struct elf64_rela *ent = &rela[i];
+        uint32_t type = ELF64_R_TYPE(ent->r_info);
+        uint32_t sym_index = ELF64_R_SYM(ent->r_info);
+        uint64_t *where = (uint64_t *)(uintptr_t)(load_bias + ent->r_offset);
+        uint64_t value = 0;
+
+        switch (type) {
+            case R_X86_64_NONE:
+                continue;
+            case R_X86_64_RELATIVE:
+                value = load_bias + (uint64_t)ent->r_addend;
+                break;
+            case R_X86_64_64:
+            case R_X86_64_GLOB_DAT:
+            case R_X86_64_JUMP_SLOT:
+                if (!symtab || sym_ent_size != sizeof(struct elf64_sym)) {
+                    return ELF_ERR_IO;
+                }
+                value = load_bias + symtab[sym_index].st_value;
+                if (type == R_X86_64_64) value += (uint64_t)ent->r_addend;
+                break;
+            default:
+                return ELF_ERR_IO;
+        }
+
+        *where = value;
+    }
+
+    return ELF_OK;
+}
+
+static int apply_dynamic_relocations(const struct elf64_phdr *phdrs,
+                                     uint16_t phnum,
+                                     uint64_t load_bias) {
+    const struct elf64_dyn *dyn = NULL;
+    uint64_t dyn_count = 0;
+
+    for (uint16_t i = 0; i < phnum; i++) {
+        if (phdrs[i].p_type != PT_DYNAMIC || phdrs[i].p_memsz == 0) continue;
+        dyn = (const struct elf64_dyn *)(uintptr_t)(load_bias + phdrs[i].p_vaddr);
+        dyn_count = phdrs[i].p_memsz / sizeof(struct elf64_dyn);
+        break;
+    }
+
+    if (!dyn || dyn_count == 0) return ELF_OK;
+
+    const struct elf64_rela *rela = NULL;
+    uint64_t rela_size = 0;
+    uint64_t rela_ent = sizeof(struct elf64_rela);
+    uint64_t rela_count_hint = 0;
+    const struct elf64_sym *symtab = NULL;
+    uint64_t sym_ent = sizeof(struct elf64_sym);
+
+    for (uint64_t i = 0; i < dyn_count; i++) {
+        switch ((uint64_t)dyn[i].d_tag) {
+            case DT_NULL:
+                i = dyn_count;
+                break;
+            case DT_RELA:
+                rela = (const struct elf64_rela *)(uintptr_t)(load_bias + dyn[i].d_un.d_ptr);
+                break;
+            case DT_RELASZ:
+                rela_size = dyn[i].d_un.d_val;
+                break;
+            case DT_RELAENT:
+                rela_ent = dyn[i].d_un.d_val;
+                break;
+            case DT_RELACOUNT:
+                rela_count_hint = dyn[i].d_un.d_val;
+                break;
+            case DT_SYMTAB:
+                symtab = (const struct elf64_sym *)(uintptr_t)(load_bias + dyn[i].d_un.d_ptr);
+                break;
+            case DT_SYMENT:
+                sym_ent = dyn[i].d_un.d_val;
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (!rela || rela_size == 0) return ELF_OK;
+    if (rela_ent != sizeof(struct elf64_rela)) return ELF_ERR_IO;
+
+    uint64_t rela_count = rela_size / rela_ent;
+    if (rela_count_hint != 0 && rela_count_hint < rela_count) {
+        rela_count = rela_count_hint;
+    }
+
+    return apply_relocation_table(rela, rela_count, symtab, sym_ent, load_bias);
+}
 
 /*
  * map_segment - allocate physical frames and map one PT_LOAD segment.
@@ -84,30 +198,43 @@ int elf_validate(const struct elf64_hdr *hdr) {
 static int map_segment(const uint8_t        *data,
                        size_t                data_size,
                        const struct elf64_phdr *ph,
+                       uint64_t              load_bias,
                        uint64_t             *load_base_out,
                        uint64_t             *load_end_out) {
     if (ph->p_memsz == 0) return ELF_OK;
 
-    uint64_t vaddr_start = paging_align_down(ph->p_vaddr, PAGE_SIZE);
-    uint64_t vaddr_end   = paging_align_up(ph->p_vaddr + ph->p_memsz, PAGE_SIZE);
+    uint64_t seg_vaddr = ph->p_vaddr + load_bias;
+    uint64_t vaddr_start = paging_align_down(seg_vaddr, PAGE_SIZE);
+    uint64_t vaddr_end   = paging_align_up(seg_vaddr + ph->p_memsz, PAGE_SIZE);
 
     uint64_t pflags = PAGE_PRESENT | PAGE_USER;
     if (ph->p_flags & PF_W) pflags |= PAGE_WRITABLE;
 
     for (uint64_t virt = vaddr_start; virt < vaddr_end; virt += PAGE_SIZE) {
-        uint64_t phys = pmm_alloc_frame();
-        if (!phys) return ELF_ERR_NOMEM;
+        page_entry_t *entry = paging_get_page_entry(virt, 0);
+        uint64_t phys = 0;
 
-        if (paging_map_page(virt, phys, pflags) != 0) {
-            pmm_free_frame(phys);
-            return ELF_ERR_MAP;
+        if (entry && (*entry & PAGE_PRESENT)) {
+            phys = PAGE_ENTRY_ADDR(*entry);
+            uint64_t entry_flags = (*entry & ~0x000FFFFFFFFFF000ULL) |
+                                   pflags | PAGE_PRESENT;
+            *entry = phys | entry_flags;
+            paging_flush_page(virt);
+        } else {
+            phys = pmm_alloc_frame();
+            if (!phys) return ELF_ERR_NOMEM;
+
+            if (paging_map_page(virt, phys, pflags) != 0) {
+                pmm_free_frame(phys);
+                return ELF_ERR_MAP;
+            }
+
+            /* Zero-fill a newly allocated frame before writing segment data */
+            memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
         }
 
-        /* Zero-fill the frame before writing segment data */
-        memset((void *)phys, 0, PAGE_SIZE);
-
         /* Calculate how many file bytes fall in this page */
-        int64_t seg_offset = (int64_t)virt - (int64_t)ph->p_vaddr;
+        int64_t seg_offset = (int64_t)virt - (int64_t)seg_vaddr;
 
         if (seg_offset < (int64_t)ph->p_filesz) {
             uint64_t file_off   = ph->p_offset +
@@ -124,7 +251,7 @@ static int map_segment(const uint8_t        *data,
             }
 
             if (copy_count > 0) {
-                memcpy((void *)(phys + copy_start),
+                memcpy((void *)(uintptr_t)(phys + copy_start),
                        data + file_off,
                        (size_t)copy_count);
             }
@@ -230,10 +357,22 @@ int elf_load_from_memory(const void *elf_data,
 
     uint64_t load_base = 0;
     uint64_t load_end  = 0;
+    uint64_t load_bias = compute_load_bias(hdr, phdrs);
+    uint64_t tls_image_start = 0;
+    uint64_t tls_filesz = 0;
+    uint64_t tls_memsz = 0;
+    uint64_t tls_align = 0;
 
     /* Map each PT_LOAD segment */
     for (uint16_t i = 0; i < hdr->e_phnum; i++) {
         const struct elf64_phdr *ph = &phdrs[i];
+        if (ph->p_type == PT_TLS) {
+            tls_image_start = load_bias + ph->p_vaddr;
+            tls_filesz = ph->p_filesz;
+            tls_memsz = ph->p_memsz;
+            tls_align = ph->p_align;
+            continue;
+        }
         if (ph->p_type != PT_LOAD) continue;
 
         vga_writestring("ELF:   Segment ");
@@ -249,12 +388,17 @@ int elf_load_from_memory(const void *elf_data,
         }
 
         int err = map_segment((const uint8_t *)elf_data, elf_size,
-                              ph, &load_base, &load_end);
+                              ph, load_bias, &load_base, &load_end);
         if (err != ELF_OK) {
             return elf_err(result, err,
                            (err == ELF_ERR_NOMEM) ? "Out of physical memory"
                                                   : "Page table mapping failed");
         }
+    }
+
+    int reloc_rc = apply_dynamic_relocations(phdrs, hdr->e_phnum, load_bias);
+    if (reloc_rc != ELF_OK) {
+        return elf_err(result, reloc_rc, "Dynamic relocation failed");
     }
 
     /* Allocate the user stack below USER_STACK_TOP */
@@ -273,11 +417,16 @@ int elf_load_from_memory(const void *elf_data,
 
     /* Populate the result */
     result->success      = 1;
-    result->entry        = hdr->e_entry;
+    result->entry        = hdr->e_entry + load_bias;
     result->load_base    = load_base;
     result->load_end     = load_end;
+    result->load_bias    = load_bias;
     result->stack_top    = stack_top;
     result->stack_bottom = stack_bottom;
+    result->tls_image_start = tls_image_start;
+    result->tls_filesz      = tls_filesz;
+    result->tls_memsz       = tls_memsz;
+    result->tls_align       = tls_align;
 
     vga_writestring("ELF: Load complete. entry=0x");
     print_hex(result->entry);

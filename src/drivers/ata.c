@@ -38,6 +38,27 @@
 struct ata_device ata_primary_master = {0};
 struct ata_device ata_primary_slave  = {0};
 
+static uint64_t ata_identify_lba28_capacity(const uint16_t *identify_data) {
+    return (uint64_t)identify_data[60] |
+           ((uint64_t)identify_data[61] << 16);
+}
+
+static uint64_t ata_identify_lba48_capacity(const uint16_t *identify_data) {
+    return (uint64_t)identify_data[100] |
+           ((uint64_t)identify_data[101] << 16) |
+           ((uint64_t)identify_data[102] << 32) |
+           ((uint64_t)identify_data[103] << 48);
+}
+
+static uint64_t ata_identify_chs_capacity(const uint16_t *identify_data) {
+    uint64_t cylinders = identify_data[1];
+    uint64_t heads = identify_data[3];
+    uint64_t sectors = identify_data[6];
+
+    if (cylinders == 0 || heads == 0 || sectors == 0) return 0;
+    return cylinders * heads * sectors;
+}
+
 /* =========================================================================
  * Low-level status helpers
  * ======================================================================= */
@@ -137,6 +158,9 @@ void ata_select_drive(struct ata_device *dev) {
  */
 int ata_identify(struct ata_device *dev) {
     uint16_t identify_data[256] = {0};
+    uint64_t lba48_capacity = 0;
+    uint64_t lba28_capacity = 0;
+    uint64_t chs_capacity = 0;
 
     ata_select_drive(dev);
 
@@ -182,14 +206,23 @@ int ata_identify(struct ata_device *dev) {
      * otherwise fall back to the LBA28 count (word 60-61) and clear
      * supports_lba48 so the R/W paths stay consistent.
      */
+    lba48_capacity = ata_identify_lba48_capacity(identify_data);
+    lba28_capacity = ata_identify_lba28_capacity(identify_data);
+    chs_capacity = ata_identify_chs_capacity(identify_data);
+
     dev->supports_lba48 = (identify_data[83] & (1 << 10)) ? 1 : 0;
 
-    if (dev->supports_lba48 && id->lba48_capacity != 0) {
-        dev->sectors = id->lba48_capacity;
+    if (dev->supports_lba48 && lba48_capacity != 0) {
+        dev->sectors = lba48_capacity;
+    } else if (lba28_capacity != 0) {
+        dev->sectors = lba28_capacity;
+        dev->supports_lba48 = 0;
     } else {
-        dev->sectors        = id->lba_capacity;
+        dev->sectors = chs_capacity;
         dev->supports_lba48 = 0;
     }
+
+    if (dev->sectors == 0) return -1;
 
     /* Model string: 20 big-endian words, byte-swap each word */
     for (int i = 0; i < 20; i++) {

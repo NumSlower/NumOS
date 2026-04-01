@@ -89,6 +89,7 @@ struct fat32_lfn_entry {
 #define FAT32_BAD_CLUSTER       0x0FFFFFF7
 #define FAT32_EOC_MIN           0x0FFFFFF8  /* End of chain minimum */
 #define FAT32_EOC_MAX           0x0FFFFFFF  /* End of chain maximum */
+#define FAT32_FSINFO_UNKNOWN    0xFFFFFFFFu
 
 /* Maximum path and filename lengths */
 #define FAT32_MAX_PATH          260

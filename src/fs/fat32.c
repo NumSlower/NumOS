@@ -50,6 +50,7 @@ static int fat32_try_mount_at_lba(uint32_t start_lba);
 static int fat32_probe_mbr_partition_start(uint32_t *start_lba);
 static int fat32_probe_gpt_partition_start(uint32_t *start_lba);
 static uint8_t fat32_short_name_case_flags(const char *filename);
+static uint32_t fat32_count_free_clusters(void);
 
 /* =========================================================================
  * Low-level sector and cluster I/O
@@ -153,6 +154,18 @@ static int fat32_probe_gpt_partition_start(uint32_t *start_lba) {
         return 0;
     }
     return -1;
+}
+
+static uint32_t fat32_count_free_clusters(void) {
+    uint32_t free_clusters = 0;
+
+    for (uint32_t cluster = 2; cluster < g_fs.total_clusters + 2; cluster++) {
+        uint32_t entry = fat32_read_fat_entry(cluster);
+        if (entry == FAT32_BAD_CLUSTER) return FAT32_FSINFO_UNKNOWN;
+        if (entry == FAT32_FREE_CLUSTER) free_clusters++;
+    }
+
+    return free_clusters;
 }
 
 /*
@@ -1259,6 +1272,11 @@ void fat32_list_directory_recursive(const char *path) {
  * fat32_get_free_clusters - return the free cluster count from FSInfo.
  */
 uint32_t fat32_get_free_clusters(void) {
+    if (g_fs.fsinfo.free_clusters == FAT32_FSINFO_UNKNOWN ||
+        g_fs.fsinfo.free_clusters > g_fs.total_clusters) {
+        g_fs.fsinfo.free_clusters = fat32_count_free_clusters();
+    }
+
     return g_fs.fsinfo.free_clusters;
 }
 

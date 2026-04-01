@@ -1,4 +1,0 @@
-func int main() {
-    Let x:Int = 1 + 2;
-    return x;
-}

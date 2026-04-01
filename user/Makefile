@@ -3,12 +3,17 @@
 ################################################################################
 
 NUMOS_ARCH ?= x86_64
+HOST_CPU_COUNT := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+NUMOS_BUILD_JOBS ?= $(HOST_CPU_COUNT)
+NUMOS_OPT_LEVEL ?= 3
+NUMOS_COMMON_OPT_FLAGS ?= -O$(NUMOS_OPT_LEVEL) -pipe
 ARCH_BUILD_READY := 0
 ARCH_STATUS := Unsupported NUMOS_ARCH=$(NUMOS_ARCH). Supported values: x86_64, arm64.
 NUMOS_TARGET_TRIPLE :=
 USER_ASFORMAT :=
 USER_CFLAGS_ARCH :=
 USER_LDFLAGS_ARCH :=
+USER_LINK_MODE ?= pie
 
 ifeq ($(NUMOS_ARCH),x86_64)
 ARCH_BUILD_READY := 1
@@ -29,17 +34,38 @@ NUMOS_AS  ?= $(or $(shell command -v nasm 2>/dev/null),$(shell command -v yasm 2
 NUMOS_CC  ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v gcc 2>/dev/null),$(shell command -v clang 2>/dev/null))
 NUMOS_LD  ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v ld 2>/dev/null),$(shell command -v ld.lld 2>/dev/null))
 
-USER_CFLAGS := $(USER_CFLAGS_ARCH) -ffreestanding -fstack-protector-strong \
-               -mstack-protector-guard=global -fno-pic \
-               -fno-builtin -nostdlib -nostartfiles -nodefaultlibs \
-               -U__linux__ \
-               -Wall -Wextra -O2 -Iinclude
+USER_LINKER_SCRIPT := linker/linker.ld
 
-USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib -static -T linker/linker.ld \
+ifeq ($(USER_LINK_MODE),pie)
+USER_CFLAGS_MODE := -fpie
+USER_LDFLAGS_MODE := -pie --no-dynamic-linker -T linker/linker-pie.ld
+USER_LINKER_SCRIPT := linker/linker-pie.ld
+else
+USER_CFLAGS_MODE := -fno-pic
+USER_LDFLAGS_MODE := -static -T linker/linker.ld
+endif
+
+ifneq ($(filter -j% --jobs=%,$(MAKEFLAGS)),)
+NUMOS_PARALLEL_DEFAULT :=
+else
+MAKEFLAGS += -j$(NUMOS_BUILD_JOBS)
+endif
+
+USER_CFLAGS := $(USER_CFLAGS_ARCH) -ffreestanding -fstack-protector-strong \
+               -mstack-protector-guard=global $(USER_CFLAGS_MODE) \
+               -ftls-model=local-exec \
+                -fno-builtin -nostdlib -nostartfiles -nodefaultlibs \
+                -U__linux__ \
+               -Wall -Wextra $(NUMOS_COMMON_OPT_FLAGS) -Iinclude
+
+USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
                 --entry=_start --build-id=none -z noexecstack
 
 # Root Makefile expects ELFs at ../build/user/*.elf
 OUTPUT_DIR ?= ../build/user
+STAGED_BIN_DIR ?= files/bin
+PREINSTALLED_BINS := shell install pkg
+STAGED_BIN_ELFS := $(addprefix $(STAGED_BIN_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
 
 TOPLEVEL_SRCS := $(shell find . -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)
 COMMON_SRCS   := runtime/runtime.c runtime/libc.c
@@ -98,6 +124,9 @@ endif
 $(OUTPUT_DIR):
 	@mkdir -p $(OUTPUT_DIR)
 
+$(STAGED_BIN_DIR):
+	@mkdir -p $(STAGED_BIN_DIR)
+
 # ---- Assembly entry object --------------------------------------------------
 
 build/enteryusr.o: runtime/entry.asm
@@ -114,8 +143,14 @@ build/%.o: %.c include/syscalls.h
 
 # ---- Install ----------------------------------------------------------------
 
+.PHONY: stage-bin
+stage-bin: $(STAGED_BIN_ELFS)
+
+$(STAGED_BIN_DIR)/%.elf: $(OUTPUT_DIR)/%.elf | $(STAGED_BIN_DIR)
+	@cp $< $@
+
 .PHONY: install
-install: check-arch all
+install: check-arch all stage-bin
 
 # ---- Clean ------------------------------------------------------------------
 

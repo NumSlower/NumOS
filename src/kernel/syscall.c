@@ -19,6 +19,8 @@
 #include "drivers/timer.h"
 #include "drivers/framebuffer.h"
 #include "drivers/device.h"
+#include "drivers/network.h"
+#include "drivers/usb.h"
 #include "drivers/ata.h"
 #include "fs/fat32.h"
 #include "fs/vfs.h"
@@ -202,10 +204,13 @@ int64_t sys_exec(const char *path) {
 
     struct elf_load_result result;
     struct page_table *saved_pml4 = paging_get_active_pml4();
+    uint64_t saved_cr3 = paging_get_current_cr3();
     __asm__ volatile("cli");
     paging_set_active_pml4((struct page_table *)(uintptr_t)child_cr3);
+    paging_switch_to(child_cr3);
     int rc = elf_load_from_file(kpath, &result);
     paging_set_active_pml4(saved_pml4);
+    paging_switch_to(saved_cr3);
     __asm__ volatile("sti");
     if (rc != ELF_OK) return SYSCALL_EINVAL;
 
@@ -214,17 +219,31 @@ int64_t sys_exec(const char *path) {
     if (!proc) {
         uint64_t stack_top_page = paging_align_up(result.stack_top, PAGE_SIZE);
         struct page_table *saved = paging_get_active_pml4();
+        uint64_t old_cr3 = paging_get_current_cr3();
         __asm__ volatile("cli");
         paging_set_active_pml4((struct page_table *)(uintptr_t)child_cr3);
+        paging_switch_to(child_cr3);
         elf_unload(result.load_base, result.load_end, result.stack_bottom, stack_top_page);
         paging_set_active_pml4(saved);
+        paging_switch_to(old_cr3);
         __asm__ volatile("sti");
         return SYSCALL_ENOMEM;
     }
 
-    proc->load_base = result.load_base;
-    proc->load_end  = result.load_end;
-    proc->cr3       = child_cr3;
+    if (process_configure_image(proc, &result, child_cr3) != 0) {
+        uint64_t stack_top_page = paging_align_up(result.stack_top, PAGE_SIZE);
+        uint64_t saved_cr3 = paging_get_current_cr3();
+        struct page_table *saved = paging_get_active_pml4();
+        __asm__ volatile("cli");
+        paging_set_active_pml4((struct page_table *)(uintptr_t)child_cr3);
+        paging_switch_to(child_cr3);
+        elf_unload(result.load_base, result.load_end, result.stack_bottom, stack_top_page);
+        paging_set_active_pml4(saved);
+        paging_switch_to(saved_cr3);
+        __asm__ volatile("sti");
+        process_discard(proc);
+        return SYSCALL_ENOMEM;
+    }
 
     while (proc->state != PROC_ZOMBIE && proc->state != PROC_UNUSED) {
         schedule();
@@ -264,10 +283,13 @@ int64_t sys_exec_argv(const char *path, const char *cmdline) {
 
     struct elf_load_result result;
     struct page_table *saved_pml4 = paging_get_active_pml4();
+    uint64_t saved_cr3 = paging_get_current_cr3();
     __asm__ volatile("cli");
     paging_set_active_pml4((struct page_table *)(uintptr_t)child_cr3);
+    paging_switch_to(child_cr3);
     int rc = elf_load_from_file(kpath, &result);
     paging_set_active_pml4(saved_pml4);
+    paging_switch_to(saved_cr3);
     __asm__ volatile("sti");
     if (rc != ELF_OK) return SYSCALL_EINVAL;
 
@@ -276,17 +298,31 @@ int64_t sys_exec_argv(const char *path, const char *cmdline) {
     if (!proc) {
         uint64_t stack_top_page = paging_align_up(result.stack_top, PAGE_SIZE);
         struct page_table *saved = paging_get_active_pml4();
+        uint64_t old_cr3 = paging_get_current_cr3();
         __asm__ volatile("cli");
         paging_set_active_pml4((struct page_table *)(uintptr_t)child_cr3);
+        paging_switch_to(child_cr3);
         elf_unload(result.load_base, result.load_end, result.stack_bottom, stack_top_page);
         paging_set_active_pml4(saved);
+        paging_switch_to(old_cr3);
         __asm__ volatile("sti");
         return SYSCALL_ENOMEM;
     }
 
-    proc->load_base = result.load_base;
-    proc->load_end  = result.load_end;
-    proc->cr3       = child_cr3;
+    if (process_configure_image(proc, &result, child_cr3) != 0) {
+        uint64_t stack_top_page = paging_align_up(result.stack_top, PAGE_SIZE);
+        uint64_t saved_cr3 = paging_get_current_cr3();
+        struct page_table *saved = paging_get_active_pml4();
+        __asm__ volatile("cli");
+        paging_set_active_pml4((struct page_table *)(uintptr_t)child_cr3);
+        paging_switch_to(child_cr3);
+        elf_unload(result.load_base, result.load_end, result.stack_bottom, stack_top_page);
+        paging_set_active_pml4(saved);
+        paging_switch_to(saved_cr3);
+        __asm__ volatile("sti");
+        process_discard(proc);
+        return SYSCALL_ENOMEM;
+    }
 
     strncpy(proc->cmdline, kcmd, PROCESS_CMDLINE_LEN);
     proc->cmdline[PROCESS_CMDLINE_LEN - 1] = '\0';
@@ -314,7 +350,7 @@ int64_t sys_exit(int status) {
 
 int64_t sys_getpid(void) {
     struct process *p = scheduler_current();
-    return p ? (int64_t)p->pid : 1;
+    return p ? (int64_t)(p->group_id ? p->group_id : p->pid) : 1;
 }
 
 int64_t sys_sleep_ms(uint64_t ms) {
@@ -562,7 +598,8 @@ int64_t sys_timer_create(uint64_t delay_ms, uint64_t period_ms, uint32_t flags) 
     if (flags & ~NUMOS_TIMER_PERIODIC) return SYSCALL_EINVAL;
     if ((flags & NUMOS_TIMER_PERIODIC) && period_ms == 0) return SYSCALL_EINVAL;
 
-    int timer_id = timer_create_object(cur->pid, delay_ms, period_ms, flags);
+    int owner = (cur->group_id > 0) ? cur->group_id : cur->pid;
+    int timer_id = timer_create_object(owner, delay_ms, period_ms, flags);
     if (timer_id < 0) return SYSCALL_ENOMEM;
     return timer_id;
 }
@@ -572,14 +609,15 @@ int64_t sys_timer_wait(int timer_id) {
     if (!cur) return SYSCALL_EINVAL;
 
     uint64_t wake_ms = 0;
-    if (timer_prepare_wait_object(cur->pid, timer_id, &wake_ms) != 0) {
+    int owner = (cur->group_id > 0) ? cur->group_id : cur->pid;
+    if (timer_prepare_wait_object(owner, timer_id, &wake_ms) != 0) {
         return SYSCALL_EINVAL;
     }
 
     uint64_t now = timer_get_uptime_ms();
     if (wake_ms > now) process_sleep_until(wake_ms);
 
-    if (timer_complete_wait_object(cur->pid, timer_id) != 0) {
+    if (timer_complete_wait_object(owner, timer_id) != 0) {
         return SYSCALL_EINVAL;
     }
 
@@ -594,7 +632,8 @@ int64_t sys_timer_info(int timer_id, struct numos_timer_info *out) {
     if (!cur) return SYSCALL_EINVAL;
 
     struct numos_timer_info info;
-    if (timer_get_object_info(cur->pid, timer_id, &info) != 0) {
+    int owner = (cur->group_id > 0) ? cur->group_id : cur->pid;
+    if (timer_get_object_info(owner, timer_id, &info) != 0) {
         return SYSCALL_EINVAL;
     }
 
@@ -605,13 +644,26 @@ int64_t sys_timer_info(int timer_id, struct numos_timer_info *out) {
 int64_t sys_timer_cancel(int timer_id) {
     struct process *cur = scheduler_current();
     if (!cur) return SYSCALL_EINVAL;
-    return (timer_cancel_object(cur->pid, timer_id) == 0)
+    int owner = (cur->group_id > 0) ? cur->group_id : cur->pid;
+    return (timer_cancel_object(owner, timer_id) == 0)
          ? 0 : SYSCALL_EINVAL;
 }
 
 int64_t sys_reboot(void) {
     __asm__ volatile("cli");
     outb(0x64, 0xFE);
+    while (1) __asm__ volatile("hlt");
+    return 0;
+}
+
+int64_t sys_poweroff(void) {
+    __asm__ volatile("cli");
+
+    /* Try the common VM poweroff ports used by QEMU, Bochs, and VirtualBox. */
+    outw(0x604, 0x2000);
+    outw(0xB004, 0x2000);
+    outw(0x4004, 0x3400);
+
     while (1) __asm__ volatile("hlt");
     return 0;
 }
@@ -625,11 +677,21 @@ int64_t sys_reboot(void) {
  * field: 0=width, 1=height, 2=bpp, 3=available
  */
 int64_t sys_fb_info(uint64_t field) {
+    if (!fb_is_available()) {
+        switch (field) {
+            case 0: return (int64_t)(VGA_WIDTH * 8);
+            case 1: return (int64_t)(VGA_HEIGHT * 16);
+            case 2: return 0;
+            case 3: return 0;
+            default: return SYSCALL_EINVAL;
+        }
+    }
+
     switch (field) {
         case 0: return fb_get_width();
         case 1: return fb_get_height();
         case 2: return fb_get_bpp();
-        case 3: return fb_is_available() ? 1 : 0;
+        case 3: return 1;
         default: return SYSCALL_EINVAL;
     }
 }
@@ -728,6 +790,132 @@ int64_t sys_disk_write(uint64_t lba, const void *buf, uint32_t sector_count) {
 
     return ata_write_sectors(&ata_primary_master, lba, (uint8_t)sector_count, buf) == 0
          ? 0 : SYSCALL_EINVAL;
+}
+
+int64_t sys_usb_controller_count(void) {
+    return usb_controller_count();
+}
+
+int64_t sys_usb_controller_info(int index, struct numos_usb_controller_info *out) {
+    if (!out) return SYSCALL_EFAULT;
+    if (!is_user_range(out, sizeof(*out))) return SYSCALL_EFAULT;
+
+    struct usb_controller_info info;
+    if (usb_get_controller_info(index, &info) != 0) return SYSCALL_EINVAL;
+
+    struct numos_usb_controller_info user_info;
+    memset(&user_info, 0, sizeof(user_info));
+    memcpy(&user_info, &info, sizeof(user_info));
+    memcpy(out, &user_info, sizeof(user_info));
+    return 0;
+}
+
+int64_t sys_usb_port_info(int controller_index, int port_index,
+                          struct numos_usb_port_info *out) {
+    if (!out) return SYSCALL_EFAULT;
+    if (!is_user_range(out, sizeof(*out))) return SYSCALL_EFAULT;
+
+    struct usb_port_info info;
+    if (usb_get_port_info(controller_index, port_index, &info) != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    struct numos_usb_port_info user_info;
+    memset(&user_info, 0, sizeof(user_info));
+    memcpy(&user_info, &info, sizeof(user_info));
+    memcpy(out, &user_info, sizeof(user_info));
+    return 0;
+}
+
+int64_t sys_thread_create(void *start, void *arg, void *trampoline) {
+    if (!start || !trampoline) return SYSCALL_EFAULT;
+    if (!is_user_range(start, 1) || !is_user_range(trampoline, 1)) {
+        return SYSCALL_EFAULT;
+    }
+
+    struct process *cur = scheduler_current();
+    if (!cur || !cur->vm_space || cur->user_entry == 0) return SYSCALL_EINVAL;
+
+    struct process *thread =
+        process_spawn_user_thread(cur->name,
+                                  (uint64_t)(uintptr_t)trampoline,
+                                  (uint64_t)(uintptr_t)start,
+                                  (uint64_t)(uintptr_t)arg);
+    if (!thread) return SYSCALL_ENOMEM;
+    return thread->pid;
+}
+
+int64_t sys_thread_join(int tid, uint64_t *out_value) {
+    if (out_value && !is_user_range(out_value, sizeof(*out_value))) {
+        return SYSCALL_EFAULT;
+    }
+
+    struct process *cur = scheduler_current();
+    if (!cur) return SYSCALL_EINVAL;
+    if (tid <= 0 || tid == cur->pid) return SYSCALL_EINVAL;
+
+    struct process *target = scheduler_find_process(tid);
+    if (!target) return SYSCALL_EINVAL;
+    if (target->group_id != cur->group_id) return SYSCALL_EINVAL;
+
+    while (target->state != PROC_ZOMBIE && target->state != PROC_UNUSED) {
+        schedule();
+        target = scheduler_find_process(tid);
+        if (!target) return SYSCALL_EINVAL;
+    }
+
+    if (target->state == PROC_UNUSED) return 0;
+    if (out_value) *out_value = target->thread_exit_value;
+    process_reap(target);
+    return 0;
+}
+
+int64_t sys_thread_exit(uint64_t value) {
+    process_exit_value(value);
+    while (1) __asm__ volatile("hlt");
+    return 0;
+}
+
+int64_t sys_thread_self(void) {
+    struct process *cur = scheduler_current();
+    return cur ? cur->pid : 0;
+}
+
+int64_t sys_net_info(struct numos_net_info *out) {
+    if (!out) return SYSCALL_EFAULT;
+    if (!is_user_range(out, sizeof(*out))) return SYSCALL_EFAULT;
+
+    struct net_info info;
+    if (net_get_info(&info) != 0) return SYSCALL_EINVAL;
+
+    struct numos_net_info user_info;
+    memset(&user_info, 0, sizeof(user_info));
+    memcpy(&user_info, &info, sizeof(user_info));
+    memcpy(out, &user_info, sizeof(user_info));
+    return 0;
+}
+
+int64_t sys_net_dhcp(uint32_t timeout_ms) {
+    return (net_request_dhcp(timeout_ms) == 0) ? 0 : SYSCALL_EINVAL;
+}
+
+int64_t sys_net_ping(const uint8_t *ipv4, uint32_t timeout_ms,
+                     struct numos_net_ping_result *out) {
+    if (!ipv4 || !out) return SYSCALL_EFAULT;
+    if (!is_user_range(ipv4, 4)) return SYSCALL_EFAULT;
+    if (!is_user_range(out, sizeof(*out))) return SYSCALL_EFAULT;
+
+    uint8_t addr[4];
+    memcpy(addr, ipv4, sizeof(addr));
+
+    struct net_ping_result result;
+    if (net_ping_ipv4(addr, timeout_ms, &result) != 0) return SYSCALL_EINVAL;
+
+    struct numos_net_ping_result user_result;
+    memset(&user_result, 0, sizeof(user_result));
+    memcpy(&user_result, &result, sizeof(user_result));
+    memcpy(out, &user_result, sizeof(user_result));
+    return 0;
 }
 
 /* =========================================================================
@@ -832,6 +1020,44 @@ int64_t syscall_dispatch(struct syscall_regs *regs) {
         case SYS_DISK_WRITE:
             ret = sys_disk_write(regs->rdi, (const void *)regs->rsi, (uint32_t)regs->rdx);
             break;
+        case SYS_USB_CONTROLLER_COUNT:
+            ret = sys_usb_controller_count();
+            break;
+        case SYS_USB_CONTROLLER_INFO:
+            ret = sys_usb_controller_info((int)regs->rdi,
+                                          (struct numos_usb_controller_info *)regs->rsi);
+            break;
+        case SYS_USB_PORT_INFO:
+            ret = sys_usb_port_info((int)regs->rdi, (int)regs->rsi,
+                                    (struct numos_usb_port_info *)regs->rdx);
+            break;
+        case SYS_THREAD_CREATE:
+            ret = sys_thread_create((void *)regs->rdi, (void *)regs->rsi,
+                                    (void *)regs->rdx);
+            break;
+        case SYS_THREAD_JOIN:
+            ret = sys_thread_join((int)regs->rdi, (uint64_t *)regs->rsi);
+            break;
+        case SYS_THREAD_EXIT:
+            ret = sys_thread_exit(regs->rdi);
+            break;
+        case SYS_THREAD_SELF:
+            ret = sys_thread_self();
+            break;
+        case SYS_NET_INFO:
+            ret = sys_net_info((struct numos_net_info *)regs->rdi);
+            break;
+        case SYS_NET_DHCP:
+            ret = sys_net_dhcp((uint32_t)regs->rdi);
+            break;
+        case SYS_NET_PING:
+            ret = sys_net_ping((const uint8_t *)regs->rdi,
+                               (uint32_t)regs->rsi,
+                               (struct numos_net_ping_result *)regs->rdx);
+            break;
+        case SYS_POWEROFF:
+            ret = sys_poweroff();
+            break;
 
         /* Framebuffer syscalls */
         case SYS_FB_INFO:
@@ -904,6 +1130,17 @@ void syscall_print_stats(void) {
     names[SYS_DISK_INFO]   = "disk_info";
     names[SYS_DISK_READ]   = "disk_read";
     names[SYS_DISK_WRITE]  = "disk_write";
+    names[SYS_USB_CONTROLLER_COUNT] = "usb_controller_count";
+    names[SYS_USB_CONTROLLER_INFO]  = "usb_controller_info";
+    names[SYS_USB_PORT_INFO]        = "usb_port_info";
+    names[SYS_THREAD_CREATE]        = "thread_create";
+    names[SYS_THREAD_JOIN]          = "thread_join";
+    names[SYS_THREAD_EXIT]          = "thread_exit";
+    names[SYS_THREAD_SELF]          = "thread_self";
+    names[SYS_NET_INFO]             = "net_info";
+    names[SYS_NET_DHCP]             = "net_dhcp";
+    names[SYS_NET_PING]             = "net_ping";
+    names[SYS_POWEROFF]             = "poweroff";
     names[SYS_REBOOT]    = "reboot";
     names[SYS_FB_INFO]   = "fb_info";
     names[SYS_FB_WRITE]  = "fb_write";

@@ -1,340 +1,200 @@
 # NumOS
 
-A 64-bit operating system kernel written from scratch in C and Assembly, featuring custom memory management, hardware drivers, and an interactive scrollback system.
+NumOS is a small 64 bit operating system project written in C, assembly, and a small amount of Python for build tooling.
 
-Current build support:
-- AMD64 and Intel x86-64 PCs through GRUB Multiboot2
-- Raspberry Pi 5 support is planned as a separate ARM64 port, see `docs/PORTING_RPI5_ARM64.md`
+Current focus:
 
-![NumOS Version](https://img.shields.io/badge/version-2.5-blue)
-![Architecture](https://img.shields.io/badge/architecture-x86__64_current-green)
-![License](https://img.shields.io/badge/license-MIT-orange)
+- x86_64 PC boot through GRUB Multiboot2
+- a freestanding kernel with paging, interrupts, scheduling, ELF loading, and syscalls
+- a small userland with native tools such as `shell`, `edit`, `mk`, `pkg`, `net`, `proc`, `thread`, and `usb`
+- FAT32 based image creation and partition population flows
 
-## 🎯 Features
+ARM64 work is planned. The current port plan lives in `docs/PORTING_RPI5_ARM64.md`.
 
-### Core Kernel
-- **64-bit Long Mode**: Full x86-64 architecture support
-- **Memory Management**: 
-  - 4-level paging (PML4 → PDPT → PD → PT)
-  - Virtual memory manager with region tracking
-  - Physical memory manager with frame allocation
-  - Dynamic heap allocator with memory guards
-- **Interrupt Handling**: 
-  - IDT with 256 entries
-  - Exception handlers (divide by zero, page fault, GPF, etc.)
-  - IRQ handling through PIC
-- **GDT**: Proper segmentation for kernel code and data
+## Status
 
-### Drivers
-- **VGA Text Mode**: 
-  - 80x25 color text display with cursor support
-  - **200-line scrollback buffer** for reviewing output
-  - Interactive scroll mode with arrow key navigation
-  - Real-time scroll position indicator
-- **Keyboard**: 
-  - PS/2 keyboard with scan code translation
-  - Arrow key support for navigation
-  - Buffered input system
-- **Timer**: PIT-based timer with configurable frequency (18Hz - 1000Hz)
+What works today:
 
-### User Interface
-- **Interactive Scrollback System**: 
-  - Browse through 200 lines of kernel output
-  - Arrow key navigation (UP/DOWN or W/S)
-  - Visual scroll position indicator
-  - Smooth scrolling through boot messages and logs
+- kernel boots on x86_64 through GRUB
+- kernel and user runtimes use stack protection
+- ELF64 `ET_EXEC` and `ET_DYN` loading works
+- user processes run in ring 3
+- basic threads and TLS work in user space
+- FAT32 and ramdisk paths are present
+- VGA, VESA, and framebuffer console paths exist
+- e1000 networking path includes DHCP, ARP, IPv4, and ICMP echo
+- build creates a bootable ISO and a FAT32 disk image
 
-## 🏗️ Architecture
+What is still incomplete:
 
-```
-┌─────────────────────────────────────┐
-│         Kernel (Ring 0)             │
-│  ┌──────────────────────────────┐   │
-│  │   Scrollback System          │   │
-│  │  - 200-line history buffer   │   │
-│  │  - Arrow key navigation      │   │
-│  │  - Position tracking         │   │
-│  └──────────────────────────────┘   │
-│  ┌──────────────────────────────┐   │
-│  │   Memory Management          │   │
-│  │  - Paging (4-level)          │   │
-│  │  - Heap allocator            │   │
-│  │  - Physical memory manager   │   │
-│  └──────────────────────────────┘   │
-│  ┌──────────────────────────────┐   │
-│  │   Device Drivers             │   │
-│  │  - VGA, Keyboard, Timer      │   │
-│  └──────────────────────────────┘   │
-│  ┌──────────────────────────────┐   │
-│  │   Hardware Abstraction       │   │
-│  │  - GDT, IDT, PIC             │   │
-│  │  - Port I/O                  │   │
-│  └──────────────────────────────┘   │
-└─────────────────────────────────────┘
-            │ GRUB Multiboot2
-┌─────────────────────────────────────┐
-│         Hardware / QEMU             │
-└─────────────────────────────────────┘
+- no full hosted libc
+- no `fork`
+- SMP path is not production safe yet
+- networking does not include TCP or sockets
+- USB support is limited to controller and port inspection
+- ARM64 is not implemented in this tree
+
+## Host Requirements
+
+Required for a full x86_64 build:
+
+- `make`
+- `nasm` or `yasm`
+- `x86_64-elf-gcc`, `gcc`, or `clang`
+- `x86_64-elf-ld`, `ld`, or `ld.lld`
+- `grub-mkrescue`
+- `xorriso`
+- `mtools`
+- `qemu-system-x86_64` for local boot tests
+- `python3`
+
+Ubuntu or Debian example:
+
+```bash
+sudo apt update
+sudo apt install nasm qemu-system-x86 grub-common grub-pc-bin xorriso mtools python3
 ```
 
-## 🛠️ Building
+You still need a usable cross or freestanding compiler setup. The helper script in `tools/build-cross-compiler.sh` exists for that path.
 
-### Prerequisites
+## Quick Start
 
-Current target:
+Show the active architecture and support state:
+
+```bash
+make arch-status
+```
+
+Build the userland, kernel, disk image, and ISO:
+
+```bash
+make all
+```
+
+Run in QEMU:
+
+```bash
+make run
+```
+
+Run the unit tests that exist in this repo:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+## Common Build Targets
+
+Use these targets most often:
+
+- `make all`, full build
+- `make iso`, build the bootable ISO
+- `make run`, boot in QEMU
+- `make debug`, boot QEMU with a GDB stub
+- `make clean`, remove build output
+- `make arch-status`, print current target settings
+
+The default supported target is:
+
 - `NUMOS_ARCH=x86_64`
 - `NUMOS_MACHINE=pc`
-- `make arch-status` prints the active target and support state
 
-**Cross-Compiler Toolchain:**
-- `x86_64-elf-gcc` (cross-compiler)
-- `x86_64-elf-ld` (linker)
-- `nasm` (assembler)
+The tree carries early ARM64 planning, but `NUMOS_ARCH=arm64` is not bootable yet.
 
-**Build Tools:**
-- `make`
-- `grub-mkrescue` (for creating bootable ISO)
-- `xorriso` (ISO creation dependency)
+## Debug Flow
 
-**Emulation:**
-- `qemu-system-x86_64`
-
-### Installation
-
-#### Linux (Ubuntu/Debian)
-```bash
-# Install NASM
-sudo apt install nasm
-
-# Install QEMU
-sudo apt install qemu-system-x86
-
-# Install GRUB tools
-sudo apt install grub-pc-bin grub-common xorriso mtools
-
-# Build cross-compiler (or install pre-built from your distro)
-# See: https://wiki.osdev.org/GCC_Cross-Compiler
-```
-
-#### macOS
-```bash
-# Install Homebrew if not already installed
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install dependencies
-brew install nasm qemu xorriso
-
-# Build cross-compiler
-brew install x86_64-elf-gcc x86_64-elf-binutils
-```
-
-### Compilation
+Start the debug target:
 
 ```bash
-# Build kernel
-make all
-
-# Create bootable ISO image
-make iso
-
-# Build and run in QEMU
-make run
-
-# Build and debug with GDB
 make debug
 ```
 
-### Partitioning a Drive or Image
+In another terminal:
 
 ```bash
-# 1) List host drives
-make partition-list
-
-# 2) Dry run on a disk image (prints commands only)
-make partition PART_TARGET=build/disk.img
-
-# 3) Apply changes and format partition 1 as FAT32
-make partition PART_TARGET=build/disk.img PART_APPLY=1 PART_FORMAT=1
-
-# 4) Example for SSD or micro SD (replace with your device path)
-make partition PART_TARGET=/dev/sdX PART_APPLY=1 PART_FORMAT=1
-
-# 5) Boot NumOS from a partitioned image
-make run-partition PART_TARGET=build/disk.img
-```
-
-Notes:
-- Default layout uses one partition from `1MiB` to `100%`
-- Default partition table is `gpt`
-- Use `PART_TABLE=msdos` if you need MBR
-- Use `PART_FS=ext4` for ext4 formatting
-- `PART_POPULATE=1` writes NumOS files into FAT32 partition 1
-- GRUB mode choice in `run-partition` persists in `/run/grubenv` on the disk image
-- Keep `PART_APPLY=0` for a safe preview
-
-### Project Structure
-
-```
-NumOS/
-├── Include/              # Header files
-│   ├── cpu/             # CPU-related (GDT, IDT, paging, heap)
-│   ├── drivers/         # Device drivers
-│   ├── kernel/          # Kernel core
-│   └── lib/             # Standard library implementations
-├── src/                 # Source files
-│   ├── boot/            # Boot code (assembly)
-│   ├── cpu/x86/         # x86-64 specific code
-│   ├── drivers/         # Device drivers
-│   └── kernel/          # Kernel main and utilities
-├── preboot/             # GRUB configuration
-├── build/               # Build output directory
-├── Makefile             # Main build system
-└── linker/kernel.ld     # Linker script
-```
-
-## 🚀 Running
-
-### QEMU (Recommended)
-```bash
-# Standard run
-make run
-
-# With debugging
-make debug
-# In another terminal:
 gdb build/kernel.bin
-(gdb) target remote localhost:1234
-(gdb) break kernel_main
-(gdb) continue
+target remote localhost:1234
+break kernel_main
+continue
 ```
 
-### VirtualBox
-1. Create a new VM with:
-   - Type: Other/Unknown (64-bit)
-   - Memory: 128MB minimum
-   - Display: Use `VBoxVGA`
-   - Storage: Attach `NumOS.iso` as optical drive only
-   - Do not attach `disk.img` separately. The ISO already includes it as a multiboot ramdisk module.
-2. Boot the VM
+## Disk Image And Partition Flow
 
-### Real Hardware (Advanced)
-⚠️ **Use at your own risk!**
+The build creates `build/disk.img` with a fixed FAT32 layout and staged payloads from:
+
+- `build/user`
+- `build/stage/run`
+- `user/files/bin`
+- `user/files/home`
+- `user/include/syscalls.h`
+
+Preview partitioning commands for an image or device:
 
 ```bash
-# Write ISO to USB drive (replace /dev/sdX with your device)
-sudo dd if=NumOS.iso of=/dev/sdX bs=4M status=progress
-sudo sync
+make partition PART_TARGET=build/disk.img
 ```
 
-## 🎮 Using the Scrollback System
+Apply the partition table and format:
 
-When NumOS boots, it automatically displays system tests and then enters scroll mode.
-
-### Navigation Controls
-- **↑ (Up Arrow)** or **W**: Scroll backward in history (see older lines)
-- **↓ (Down Arrow)** or **S**: Scroll forward toward present (see newer lines)
-- **Q**: Exit scroll mode
-
-### Features
-- **200-line buffer**: Stores all kernel output for later review
-- **Position indicator**: Top-right corner shows "SCROLL" with current line number
-- **Smooth navigation**: Browse through boot messages, initialization logs, and test output
-- **Help bar**: Bottom of screen shows navigation instructions
-
-## 📊 Memory Map
-
-```
-0x0000000000000000 - 0x00000000000FFFFF  Low memory (1MB)
-0x0000000000100000 - 0x00000000003FFFFF  Kernel code/data (identity mapped)
-0xFFFFFFFF80000000 - 0xFFFFFFFF803FFFFF  Kernel virtual base
-0xFFFFFFFF90000000 - 0xFFFFFFFF93FFFFFF  Kernel heap (64MB)
+```bash
+make partition PART_TARGET=build/disk.img PART_APPLY=1 PART_FORMAT=1
 ```
 
-## 🧪 System Tests
+Populate a FAT32 partition with NumOS files:
 
-NumOS includes built-in tests for:
-- **Memory Allocation**: kmalloc, kzalloc, kcalloc
-- **Paging System**: Virtual memory allocation and management
-- **Timer**: Delay accuracy and uptime tracking
-- **Keyboard**: Interactive input testing
-
-## 🐛 Known Issues
-
-- No networking support
-- No sound support
-- No USB stack
-- No NumOS specific libc or toolchain target yet
-- No `fork`, user thread API, or TLS yet
-- No graphical window system yet
-- Not self hosting yet
-
-## 🗺️ Roadmap
-
-See `docs/OSDEV_CHECKLIST.md` for a phase by phase audit against the OSDev operating system roadmap.
-
-## 🔧 Development
-
-### Adding a New Driver
-
-1. Create header in `Include/drivers/mydriver.h`
-2. Implement in `src/drivers/mydriver.c`
-3. Initialize in `kernel_init()` in `src/kernel/kmain.c`
-4. Add to `KERNEL_C_SOURCES` in Makefile
-
-### Debugging Tips
-
-- Use `vga_writestring()` for kernel debugging output
-- Enable serial output in QEMU: `-serial stdio`
-- Use GDB with `make debug` for step-through debugging
-- Check memory with `print_memory()` utility
-- Monitor heap with `heap_print_stats()`
-- Use scrollback (↑/↓) to review earlier debug messages
-
-### Configuring Scrollback Buffer
-
-Edit `src/drivers/vga.c`:
-```c
-#define SCROLLBACK_LINES 200  // Adjust buffer size
+```bash
+make partition PART_TARGET=build/disk.img PART_APPLY=1 PART_FORMAT=1 PART_POPULATE=1
 ```
 
-Recommended values:
-- `100` = ~16 KB buffer
-- `200` = ~32 KB buffer (default)
-- `500` = ~80 KB buffer
-- `1000` = ~160 KB buffer
+List host block devices:
 
-## 📖 Resources
+```bash
+make partition-list
+```
 
-- [OSDev Wiki](https://wiki.osdev.org/)
-- [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
-- [AMD64 Architecture Programmer's Manual](https://www.amd.com/en/support/tech-docs)
-- [X86-64 Overview](https://wiki.osdev.org/X86-64)
+## Native Userland
 
-## 🤝 Contributing
+The image currently stages these user tools:
 
-Contributions are welcome! Please:
+- `shell`, command runner and script launcher
+- `edit`, simple text editor
+- `mk`, small build helper
+- `pkg`, staged package installer
+- `proc`, process inspection
+- `thread`, thread and TLS validation
+- `net`, link, DHCP, and ping checks
+- `usb`, USB controller and root port reporting
+- `date`, RTC-backed date output
+- `see`, file viewer
+- `install`, native install helper
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes with clear commit messages
-4. Test thoroughly in QEMU
-5. Submit a pull request
+Example flow after boot:
 
-## 📄 License
+- `pkg list`, inspect staged packages in `/run`
+- `pkg install OCLDEV`, install the sample OCL development package
+- `mk`, run the default target from `/home/BUILD.MK`
 
-This project is licensed under the MIT License - see LICENSE file for details.
+## Repository Layout
 
-## 👏 Acknowledgments
+Key directories:
 
-- OSDev community for excellent documentation
-- GRUB developers for the bootloader
-- QEMU team for the emulator
-- Everyone who contributed to the x86-64 specifications
+- `Include`, kernel and driver headers
+- `src`, kernel, driver, filesystem, and boot sources
+- `user`, user runtime, linker scripts, and native programs
+- `tools`, host-side build and disk helpers
+- `tests`, Python regression tests for tooling
+- `docs`, status notes and porting plans
+- `preboot`, GRUB configuration
 
-## 📞 Contact
+## Verification
 
-For questions or issues, please open an issue on the repository.
+Current local verification path:
 
----
+- `make all`
+- `python3 -m unittest discover -s tests -v`
 
-**Built with ❤️ for learning OS development**
+There is no `make test` target in the current tree.
+
+## Known Limits
+
+NumOS is an experimental OS project. Treat the disk and partition helpers with care when targeting real devices. Dry run is the default for the partition helper for this reason.

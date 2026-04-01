@@ -1,252 +1,195 @@
 #!/usr/bin/env python3
 """
-Create a FAT32 disk image for NumOS - FIXED VERSION
-Properly handles cluster-to-file-position mapping
+Build a small FAT32 image with the files NumOS expects at boot.
+
+The image layout is intentionally fixed and simple. That keeps the script easy
+to audit and makes the generated images deterministic across build hosts.
 """
 
+import os
 import struct
 import sys
-import os
 
-# Disk parameters
+
+# FAT32 image geometry. The current boot flow depends on this fixed layout.
 DEFAULT_DISK_SIZE_MB = 32
 DISK_SIZE_MB = DEFAULT_DISK_SIZE_MB
 BYTES_PER_SECTOR = 512
 SECTORS_PER_CLUSTER = 8
 RESERVED_SECTORS = 32
 NUM_FATS = 2
-
-# Bytes per cluster
+FAT_SIZE_SECTORS = 160
 BYTES_PER_CLUSTER = SECTORS_PER_CLUSTER * BYTES_PER_SECTOR
 
-def create_boot_sector():
-    """Create FAT32 boot sector"""
-    boot = bytearray(512)
-    
-    # Jump instruction
-    boot[0:3] = b'\xEB\x58\x90'
-    
-    # OEM name
-    boot[3:11] = b'NUMOS1.0'
-    
-    # BPB (BIOS Parameter Block)
-    struct.pack_into('<H', boot, 11, BYTES_PER_SECTOR)  # Bytes per sector
-    struct.pack_into('<B', boot, 13, SECTORS_PER_CLUSTER)  # Sectors per cluster
-    struct.pack_into('<H', boot, 14, RESERVED_SECTORS)  # Reserved sectors
-    struct.pack_into('<B', boot, 16, NUM_FATS)  # Number of FATs
-    struct.pack_into('<H', boot, 17, 0)  # Root entries (0 for FAT32)
-    struct.pack_into('<H', boot, 19, 0)  # Total sectors 16-bit (0 for FAT32)
-    struct.pack_into('<B', boot, 21, 0xF8)  # Media descriptor
-    struct.pack_into('<H', boot, 22, 0)  # FAT size 16-bit (0 for FAT32)
-    struct.pack_into('<H', boot, 24, 63)  # Sectors per track
-    struct.pack_into('<H', boot, 26, 16)  # Number of heads
-    struct.pack_into('<I', boot, 28, 0)  # Hidden sectors
-    
-    total_sectors = (DISK_SIZE_MB * 1024 * 1024) // BYTES_PER_SECTOR
-    struct.pack_into('<I', boot, 32, total_sectors)  # Total sectors 32-bit
-    
-    # Calculate FAT size using simpler formula
-    # For a 32MB disk: 65536 total sectors
-    # Data sectors = 65536 - 32 reserved = 65504
-    # With 128 clusters per FAT sector and 2 FATs:
-    # FAT size needed = CEIL(total_clusters / 128)
-    # We need to know total_clusters = (65504 / 8) = 8188 clusters
-    # FAT size = CEIL(8188 / 128) = 64 sectors per FAT
-    # But let's use a simpler approach - just reserve enough
-    fat_size = 160  # Conservative: enough for 20480 clusters
-    
-    # FAT32 Extended BPB
-    struct.pack_into('<I', boot, 36, fat_size)  # FAT size 32-bit
-    struct.pack_into('<H', boot, 40, 0)  # Ext flags
-    struct.pack_into('<H', boot, 42, 0)  # FS version
-    struct.pack_into('<I', boot, 44, 2)  # Root cluster (usually 2)
-    struct.pack_into('<H', boot, 48, 1)  # FSInfo sector
-    struct.pack_into('<H', boot, 50, 6)  # Backup boot sector
-    
-    # Reserved bytes
-    boot[52:64] = b'\x00' * 12
-    
-    # Extended boot record
-    struct.pack_into('<B', boot, 64, 0x80)  # Drive number
-    struct.pack_into('<B', boot, 65, 0)  # Reserved
-    struct.pack_into('<B', boot, 66, 0x29)  # Boot signature
-    struct.pack_into('<I', boot, 67, 0x12345678)  # Volume ID
-    boot[71:82] = b'NUMOS DISK '  # Volume label (11 bytes)
-    boot[82:90] = b'FAT32   '  # FS type (8 bytes)
-    
-    # Boot signature
-    boot[510:512] = b'\x55\xAA'
-    
-    return bytes(boot)
+# Fixed directory clusters inside the image.
+ROOT_DIRECTORY_CLUSTER = 2
+INIT_DIRECTORY_CLUSTER = 3
+BIN_DIRECTORY_CLUSTER = 4
+RUN_DIRECTORY_CLUSTER = 5
+HOME_DIRECTORY_CLUSTER = 6
+INCLUDE_DIRECTORY_CLUSTER = 7
+FIRST_FILE_CLUSTER = 8
 
-def create_fsinfo():
-    """Create FSInfo sector"""
-    fsinfo = bytearray(512)
-    
-    struct.pack_into('<I', fsinfo, 0, 0x41615252)  # Lead signature
-    # Reserved 480 bytes
-    struct.pack_into('<I', fsinfo, 484, 0x61417272)  # Struct signature
-    struct.pack_into('<I', fsinfo, 488, 0xFFFFFFFF)  # Free clusters (unknown)
-    struct.pack_into('<I', fsinfo, 492, 2)  # Next free cluster
-    # Reserved 12 bytes
-    struct.pack_into('<I', fsinfo, 508, 0xAA550000)  # Trail signature
-    
-    return bytes(fsinfo)
-
-def create_fat(total_sectors, fat_size, init_size=0, init_label="INIT",
-               syscalls_size=0, bin_programs=None, run_files=None,
-               home_files=None):
-    """Create FAT table with proper cluster chains"""
-    fat = bytearray(fat_size * BYTES_PER_SECTOR)
-    
-    # First two entries are reserved
-    struct.pack_into('<I', fat, 0, 0x0FFFFFF8)  # Media descriptor
-    struct.pack_into('<I', fat, 4, 0x0FFFFFFF)  # End of chain
-    
-    # Cluster 2: Root directory
-    struct.pack_into('<I', fat, 8, 0x0FFFFFFF)  # EOC
-    
-    # Cluster 3: /init directory
-    struct.pack_into('<I', fat, 12, 0x0FFFFFFF)  # EOC
-    
-    # Cluster 4: /bin directory
-    struct.pack_into('<I', fat, 16, 0x0FFFFFFF)  # EOC
-    
-    # Cluster 5: /run directory
-    struct.pack_into('<I', fat, 20, 0x0FFFFFFF)  # EOC
-
-    # Cluster 6: /home directory
-    struct.pack_into('<I', fat, 24, 0x0FFFFFFF)  # EOC
-
-    # Cluster 7: /include directory
-    struct.pack_into('<I', fat, 28, 0x0FFFFFFF)  # EOC
-    
-    # Clusters 8+: file chains
-    next_cluster = 8
-
-    if init_size > 0:
-        clusters_needed = (init_size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER
-        print(f"[FAT] {init_label} file: {init_size} bytes = {clusters_needed} clusters")
-        for i in range(clusters_needed):
-            cluster_idx = next_cluster + i
-            if i == clusters_needed - 1:
-                struct.pack_into('<I', fat, cluster_idx * 4, 0x0FFFFFFF)
-                print(f"[FAT] Cluster {cluster_idx}: EOC (last)")
-            else:
-                struct.pack_into('<I', fat, cluster_idx * 4, cluster_idx + 1)
-                print(f"[FAT] Cluster {cluster_idx}: -> {cluster_idx + 1}")
-        next_cluster += clusters_needed
-
-    if syscalls_size > 0:
-        clusters_needed = (syscalls_size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER
-        print(f"[FAT] SYSCALLS.H file: {syscalls_size} bytes = {clusters_needed} clusters")
-        for i in range(clusters_needed):
-            cluster_idx = next_cluster + i
-            if i == clusters_needed - 1:
-                struct.pack_into('<I', fat, cluster_idx * 4, 0x0FFFFFFF)
-                print(f"[FAT] Cluster {cluster_idx}: EOC (last)")
-            else:
-                struct.pack_into('<I', fat, cluster_idx * 4, cluster_idx + 1)
-                print(f"[FAT] Cluster {cluster_idx}: -> {cluster_idx + 1}")
-        next_cluster += clusters_needed
-
-    if bin_programs:
-        for prog in bin_programs:
-            size = prog["size"]
-            if size <= 0:
-                continue
-            clusters_needed = (size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER
-            print(f"[FAT] {prog['name']} file: {size} bytes = {clusters_needed} clusters")
-            for i in range(clusters_needed):
-                cluster_idx = next_cluster + i
-                if i == clusters_needed - 1:
-                    struct.pack_into('<I', fat, cluster_idx * 4, 0x0FFFFFFF)
-                    print(f"[FAT] Cluster {cluster_idx}: EOC (last)")
-                else:
-                    struct.pack_into('<I', fat, cluster_idx * 4, cluster_idx + 1)
-                    print(f"[FAT] Cluster {cluster_idx}: -> {cluster_idx + 1}")
-            next_cluster += clusters_needed
-
-    if run_files:
-        for item in run_files:
-            size = item["size"]
-            if size <= 0:
-                continue
-            clusters_needed = (size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER
-            print(f"[FAT] {item['name']} file: {size} bytes = {clusters_needed} clusters")
-            for i in range(clusters_needed):
-                cluster_idx = next_cluster + i
-                if i == clusters_needed - 1:
-                    struct.pack_into('<I', fat, cluster_idx * 4, 0x0FFFFFFF)
-                    print(f"[FAT] Cluster {cluster_idx}: EOC (last)")
-                else:
-                    struct.pack_into('<I', fat, cluster_idx * 4, cluster_idx + 1)
-                    print(f"[FAT] Cluster {cluster_idx}: -> {cluster_idx + 1}")
-            next_cluster += clusters_needed
-
-    if home_files:
-        for item in home_files:
-            size = item["size"]
-            if size <= 0:
-                continue
-            clusters_needed = (size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER
-            print(f"[FAT] {item['name']} file: {size} bytes = {clusters_needed} clusters")
-            for i in range(clusters_needed):
-                cluster_idx = next_cluster + i
-                if i == clusters_needed - 1:
-                    struct.pack_into('<I', fat, cluster_idx * 4, 0x0FFFFFFF)
-                    print(f"[FAT] Cluster {cluster_idx}: EOC (last)")
-                else:
-                    struct.pack_into('<I', fat, cluster_idx * 4, cluster_idx + 1)
-                    print(f"[FAT] Cluster {cluster_idx}: -> {cluster_idx + 1}")
-            next_cluster += clusters_needed
-    
-    return bytes(fat)
+# FAT32 directory attributes and entry values.
+DIRECTORY_ATTR = 0x10
+FILE_ATTR = 0x20
+READ_ONLY_ATTR = 0x01
+FAT_EOC = 0x0FFFFFFF
 
 FAT32_NTRES_LOWER_BASE = 0x08
 FAT32_NTRES_LOWER_EXT = 0x10
 
 
+def cluster_count_for_size(size):
+    """Return how many clusters are needed for a payload of size bytes."""
+    if size <= 0:
+        return 0
+    return (size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER
+
+
+def create_boot_sector():
+    """Create the FAT32 boot sector for the current image size."""
+    boot_sector = bytearray(BYTES_PER_SECTOR)
+
+    boot_sector[0:3] = b"\xEB\x58\x90"
+    boot_sector[3:11] = b"NUMOS1.0"
+
+    struct.pack_into("<H", boot_sector, 11, BYTES_PER_SECTOR)
+    struct.pack_into("<B", boot_sector, 13, SECTORS_PER_CLUSTER)
+    struct.pack_into("<H", boot_sector, 14, RESERVED_SECTORS)
+    struct.pack_into("<B", boot_sector, 16, NUM_FATS)
+    struct.pack_into("<H", boot_sector, 17, 0)
+    struct.pack_into("<H", boot_sector, 19, 0)
+    struct.pack_into("<B", boot_sector, 21, 0xF8)
+    struct.pack_into("<H", boot_sector, 22, 0)
+    struct.pack_into("<H", boot_sector, 24, 63)
+    struct.pack_into("<H", boot_sector, 26, 16)
+    struct.pack_into("<I", boot_sector, 28, 0)
+
+    total_sectors = (DISK_SIZE_MB * 1024 * 1024) // BYTES_PER_SECTOR
+    struct.pack_into("<I", boot_sector, 32, total_sectors)
+
+    struct.pack_into("<I", boot_sector, 36, FAT_SIZE_SECTORS)
+    struct.pack_into("<H", boot_sector, 40, 0)
+    struct.pack_into("<H", boot_sector, 42, 0)
+    struct.pack_into("<I", boot_sector, 44, ROOT_DIRECTORY_CLUSTER)
+    struct.pack_into("<H", boot_sector, 48, 1)
+    struct.pack_into("<H", boot_sector, 50, 6)
+
+    boot_sector[52:64] = b"\x00" * 12
+
+    struct.pack_into("<B", boot_sector, 64, 0x80)
+    struct.pack_into("<B", boot_sector, 65, 0)
+    struct.pack_into("<B", boot_sector, 66, 0x29)
+    struct.pack_into("<I", boot_sector, 67, 0x12345678)
+    boot_sector[71:82] = b"NUMOS DISK "
+    boot_sector[82:90] = b"FAT32   "
+    boot_sector[510:512] = b"\x55\xAA"
+
+    return bytes(boot_sector)
+
+
+def create_fsinfo(free_clusters, next_free_cluster):
+    """Create the FAT32 FSInfo sector."""
+    fsinfo_sector = bytearray(BYTES_PER_SECTOR)
+    struct.pack_into("<I", fsinfo_sector, 0, 0x41615252)
+    struct.pack_into("<I", fsinfo_sector, 484, 0x61417272)
+    struct.pack_into("<I", fsinfo_sector, 488, free_clusters)
+    struct.pack_into("<I", fsinfo_sector, 492, next_free_cluster)
+    struct.pack_into("<I", fsinfo_sector, 508, 0xAA550000)
+    return bytes(fsinfo_sector)
+
+
+def write_fat_entry(fat_table, cluster, value):
+    """Write one FAT32 cluster entry."""
+    struct.pack_into("<I", fat_table, cluster * 4, value)
+
+
+def append_cluster_chain(fat_table, next_cluster, record):
+    """
+    Append a cluster chain for one staged record and print the allocation.
+
+    The caller keeps ownership of the actual file data. This function only
+    writes the cluster links into the FAT.
+    """
+    clusters = record["clusters"]
+    if clusters <= 0:
+        return next_cluster
+
+    print(
+        f"[FAT] {record['name']} file: {record['size']} bytes = "
+        f"{clusters} clusters"
+    )
+    for offset in range(clusters):
+        cluster = next_cluster + offset
+        next_value = FAT_EOC if offset == clusters - 1 else cluster + 1
+        write_fat_entry(fat_table, cluster, next_value)
+        if next_value == FAT_EOC:
+            print(f"[FAT] Cluster {cluster}: EOC (last)")
+        else:
+            print(f"[FAT] Cluster {cluster}: -> {next_value}")
+
+    return next_cluster + clusters
+
+
+def create_fat(
+    _total_sectors,
+    fat_size,
+    init_record=None,
+    syscalls_record=None,
+    bin_programs=None,
+    run_files=None,
+    home_files=None,
+):
+    """Create the FAT table for the image."""
+    fat_table = bytearray(fat_size * BYTES_PER_SECTOR)
+
+    write_fat_entry(fat_table, 0, 0x0FFFFFF8)
+    write_fat_entry(fat_table, 1, FAT_EOC)
+
+    for cluster in (
+        ROOT_DIRECTORY_CLUSTER,
+        INIT_DIRECTORY_CLUSTER,
+        BIN_DIRECTORY_CLUSTER,
+        RUN_DIRECTORY_CLUSTER,
+        HOME_DIRECTORY_CLUSTER,
+        INCLUDE_DIRECTORY_CLUSTER,
+    ):
+        write_fat_entry(fat_table, cluster, FAT_EOC)
+
+    next_cluster = FIRST_FILE_CLUSTER
+    for record in (
+        [init_record, syscalls_record]
+        + list(bin_programs or [])
+        + list(run_files or [])
+        + list(home_files or [])
+    ):
+        if record:
+            next_cluster = append_cluster_chain(fat_table, next_cluster, record)
+
+    return bytes(fat_table)
+
+
 def create_directory_entry(name, attr, cluster, size=0, nt_reserved=0):
-    """Create a FAT32 directory entry (32 bytes)"""
+    """Create one 32 byte FAT32 directory entry."""
     entry = bytearray(32)
-    
-    # Name (8.3 format, padded with spaces)
-    entry[0:11] = name.ljust(11).encode('ascii')[:11]
-    
-    # Attributes
+    entry[0:11] = name.ljust(11).encode("ascii")[:11]
     entry[11] = attr
-    
-    # Reserved
     entry[12] = nt_reserved
-    
-    # Creation time centiseconds
     entry[13] = 0
-    # Creation time
-    entry[14:16] = b'\x00\x00'
-    # Creation date
-    entry[16:18] = b'\x21\x00'
-    
-    # Last access date
-    entry[18:20] = b'\x21\x00'
-    
-    # High word of cluster
-    struct.pack_into('<H', entry, 20, (cluster >> 16) & 0xFFFF)
-    
-    # Last write time
-    entry[22:24] = b'\x00\x00'
-    # Last write date
-    entry[24:26] = b'\x21\x00'
-    
-    # Low word of cluster
-    struct.pack_into('<H', entry, 26, cluster & 0xFFFF)
-    
-    # File size
-    struct.pack_into('<I', entry, 28, size)
-    
+    entry[14:16] = b"\x00\x00"
+    entry[16:18] = b"\x21\x00"
+    entry[18:20] = b"\x21\x00"
+    struct.pack_into("<H", entry, 20, (cluster >> 16) & 0xFFFF)
+    entry[22:24] = b"\x00\x00"
+    entry[24:26] = b"\x21\x00"
+    struct.pack_into("<H", entry, 26, cluster & 0xFFFF)
+    struct.pack_into("<I", entry, 28, size)
     return bytes(entry)
 
+
 def fat_format_name(filename):
+    """Convert a host filename into an uppercase FAT 8.3 short name."""
     name, ext = os.path.splitext(filename)
     if ext.startswith("."):
         ext = ext[1:]
@@ -256,6 +199,7 @@ def fat_format_name(filename):
 
 
 def fat_short_name_case_flags(filename):
+    """Return FAT32 case flags so names keep lower-case display when possible."""
     name, ext = os.path.splitext(filename)
     if ext.startswith("."):
         ext = ext[1:]
@@ -267,543 +211,487 @@ def fat_short_name_case_flags(filename):
         flags |= FAT32_NTRES_LOWER_EXT
     return flags
 
-def load_staged_files(stage_dir):
-    files = []
+
+def load_staged_files(stage_dir, allowed_names=None):
+    """
+    Load regular files from a staging directory.
+
+    Files must fit FAT 8.3 naming rules because this image builder only emits
+    short directory entries.
+    """
+    staged_files = []
 
     if not os.path.isdir(stage_dir):
-        return files
+        return staged_files
 
     print(f"Loading staged files from: {stage_dir}")
-    for entry in sorted(os.listdir(stage_dir)):
-        path = os.path.join(stage_dir, entry)
+    for entry_name in sorted(os.listdir(stage_dir)):
+        if allowed_names is not None and entry_name.lower() not in allowed_names:
+            continue
+
+        path = os.path.join(stage_dir, entry_name)
         if not os.path.isfile(path):
             continue
 
-        short_name = fat_format_name(entry)
+        short_name = fat_format_name(entry_name)
         if not short_name:
-            print(f"  [SKIP] {entry}: name is not FAT 8.3 compatible")
+            print(f"  [SKIP] {entry_name}: name is not FAT 8.3 compatible")
             continue
 
-        with open(path, 'rb') as f:
-            data = f.read()
+        with open(path, "rb") as stage_file:
+            data = stage_file.read()
 
-        size = len(data)
-        files.append({
-            'name': entry,
-            'short_name': short_name,
-            'nt_reserved': fat_short_name_case_flags(entry),
-            'size': size,
-            'data': data,
-            'cluster': 0,
-            'clusters': 0,
-        })
-        print(f"  [OK] {entry}: {size} bytes")
+        staged_files.append(
+            {
+                "name": entry_name,
+                "short_name": short_name,
+                "nt_reserved": fat_short_name_case_flags(entry_name),
+                "size": len(data),
+                "data": data,
+                "cluster": 0,
+                "clusters": 0,
+            }
+        )
+        print(f"  [OK] {entry_name}: {len(data)} bytes")
 
-    return files
+    return staged_files
+
+
+def load_staged_files_from_dirs(stage_dirs, allowed_names=None):
+    """Load staged files from several directories without duplicate names."""
+    staged_files = []
+    seen_names = set()
+
+    for stage_dir in stage_dirs:
+        for record in load_staged_files(stage_dir, allowed_names):
+            record_key = record["name"].lower()
+            if record_key in seen_names:
+                continue
+            seen_names.add(record_key)
+            staged_files.append(record)
+
+    return staged_files
+
+
+def create_base_directory(current_cluster, parent_cluster=ROOT_DIRECTORY_CLUSTER):
+    """Create a directory cluster populated with only . and .. entries."""
+    cluster = bytearray(BYTES_PER_CLUSTER)
+    cluster[0:32] = create_directory_entry(".          ", DIRECTORY_ATTR, current_cluster)
+    cluster[32:64] = create_directory_entry("..         ", DIRECTORY_ATTR, parent_cluster)
+    return cluster
+
+
+def append_directory_file_entries(cluster, start_offset, items, debug_label):
+    """Append file entries to a directory cluster and log what was written."""
+    offset = start_offset
+    for item in items or []:
+        if item["cluster"] <= 0:
+            continue
+        if offset + 32 > len(cluster):
+            break
+        cluster[offset:offset + 32] = create_directory_entry(
+            item["short_name"],
+            FILE_ATTR,
+            item["cluster"],
+            item["size"],
+            item.get("nt_reserved", 0),
+        )
+        print(
+            f"  [DEBUG] Writing {item['name']} entry ({debug_label}): "
+            f"cluster={item['cluster']}, size={item['size']}"
+        )
+        offset += 32
+    return offset
+
 
 def create_root_directory():
-    """Create root directory cluster with entries for /init, /bin, /run, /home, /include"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
-    
-    DIR_ATTR = 0x10  # Directory attribute
-    RO_ATTR  = 0x01  # Read-only attribute
-    
-    # . entry (current directory - cluster 2)
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, 2)
-    
-    # .. entry (parent directory - cluster 0 for root)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 0)
-    
-    # /init directory (cluster 3), mark read-only
-    cluster[64:96] = create_directory_entry('INIT       ', DIR_ATTR | RO_ATTR, 3)
-    
-    # /bin directory (cluster 4)
-    cluster[96:128] = create_directory_entry('BIN        ', DIR_ATTR, 4)
-    
-    # /run directory (cluster 5)
-    cluster[128:160] = create_directory_entry('RUN        ', DIR_ATTR, 5)
-
-    # /home directory (cluster 6)
-    cluster[160:192] = create_directory_entry('HOME       ', DIR_ATTR, 6)
-
-    # /include directory (cluster 7)
-    cluster[192:224] = create_directory_entry('INCLUDE    ', DIR_ATTR, 7)
-    
+    """Create the root directory with the fixed top-level folders."""
+    cluster = create_base_directory(ROOT_DIRECTORY_CLUSTER, 0)
+    cluster[64:96] = create_directory_entry(
+        "INIT       ", DIRECTORY_ATTR | READ_ONLY_ATTR, INIT_DIRECTORY_CLUSTER
+    )
+    cluster[96:128] = create_directory_entry(
+        "BIN        ", DIRECTORY_ATTR, BIN_DIRECTORY_CLUSTER
+    )
+    cluster[128:160] = create_directory_entry(
+        "RUN        ", DIRECTORY_ATTR, RUN_DIRECTORY_CLUSTER
+    )
+    cluster[160:192] = create_directory_entry(
+        "HOME       ", DIRECTORY_ATTR, HOME_DIRECTORY_CLUSTER
+    )
+    cluster[192:224] = create_directory_entry(
+        "INCLUDE    ", DIRECTORY_ATTR, INCLUDE_DIRECTORY_CLUSTER
+    )
     return bytes(cluster)
+
 
 def create_init_directory():
-    """Create empty /init directory"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
-    
-    DIR_ATTR = 0x10  # Directory attribute
-    FILE_ATTR = 0x20  # File attribute
-    
-    # . entry (current directory - cluster 3)
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, 3)
-    
-    # .. entry (parent directory - cluster 2, root)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 2)
+    """Create the empty /init directory."""
+    return bytes(create_base_directory(INIT_DIRECTORY_CLUSTER))
 
+
+def create_bin_directory(init_record=None, bin_programs=None):
+    """Create the /bin directory with the init ELF and user programs."""
+    cluster = create_base_directory(BIN_DIRECTORY_CLUSTER)
+    next_offset = 64
+
+    if init_record and init_record["clusters"] > 0:
+        cluster[next_offset:next_offset + 32] = create_directory_entry(
+            init_record["short_name"],
+            FILE_ATTR,
+            init_record["cluster"],
+            init_record["size"],
+            init_record.get("nt_reserved", 0),
+        )
+        print(
+            f"  [DEBUG] Writing {init_record['name']} entry (bin): "
+            f"cluster={init_record['cluster']}, size={init_record['size']}"
+        )
+        next_offset += 32
+
+    append_directory_file_entries(cluster, next_offset, bin_programs, "bin")
     return bytes(cluster)
 
-def create_bin_directory(init_short_name=None, init_cluster=0, init_size=0,
-                         init_label="INIT", init_nt_reserved=0,
-                         bin_programs=None):
-    """Create /bin directory with init and program entries"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
-    
-    DIR_ATTR  = 0x10  # Directory attribute
-    FILE_ATTR = 0x20  # File attribute
-
-    # . entry (current directory - cluster 4)
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, 4)
-
-    # .. entry (parent directory - cluster 2, root)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 2)
-
-    offset = 64
-    if init_size > 0 and init_cluster >= 8 and init_short_name:
-        if offset + 32 <= len(cluster):
-            cluster[offset:offset + 32] = create_directory_entry(
-                init_short_name, FILE_ATTR, init_cluster, init_size,
-                init_nt_reserved
-            )
-            print(f"  [DEBUG] Writing {init_label} entry (bin): cluster={init_cluster}, size={init_size}")
-            offset += 32
-    if bin_programs:
-        for prog in bin_programs:
-            if prog["cluster"] <= 0:
-                continue
-            if offset + 32 > len(cluster):
-                break
-            cluster[offset:offset + 32] = create_directory_entry(
-                prog["short_name"], FILE_ATTR, prog["cluster"], prog["size"],
-                prog.get("nt_reserved", 0)
-            )
-            print(f"  [DEBUG] Writing {prog['name']} entry (bin): cluster={prog['cluster']}, size={prog['size']}")
-            offset += 32
-
-    return bytes(cluster)
 
 def create_run_directory(run_files):
-    """Create /run directory with staged runtime file entries"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
-
-    DIR_ATTR  = 0x10  # Directory attribute
-    FILE_ATTR = 0x20  # File attribute
-
-    # . entry (current directory - cluster 5)
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, 5)
-
-    # .. entry (parent directory - cluster 2, root)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 2)
-
-    offset = 64
-    if run_files:
-        for item in run_files:
-            if item["cluster"] <= 0:
-                continue
-            if offset + 32 > len(cluster):
-                break
-            cluster[offset:offset + 32] = create_directory_entry(
-                item["short_name"], FILE_ATTR, item["cluster"], item["size"],
-                item.get("nt_reserved", 0)
-            )
-            print(f"  [DEBUG] Writing {item['name']} entry: cluster={item['cluster']}, size={item['size']}")
-            offset += 32
-
+    """Create the /run directory with staged runtime files."""
+    cluster = create_base_directory(RUN_DIRECTORY_CLUSTER)
+    append_directory_file_entries(cluster, 64, run_files, "run")
     return bytes(cluster)
+
 
 def create_empty_directory(cluster_num):
-    """Create an empty directory with just . and .. entries"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
-    
-    DIR_ATTR = 0x10  # Directory attribute
-    
-    # . entry (current directory)
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, cluster_num)
-    
-    # .. entry (parent directory - cluster 2, root)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 2)
-    
-    return bytes(cluster)
+    """Backward compatible helper for callers that need an empty directory."""
+    return bytes(create_base_directory(cluster_num))
+
 
 def create_home_directory(home_files):
-    """Create /home directory with file entries"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
-
-    DIR_ATTR  = 0x10
-    FILE_ATTR = 0x20
-
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, 6)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 2)
-
-    offset = 64
-    if home_files:
-        for item in home_files:
-            if item["cluster"] <= 0:
-                continue
-            if offset + 32 > len(cluster):
-                break
-            cluster[offset:offset + 32] = create_directory_entry(
-                item["short_name"], FILE_ATTR, item["cluster"], item["size"],
-                item.get("nt_reserved", 0)
-            )
-            print(f"  [DEBUG] Writing {item['name']} entry (home): cluster={item['cluster']}, size={item['size']}")
-            offset += 32
-
+    """Create the /home directory with staged user files."""
+    cluster = create_base_directory(HOME_DIRECTORY_CLUSTER)
+    append_directory_file_entries(cluster, 64, home_files, "home")
     return bytes(cluster)
 
-def create_include_directory(syscalls_size=0, syscalls_cluster=0):
-    """Create /include directory with header entries"""
-    cluster = bytearray(BYTES_PER_CLUSTER)
 
-    DIR_ATTR  = 0x10
-    FILE_ATTR = 0x20
-
-    cluster[0:32] = create_directory_entry('.          ', DIR_ATTR, 7)
-    cluster[32:64] = create_directory_entry('..         ', DIR_ATTR, 2)
-
-    if syscalls_size > 0 and syscalls_cluster >= 8:
-        cluster[64:96] = create_directory_entry('SYSCALLSH  ', FILE_ATTR,
-                                                syscalls_cluster, syscalls_size,
-                                                fat_short_name_case_flags('syscalls.h'))
-        print(f"  [DEBUG] Writing SYSCALLS.H entry (include): cluster={syscalls_cluster}, size={syscalls_size}")
-
+def create_include_directory(syscalls_record=None):
+    """Create the /include directory with exported headers."""
+    cluster = create_base_directory(INCLUDE_DIRECTORY_CLUSTER)
+    append_directory_file_entries(cluster, 64, [syscalls_record] if syscalls_record else [], "include")
     return bytes(cluster)
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 create_disk.py <output.img> [init_elf] [init_name]")
-        sys.exit(1)
 
-    syscalls_data = None
-    syscalls_size = 0
-    bin_programs = []
-    run_files = []
-    home_files = []
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    build_user_dir = os.path.join(root_dir, "build", "user")
-    init_name_lower = None
-    syscalls_path = os.path.join(root_dir, "user", "include", "syscalls.h")
-    if os.path.isfile(syscalls_path):
-        print(f"Loading SYSCALLS.H: {syscalls_path}")
-        with open(syscalls_path, 'rb') as f:
-            syscalls_data = f.read()
-        syscalls_size = len(syscalls_data)
-        print(f"  [OK] SYSCALLS.H loaded: {syscalls_size} bytes")
+def load_binary_file(path, label):
+    """Read a required binary payload from disk and print a short status line."""
+    print(f"Loading {label}: {path}")
+    with open(path, "rb") as binary_file:
+        data = binary_file.read()
+    print(f"  [OK] {label} loaded: {len(data)} bytes")
+    return data
 
-    if os.path.isdir(build_user_dir):
-        for entry in sorted(os.listdir(build_user_dir)):
-            if not entry.lower().endswith('.elf'):
-                continue
-            if init_name_lower and entry.lower() == init_name_lower:
-                continue
-            short_name = fat_format_name(entry)
-            if not short_name:
-                continue
-            path_elf = os.path.join(build_user_dir, entry)
-            with open(path_elf, 'rb') as f:
-                data = f.read()
-            size = len(data)
-            bin_programs.append({
-                'name': entry,
-                'short_name': short_name,
-                'nt_reserved': fat_short_name_case_flags(entry),
-                'size': size,
-                'data': data,
-                'cluster': 0,
-                'clusters': 0,
-            })
 
-    run_stage_dir = os.path.join(root_dir, "user", "files", "run")
-    home_stage_dir = os.path.join(root_dir, "user", "files", "home")
-    run_files.extend(load_staged_files(run_stage_dir))
-    home_files.extend(load_staged_files(home_stage_dir))
+def create_file_record(name, data):
+    """Create the record shape used through staging, allocation, and writing."""
+    short_name = fat_format_name(name)
+    if not short_name:
+        return None
+    return {
+        "name": name,
+        "short_name": short_name,
+        "nt_reserved": fat_short_name_case_flags(name),
+        "size": len(data),
+        "data": data,
+        "cluster": 0,
+        "clusters": cluster_count_for_size(len(data)),
+    }
 
-    global DISK_SIZE_MB
-    output_file = sys.argv[1]
+
+def assign_record_clusters(records, next_cluster):
+    """Assign clusters in order so on-disk layout matches directory order."""
+    for record in records:
+        if not record:
+            continue
+        record["clusters"] = cluster_count_for_size(record["size"])
+        if record["clusters"] <= 0:
+            record["cluster"] = 0
+            continue
+        record["cluster"] = next_cluster
+        next_cluster += record["clusters"]
+    return next_cluster
+
+
+def write_reserved_area(image_file):
+    """Write reserved sectors and the backup boot sector."""
+    print("  Writing reserved sectors...")
+    for sector in range(2, RESERVED_SECTORS):
+        if sector == 6:
+            image_file.write(create_boot_sector())
+        else:
+            image_file.write(b"\x00" * BYTES_PER_SECTOR)
+
+
+def pad_record_data(record):
+    """Pad one record to a whole-number cluster count."""
+    padded_size = record["clusters"] * BYTES_PER_CLUSTER
+    return record["data"] + b"\x00" * (padded_size - record["size"])
+
+
+def write_record_payload(image_file, record):
+    """Write one staged payload after the directory area."""
+    if not record or record["clusters"] <= 0:
+        return
+
+    end_cluster = record["cluster"] + record["clusters"] - 1
+    print(
+        f"  Writing clusters {record['cluster']}-{end_cluster} "
+        f"({record['name']}: {record['size']} bytes)..."
+    )
+    image_file.write(pad_record_data(record))
+
+
+def print_record_layout(record, data_start_sector):
+    """Print the on-disk cluster range for one staged record."""
+    if not record or record["clusters"] <= 0:
+        return
+
+    start_sector = data_start_sector + (record["cluster"] - ROOT_DIRECTORY_CLUSTER) * SECTORS_PER_CLUSTER
+    end_cluster = record["cluster"] + record["clusters"] - 1
+    print(
+        f"    Cluster {record['cluster']}-{end_cluster} "
+        f"(sector {start_sector}): {record['name']} file ({record['size']} bytes)"
+    )
+
+
+def print_record_contents(directory, record):
+    """Print one user-facing file listing entry."""
+    if not record or record["clusters"] <= 0:
+        return
+    print(f"  {directory}/{record['name']} - {record['size']} bytes")
+
+
+def parse_disk_size_mb():
+    """Read NUMOS_DISK_SIZE_MB and keep the default when unset."""
     disk_size_override = os.environ.get("NUMOS_DISK_SIZE_MB")
-    if disk_size_override:
-        try:
-            DISK_SIZE_MB = int(disk_size_override)
-        except ValueError:
-            print(f"ERROR: invalid NUMOS_DISK_SIZE_MB value: {disk_size_override}")
-            sys.exit(1)
-    else:
-        DISK_SIZE_MB = DEFAULT_DISK_SIZE_MB
-
-    offset_bytes_env = os.environ.get("NUMOS_DISK_OFFSET_BYTES", "0")
+    if not disk_size_override:
+        return DEFAULT_DISK_SIZE_MB
     try:
-        offset_bytes = int(offset_bytes_env)
+        return int(disk_size_override)
     except ValueError:
-        print(f"ERROR: invalid NUMOS_DISK_OFFSET_BYTES value: {offset_bytes_env}")
-        sys.exit(1)
+        print(f"ERROR: invalid NUMOS_DISK_SIZE_MB value: {disk_size_override}")
+        raise SystemExit(1)
+
+
+def parse_offset_bytes():
+    """Read NUMOS_DISK_OFFSET_BYTES and reject negative offsets."""
+    offset_text = os.environ.get("NUMOS_DISK_OFFSET_BYTES", "0")
+    try:
+        offset_bytes = int(offset_text)
+    except ValueError:
+        print(f"ERROR: invalid NUMOS_DISK_OFFSET_BYTES value: {offset_text}")
+        raise SystemExit(1)
     if offset_bytes < 0:
         print("ERROR: NUMOS_DISK_OFFSET_BYTES must be >= 0")
-        sys.exit(1)
+        raise SystemExit(1)
+    return offset_bytes
 
-    preserve_prefix = os.environ.get("NUMOS_DISK_PRESERVE_PREFIX", "0") == "1"
+
+def load_init_record(init_elf_file, init_name_arg):
+    """Load an optional replacement init ELF."""
+    if not init_elf_file:
+        return None
+    if not os.path.isfile(init_elf_file):
+        print(f"ERROR: init ELF not found: {init_elf_file}")
+        print(f"  Expected at: {os.path.abspath(init_elf_file)}")
+        raise SystemExit(1)
+
+    init_data = load_binary_file(init_elf_file, "init ELF")
+    init_name = init_name_arg if init_name_arg else os.path.basename(init_elf_file)
+    init_record = create_file_record(init_name, init_data)
+    if not init_record:
+        print(f"ERROR: init name not 8.3 compatible: {init_name}")
+        raise SystemExit(1)
+
+    print(f"  [OK] Clusters needed: {init_record['clusters']}")
+    print(f"  [OK] Padded size: {init_record['clusters'] * BYTES_PER_CLUSTER}")
+    return init_record
+
+
+def main():
+    """Build the image and print a short layout summary."""
+    if len(sys.argv) < 2:
+        print("Usage: python3 create_disk.py <output.img> [init_elf] [init_name]")
+        raise SystemExit(1)
+
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    output_file = sys.argv[1]
     init_elf_file = sys.argv[2] if len(sys.argv) > 2 else None
     init_name_arg = sys.argv[3] if len(sys.argv) > 3 else None
 
-    init_data = None
-    init_size = 0
-    init_name = None
-    init_short_name = None
-    init_label = "INIT"
-    init_nt_reserved = 0
-    if init_elf_file and os.path.isfile(init_elf_file):
-        print(f"Loading init ELF: {init_elf_file}")
-        with open(init_elf_file, 'rb') as f:
-            init_data = f.read()
-        init_size = len(init_data)
-        init_name = init_name_arg if init_name_arg else os.path.basename(init_elf_file)
-        init_short_name = fat_format_name(init_name)
-        if not init_short_name:
-            print(f"ERROR: init name not 8.3 compatible: {init_name}")
-            sys.exit(1)
-        init_label = init_name
-        init_nt_reserved = fat_short_name_case_flags(init_name)
-        init_name_lower = init_name.lower()
-        print(f"  [OK] Init ELF loaded: {init_size} bytes")
-        print(f"  [OK] Clusters needed: {(init_size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER}")
-        print(f"  [OK] Padded size: {((init_size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER) * BYTES_PER_CLUSTER}")
-    elif init_elf_file:
-        print(f"ERROR: init ELF not found: {init_elf_file}")
-        print(f"  Expected at: {os.path.abspath(init_elf_file)}")
-        sys.exit(1)
+    global DISK_SIZE_MB
+    DISK_SIZE_MB = parse_disk_size_mb()
+    offset_bytes = parse_offset_bytes()
+    preserve_prefix = os.environ.get("NUMOS_DISK_PRESERVE_PREFIX", "0") == "1"
 
-    if init_name_lower:
-        bin_programs = [p for p in bin_programs if p["name"].lower() != init_name_lower]
+    syscalls_record = None
+    syscalls_path = os.path.join(root_dir, "user", "include", "syscalls.h")
+    if os.path.isfile(syscalls_path):
+        syscalls_record = create_file_record(
+            "SYSCALLS.H", load_binary_file(syscalls_path, "SYSCALLS.H")
+        )
+
+    preinstalled_bin_names = {
+        "date.elf",
+        "edit.elf",
+        "install.elf",
+        "mk.elf",
+        "net.elf",
+        "ocl.elf",
+        "pkg.elf",
+        "proc.elf",
+        "see.elf",
+        "shell.elf",
+        "thread.elf",
+        "usb.elf",
+    }
+    bin_programs = load_staged_files_from_dirs(
+        [
+            os.path.join(root_dir, "user", "files", "bin"),
+            os.path.join(root_dir, "build", "user"),
+        ],
+        preinstalled_bin_names,
+    )
+    run_files = load_staged_files_from_dirs(
+        [
+            os.path.join(root_dir, "user", "files", "run"),
+            os.path.join(root_dir, "build", "stage", "run"),
+        ]
+    )
+    home_files = load_staged_files_from_dirs(
+        [os.path.join(root_dir, "user", "files", "home")]
+    )
+
+    init_record = load_init_record(init_elf_file, init_name_arg)
+    if init_record:
+        init_name_lower = init_record["name"].lower()
+        bin_programs = [
+            program for program in bin_programs if program["name"].lower() != init_name_lower
+        ]
+
+    total_sectors = (DISK_SIZE_MB * 1024 * 1024) // BYTES_PER_SECTOR
+    data_start_sector = RESERVED_SECTORS + (NUM_FATS * FAT_SIZE_SECTORS)
 
     print(f"\nCreating {DISK_SIZE_MB}MB FAT32 disk image: {output_file}")
-    
-    # Use consistent FAT size (must match what's in boot sector)
-    fat_size = 160  # Conservative size for this disk
-    total_sectors = (DISK_SIZE_MB * 1024 * 1024) // BYTES_PER_SECTOR
-    
-    data_start_sector = RESERVED_SECTORS + (NUM_FATS * fat_size)
-    
     print(f"  Total sectors: {total_sectors}")
-    print(f"  FAT size: {fat_size} sectors ({fat_size * BYTES_PER_SECTOR} bytes)")
+    print(f"  FAT size: {FAT_SIZE_SECTORS} sectors ({FAT_SIZE_SECTORS * BYTES_PER_SECTOR} bytes)")
     print(f"  Data area starts at sector: {data_start_sector}")
     print(f"  Bytes per cluster: {BYTES_PER_CLUSTER}")
 
-    def clusters_for(size):
-        return (size + BYTES_PER_CLUSTER - 1) // BYTES_PER_CLUSTER if size > 0 else 0
+    next_cluster = FIRST_FILE_CLUSTER
+    next_cluster = assign_record_clusters([init_record, syscalls_record], next_cluster)
+    next_cluster = assign_record_clusters(bin_programs, next_cluster)
+    next_cluster = assign_record_clusters(run_files, next_cluster)
+    next_cluster = assign_record_clusters(home_files, next_cluster)
 
-    init_clusters = clusters_for(init_size)
-    syscalls_clusters = clusters_for(syscalls_size)
-    for prog in bin_programs:
-        prog["clusters"] = clusters_for(prog["size"])
-    for item in run_files:
-        item["clusters"] = clusters_for(item["size"])
-    for item in home_files:
-        item["clusters"] = clusters_for(item["size"])
-
-    next_cluster = 8
-    init_cluster = next_cluster if init_clusters > 0 else 0
-    next_cluster += init_clusters
-    syscalls_cluster = next_cluster if syscalls_clusters > 0 else 0
-    next_cluster += syscalls_clusters
-    for prog in bin_programs:
-        if prog["clusters"] > 0:
-            prog["cluster"] = next_cluster
-            next_cluster += prog["clusters"]
-    for item in run_files:
-        if item["clusters"] > 0:
-            item["cluster"] = next_cluster
-            next_cluster += item["clusters"]
-    for item in home_files:
-        if item["clusters"] > 0:
-            item["cluster"] = next_cluster
-            next_cluster += item["clusters"]
-    
-    # Create the disk image
-    file_mode = 'r+b' if preserve_prefix else 'wb'
+    file_mode = "r+b" if preserve_prefix else "wb"
     if preserve_prefix and not os.path.exists(output_file):
         print(f"ERROR: preserve mode requires existing file: {output_file}")
-        sys.exit(1)
+        raise SystemExit(1)
 
-    with open(output_file, file_mode) as f:
+    with open(output_file, file_mode) as image_file:
         if offset_bytes:
-            f.seek(offset_bytes)
-        # Sector 0: Boot sector
+            image_file.seek(offset_bytes)
+
         print("  Writing boot sector...")
-        f.write(create_boot_sector())
-        
-        # Sector 1: FSInfo
+        image_file.write(create_boot_sector())
+
+        total_clusters = (total_sectors - data_start_sector) // SECTORS_PER_CLUSTER
+        free_clusters = total_clusters - (next_cluster - ROOT_DIRECTORY_CLUSTER)
+
         print("  Writing FSInfo...")
-        f.write(create_fsinfo())
-        
-        # Sectors 2-31: Reserved area
-        print("  Writing reserved sectors...")
-        for i in range(2, RESERVED_SECTORS):
-            if i == 6:
-                # Sector 6 is backup boot sector
-                f.write(create_boot_sector())
-            else:
-                f.write(b'\x00' * BYTES_PER_SECTOR)
-        
-        # FAT tables
+        image_file.write(create_fsinfo(free_clusters, next_cluster))
+
+        write_reserved_area(image_file)
+
         print(f"  Writing FAT tables ({NUM_FATS} copies)...")
-        fat_data = create_fat(total_sectors, fat_size, init_size, init_label,
-                              syscalls_size, bin_programs, run_files,
-                              home_files)
+        fat_data = create_fat(
+            total_sectors,
+            FAT_SIZE_SECTORS,
+            init_record=init_record,
+            syscalls_record=syscalls_record,
+            bin_programs=bin_programs,
+            run_files=run_files,
+            home_files=home_files,
+        )
         for _ in range(NUM_FATS):
-            f.write(fat_data)
-        
-        # DATA AREA: Clusters start here
-        # Cluster 2: Root directory
+            image_file.write(fat_data)
+
         print("  Writing cluster 2 (root directory)...")
-        f.write(create_root_directory())
-        
-        # Cluster 3: /init directory
+        image_file.write(create_root_directory())
         print("  Writing cluster 3 (/init directory)...")
-        f.write(create_init_directory())
-        
-        # Cluster 4: /bin directory
+        image_file.write(create_init_directory())
         print("  Writing cluster 4 (/bin directory)...")
-        f.write(create_bin_directory(init_short_name, init_cluster, init_size,
-                                     init_label, init_nt_reserved,
-                                     bin_programs))
-        
-        # Cluster 5: /run directory
+        image_file.write(create_bin_directory(init_record=init_record, bin_programs=bin_programs))
         print("  Writing cluster 5 (/run directory)...")
-        f.write(create_run_directory(run_files))
-
-        # Cluster 6: /home directory
+        image_file.write(create_run_directory(run_files))
         print("  Writing cluster 6 (/home directory)...")
-        f.write(create_home_directory(home_files))
-
-        # Cluster 7: /include directory
+        image_file.write(create_home_directory(home_files))
         print("  Writing cluster 7 (/include directory)...")
-        f.write(create_include_directory(syscalls_size, syscalls_cluster))
-        
-        # Clusters 7+: file data
-        if init_data:
-            print(f"  Writing clusters {init_cluster}-{init_cluster + init_clusters - 1} ({init_label}: {init_size} bytes)...")
-            padded_size = init_clusters * BYTES_PER_CLUSTER
-            init_padded = init_data + b'\x00' * (padded_size - init_size)
-            f.write(init_padded)
+        image_file.write(create_include_directory(syscalls_record))
 
-        if syscalls_data:
-            print(f"  Writing clusters {syscalls_cluster}-{syscalls_cluster + syscalls_clusters - 1} (SYSCALLS.H: {syscalls_size} bytes)...")
-            padded_size = syscalls_clusters * BYTES_PER_CLUSTER
-            syscalls_padded = syscalls_data + b'\x00' * (padded_size - syscalls_size)
-            f.write(syscalls_padded)
+        for record in [init_record, syscalls_record] + bin_programs + run_files + home_files:
+            write_record_payload(image_file, record)
 
-        if bin_programs:
-            for prog in bin_programs:
-                if prog["clusters"] <= 0:
-                    continue
-                print(f"  Writing clusters {prog['cluster']}-{prog['cluster'] + prog['clusters'] - 1} ({prog['name']}: {prog['size']} bytes)...")
-                padded_size = prog["clusters"] * BYTES_PER_CLUSTER
-                padded = prog["data"] + b'\x00' * (padded_size - prog["size"])
-                f.write(padded)
-
-        if run_files:
-            for item in run_files:
-                if item["clusters"] <= 0:
-                    continue
-                print(f"  Writing clusters {item['cluster']}-{item['cluster'] + item['clusters'] - 1} ({item['name']}: {item['size']} bytes)...")
-                padded_size = item["clusters"] * BYTES_PER_CLUSTER
-                padded = item["data"] + b'\x00' * (padded_size - item["size"])
-                f.write(padded)
-
-        if home_files:
-            for item in home_files:
-                if item["clusters"] <= 0:
-                    continue
-                print(f"  Writing clusters {item['cluster']}-{item['cluster'] + item['clusters'] - 1} ({item['name']}: {item['size']} bytes)...")
-                padded_size = item["clusters"] * BYTES_PER_CLUSTER
-                padded = item["data"] + b'\x00' * (padded_size - item["size"])
-                f.write(padded)
-        
-        # Fill rest of disk with zeros
-        current_pos = f.tell()
+        current_pos = image_file.tell()
         total_size = total_sectors * BYTES_PER_SECTOR
         target_end_pos = offset_bytes + total_size
         remaining = target_end_pos - current_pos
-        
         if remaining > 0:
             print(f"  Filling remaining space ({remaining // 1024}KB)...")
-            chunk_size = 1024 * 1024  # 1MB chunks
-            chunks = remaining // chunk_size
-            last_chunk = remaining % chunk_size
-            
-            for _ in range(chunks):
-                f.write(b'\x00' * chunk_size)
-            if last_chunk > 0:
-                f.write(b'\x00' * last_chunk)
-    
+            chunk_size = 1024 * 1024
+            full_chunks = remaining // chunk_size
+            tail_bytes = remaining % chunk_size
+            for _ in range(full_chunks):
+                image_file.write(b"\x00" * chunk_size)
+            if tail_bytes:
+                image_file.write(b"\x00" * tail_bytes)
+
     print(f"\nSuccessfully created {output_file}")
     print("\nDisk structure:")
-    print(f"  Boot sector + reserved: sectors 0-{RESERVED_SECTORS-1}")
-    print(f"  FAT copies: sectors {RESERVED_SECTORS}-{RESERVED_SECTORS + NUM_FATS * fat_size - 1}")
+    print(f"  Boot sector + reserved: sectors 0-{RESERVED_SECTORS - 1}")
+    print(
+        f"  FAT copies: sectors {RESERVED_SECTORS}-"
+        f"{RESERVED_SECTORS + NUM_FATS * FAT_SIZE_SECTORS - 1}"
+    )
     print(f"  Data area: sectors {data_start_sector}+")
     print(f"    Cluster 2 (sector {data_start_sector}): Root directory")
     print(f"    Cluster 3 (sector {data_start_sector + SECTORS_PER_CLUSTER}): /init directory")
-    print(f"    Cluster 4 (sector {data_start_sector + 2*SECTORS_PER_CLUSTER}): /bin directory")
-    print(f"    Cluster 5 (sector {data_start_sector + 3*SECTORS_PER_CLUSTER}): /run directory")
-    print(f"    Cluster 6 (sector {data_start_sector + 4*SECTORS_PER_CLUSTER}): /home directory")
-    print(f"    Cluster 7 (sector {data_start_sector + 5*SECTORS_PER_CLUSTER}): /include directory")
-    if init_clusters > 0:
-        init_sector = data_start_sector + (init_cluster - 2) * SECTORS_PER_CLUSTER
-        print(f"    Cluster {init_cluster}-{init_cluster + init_clusters - 1} (sector {init_sector}): {init_label} file ({init_size} bytes)")
-    if syscalls_clusters > 0:
-        syscalls_sector = data_start_sector + (syscalls_cluster - 2) * SECTORS_PER_CLUSTER
-        print(f"    Cluster {syscalls_cluster}-{syscalls_cluster + syscalls_clusters - 1} (sector {syscalls_sector}): SYSCALLS.H file ({syscalls_size} bytes)")
-    if bin_programs:
-        for prog in bin_programs:
-            if prog["clusters"] <= 0:
-                continue
-            sector = data_start_sector + (prog["cluster"] - 2) * SECTORS_PER_CLUSTER
-            print(f"    Cluster {prog['cluster']}-{prog['cluster'] + prog['clusters'] - 1} (sector {sector}): {prog['name']} file ({prog['size']} bytes)")
-    if run_files:
-        for item in run_files:
-            if item["clusters"] <= 0:
-                continue
-            sector = data_start_sector + (item["cluster"] - 2) * SECTORS_PER_CLUSTER
-            print(f"    Cluster {item['cluster']}-{item['cluster'] + item['clusters'] - 1} (sector {sector}): {item['name']} file ({item['size']} bytes)")
-    if home_files:
-        for item in home_files:
-            if item["clusters"] <= 0:
-                continue
-            sector = data_start_sector + (item["cluster"] - 2) * SECTORS_PER_CLUSTER
-            print(f"    Cluster {item['cluster']}-{item['cluster'] + item['clusters'] - 1} (sector {sector}): {item['name']} file ({item['size']} bytes)")
-    
+    print(f"    Cluster 4 (sector {data_start_sector + 2 * SECTORS_PER_CLUSTER}): /bin directory")
+    print(f"    Cluster 5 (sector {data_start_sector + 3 * SECTORS_PER_CLUSTER}): /run directory")
+    print(f"    Cluster 6 (sector {data_start_sector + 4 * SECTORS_PER_CLUSTER}): /home directory")
+    print(f"    Cluster 7 (sector {data_start_sector + 5 * SECTORS_PER_CLUSTER}): /include directory")
+
+    for record in [init_record, syscalls_record] + bin_programs + run_files + home_files:
+        print_record_layout(record, data_start_sector)
+
     print("\nDisk contents:")
     print("  /init - Empty")
-    if init_clusters > 0:
-        if init_name:
-            print(f"  /bin/{init_name} - {init_size} bytes")
-        else:
-            print(f"  /bin/{init_label} - {init_size} bytes")
-    if bin_programs:
-        for prog in bin_programs:
-            if prog["clusters"] <= 0:
-                continue
-            print(f"  /bin/{prog['name']} - {prog['size']} bytes")
-    if syscalls_clusters > 0:
-        print(f"  /include/SYSCALLS.H - {syscalls_size} bytes")
-    if syscalls_clusters == 0 and init_clusters == 0 and (not bin_programs):
+    if init_record:
+        print_record_contents("/bin", init_record)
+    elif not bin_programs and not syscalls_record:
         print("  /bin - Empty")
+    for record in bin_programs:
+        print_record_contents("/bin", record)
+    if syscalls_record:
+        print_record_contents("/include", syscalls_record)
     if run_files:
-        for item in run_files:
-            if item["clusters"] <= 0:
-                continue
-            print(f"  /run/{item['name']} - {item['size']} bytes")
-    if not run_files:
+        for record in run_files:
+            print_record_contents("/run", record)
+    else:
         print("  /run - Empty")
     if home_files:
-        for item in home_files:
-            if item["clusters"] <= 0:
-                continue
-            print(f"  /home/{item['name']} - {item['size']} bytes")
+        for record in home_files:
+            print_record_contents("/home", record)
     else:
         print("  /home - Empty")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

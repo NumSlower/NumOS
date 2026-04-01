@@ -1,57 +1,108 @@
 # Raspberry Pi 5 ARM64 Port Plan
 
-NumOS already supports AMD64 and Intel x86-64.
+NumOS currently boots on x86_64 PCs through GRUB Multiboot2. Raspberry Pi 5 support requires a separate ARM64 platform bring-up.
 
-Raspberry Pi 5 support is a separate ARM64 port.
+## Why The Current Tree Does Not Boot On Pi 5
 
-The current tree does not boot on Pi 5 because these pieces are x86-64 only:
+The current codebase is tightly coupled to x86_64 PC hardware in several places:
 
-- `src/boot/*.asm` uses NASM and x86-64 entry code.
-- `src/cpu/x86/*` owns GDT, IDT, paging, APIC, FPU, and TSS setup.
-- `src/drivers/pic.c`, `src/drivers/ata.c`, and PS/2 keyboard paths assume PC hardware.
-- `user/runtime/entry.asm`, `src/kernel/syscall.c`, and the ELF loader assume the x86-64 ABI.
-- The build boots through GRUB Multiboot2 on a PC style machine.
+- `src/boot/*.asm` contains NASM entry code for the current PC boot path
+- `src/cpu/x86/*` owns GDT, IDT, paging, APIC, FPU, and TSS setup
+- `src/drivers/pic.c`, `src/drivers/ata.c`, and PS/2 keyboard paths assume PC devices
+- `src/kernel/syscall.c`, `src/kernel/elf_loader.c`, and `user/runtime/entry.asm` assume the x86_64 ABI
+- the build and boot flow expect GRUB Multiboot2 on a PC-style machine
 
-Recommended port order:
+## Recommended Port Order
 
-1. Bring up a serial only ARM64 kernel.
-   - Add a new `src/cpu/arm64/` tree.
-   - Add an ARM64 linker script and entry path.
-   - Pick one boot path for early bring up. U-Boot, EDK2, or a direct board specific loader.
-   - Print early boot logs to a serial console before framebuffer work.
+### 1. Bring up a serial-only ARM64 kernel
 
-2. Replace x86-64 CPU setup with ARM64 setup.
-   - Add exception vectors.
-   - Add EL1 startup code.
-   - Add MMU and page table setup.
-   - Add timer support.
-   - Add interrupt controller support.
+Start with the smallest path that proves execution:
 
-3. Rebuild the platform layer around Pi 5 hardware.
-   - Replace PIC and APIC logic with the ARM interrupt path.
-   - Replace ATA and PS/2 assumptions.
-   - Start with serial, timer, framebuffer, and storage.
+- add `src/cpu/arm64/`
+- add an ARM64 linker script
+- add a board boot path, usually U-Boot, EDK2, or a board-specific loader
+- print early logs on serial before touching framebuffer code
 
-4. Port user space.
-   - Add an ARM64 `_start` in `user/runtime/entry.asm`.
-   - Add ARM64 syscall entry and return handling.
-   - Extend ELF loading for `EM_AARCH64`.
-   - Add ARM64 linker settings for user ELFs.
+Target result:
 
-5. Add an ARM64 run target.
-   - Add `qemu-system-aarch64` support for development.
-   - Add a real hardware image path for Raspberry Pi 5 testing.
+- one core reaches C code
+- early panic and status logs work over serial
 
-Suggested first milestone:
+### 2. Replace x86_64 CPU setup with ARM64 EL1 setup
 
-- Boot to serial.
-- Initialize memory.
-- Handle timer interrupts.
-- Enter the scheduler.
-- Run one kernel thread.
+Build the minimum platform layer needed for a scheduler and syscall path:
 
-Suggested second milestone:
+- exception vectors
+- EL1 startup code
+- MMU and page table setup
+- timer support
+- interrupt controller support
 
-- Load one static ARM64 user ELF.
-- Run the shell over serial.
-- Add framebuffer after the serial path is stable.
+Target result:
+
+- memory management works
+- timer interrupts fire
+- exceptions land in a known handler
+
+### 3. Rebuild the hardware layer around Pi 5 devices
+
+The current driver set assumes PC parts. Replace those assumptions with Pi 5 or generic ARM-friendly drivers:
+
+- serial console first
+- timer path
+- storage path
+- framebuffer path after serial is stable
+- interrupt controller integration
+
+Target result:
+
+- stable console
+- stable timer
+- one storage path for loading files
+
+### 4. Port user space
+
+User mode depends on ABI, syscall, and ELF details. Port them together:
+
+- add ARM64 `_start` in `user/runtime/entry.asm`
+- add ARM64 syscall entry and return handling
+- extend ELF loading for `EM_AARCH64`
+- add ARM64 user linker settings
+
+Target result:
+
+- one static user ELF loads and runs
+- the shell works over serial
+
+### 5. Add repeatable run targets
+
+Add a fast development loop before moving to board-only testing:
+
+- add `qemu-system-aarch64` support where useful
+- add a board image path for Raspberry Pi 5 media
+- document the exact boot files and layout
+
+Target result:
+
+- one command for emulator bring-up
+- one documented path for real hardware tests
+
+## Suggested Milestones
+
+First milestone:
+
+- boot to serial
+- initialize memory
+- handle timer interrupts
+- enter the scheduler
+- run one kernel thread
+
+Second milestone:
+
+- load one ARM64 user ELF
+- run the shell over serial
+- add framebuffer support after the serial path is stable
+
+## Porting Rule Of Thumb
+
+Do not try to carry the full x86_64 feature set over at once. Get a serial-only kernel working first, then add interrupts, then storage, then user space.

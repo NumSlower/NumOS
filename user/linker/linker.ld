@@ -21,6 +21,7 @@ PHDRS
     text    PT_LOAD FLAGS(5);   /* R + X */
     rodata  PT_LOAD FLAGS(4);   /* R     */
     data    PT_LOAD FLAGS(6);   /* R + W */
+    tls     PT_TLS  FLAGS(4);   /* R     */
 }
 
 SECTIONS
@@ -49,6 +50,16 @@ SECTIONS
         KEEP(*(.init_array.*))
         __init_array_end = .;
     } :data
+
+    .tdata ALIGN(16) : {
+        *(.tdata)
+        *(.tdata.*)
+    } :data :tls
+
+    .tbss ALIGN(16) : {
+        *(.tbss)
+        *(.tbss.*)
+    } :data :tls
 
     /* ------------------------------------------------------------------ */
     /* .data  -  initialised read-write data                              */

@@ -126,6 +126,62 @@ struct numos_disk_info {
     char     model[NUMOS_DISK_MODEL_LEN];
 };
 
+struct numos_usb_controller_info {
+    uint8_t  present;
+    uint8_t  host_type;
+    uint8_t  port_count;
+    uint8_t  irq_line;
+    uint8_t  pci_bus;
+    uint8_t  pci_slot;
+    uint8_t  pci_func;
+    uint8_t  reserved;
+    uint16_t vendor_id;
+    uint16_t device_id;
+    uint32_t io_base;
+    char     name[48];
+};
+
+struct numos_usb_port_info {
+    uint8_t  present;
+    uint8_t  connected;
+    uint8_t  enabled;
+    uint8_t  low_speed;
+    uint8_t  owner;
+    uint8_t  powered;
+    uint8_t  reset;
+    uint8_t  reserved;
+    uint16_t status_raw;
+};
+
+struct numos_net_info {
+    uint8_t  present;
+    uint8_t  link_up;
+    uint8_t  dhcp_configured;
+    uint8_t  reserved0;
+    uint8_t  mac[6];
+    uint8_t  ipv4[4];
+    uint8_t  netmask[4];
+    uint8_t  gateway[4];
+    uint8_t  dhcp_server[4];
+    uint8_t  pci_bus;
+    uint8_t  pci_slot;
+    uint8_t  pci_func;
+    uint8_t  reserved1;
+    uint64_t rx_packets;
+    uint64_t tx_packets;
+    uint64_t rx_bytes;
+    uint64_t tx_bytes;
+    char     driver[32];
+    char     interface_name[48];
+};
+
+struct numos_net_ping_result {
+    uint8_t  success;
+    uint8_t  ttl;
+    uint16_t seq;
+    uint32_t roundtrip_ms;
+};
+
 #define NUMOS_TIMER_PERIODIC 0x01u
 
 /* Syscall numbers */
@@ -164,6 +220,17 @@ struct numos_disk_info {
 #define SYS_DISK_INFO  221
 #define SYS_DISK_READ  222
 #define SYS_DISK_WRITE 223
+#define SYS_USB_CONTROLLER_COUNT 224
+#define SYS_USB_CONTROLLER_INFO  225
+#define SYS_USB_PORT_INFO        226
+#define SYS_THREAD_CREATE        227
+#define SYS_THREAD_JOIN          228
+#define SYS_THREAD_EXIT          229
+#define SYS_THREAD_SELF          230
+#define SYS_NET_INFO             231
+#define SYS_NET_DHCP             232
+#define SYS_NET_PING             233
+#define SYS_POWEROFF             234
 
 /* Special key codes returned by SYS_INPUT and SYS_INPUT_PEEK. */
 #define KEY_SPECIAL_UP    '\x01'
@@ -383,6 +450,54 @@ static inline int64_t sys_disk_read(uint64_t lba, void *buf, uint32_t sector_cou
 
 static inline int64_t sys_disk_write(uint64_t lba, const void *buf, uint32_t sector_count) {
     return sys_call3(SYS_DISK_WRITE, (int64_t)lba, (int64_t)buf, (int64_t)sector_count);
+}
+
+static inline int64_t sys_usb_controller_count(void) {
+    return sys_call0(SYS_USB_CONTROLLER_COUNT);
+}
+
+static inline int64_t sys_usb_controller_info(int index,
+                                              struct numos_usb_controller_info *out) {
+    return sys_call2(SYS_USB_CONTROLLER_INFO, index, (int64_t)out);
+}
+
+static inline int64_t sys_usb_port_info(int controller_index, int port_index,
+                                        struct numos_usb_port_info *out) {
+    return sys_call3(SYS_USB_PORT_INFO, controller_index, port_index, (int64_t)out);
+}
+
+static inline int64_t sys_thread_create(void *start, void *arg, void *trampoline) {
+    return sys_call3(SYS_THREAD_CREATE, (int64_t)start, (int64_t)arg,
+                     (int64_t)trampoline);
+}
+
+static inline int64_t sys_thread_join(int tid, uint64_t *out_value) {
+    return sys_call2(SYS_THREAD_JOIN, tid, (int64_t)out_value);
+}
+
+static inline int64_t sys_thread_exit(uint64_t value) {
+    return sys_call1(SYS_THREAD_EXIT, (int64_t)value);
+}
+
+static inline int64_t sys_thread_self(void) {
+    return sys_call0(SYS_THREAD_SELF);
+}
+
+static inline int64_t sys_net_info(struct numos_net_info *out) {
+    return sys_call1(SYS_NET_INFO, (int64_t)out);
+}
+
+static inline int64_t sys_net_dhcp(uint32_t timeout_ms) {
+    return sys_call1(SYS_NET_DHCP, (int64_t)timeout_ms);
+}
+
+static inline int64_t sys_net_ping(const uint8_t *ipv4, uint32_t timeout_ms,
+                                   struct numos_net_ping_result *out) {
+    return sys_call3(SYS_NET_PING, (int64_t)ipv4, (int64_t)timeout_ms, (int64_t)out);
+}
+
+static inline int64_t sys_poweroff(void) {
+    return sys_call0(SYS_POWEROFF);
 }
 
 #endif /* NUMOS_USER_SYSCALLS_H */

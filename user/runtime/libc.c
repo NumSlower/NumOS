@@ -1,4 +1,15 @@
+/*
+ * libc.c - Minimal user-space libc layer for NumOS programs.
+ *
+ * This file provides the small set of freestanding helpers that the userland
+ * tools rely on before a fuller hosted libc exists.
+ */
+
 #include "libc.h"
+
+extern void __numos_user_thread_entry(numos_thread_start_t start, void *arg);
+
+/* Memory and string helpers used by every user program. */
 
 void *memset(void *dest, int value, size_t len) {
     unsigned char *p = (unsigned char *)dest;
@@ -72,6 +83,8 @@ char *strncpy(char *dest, const char *src, size_t len) {
     return dest;
 }
 
+/* Thin syscall-backed I/O wrappers. */
+
 ssize_t write(int fd, const void *buf, size_t len) {
     return sys_write(fd, buf, len);
 }
@@ -83,9 +96,38 @@ int puts(const char *str) {
     return 0;
 }
 
+/* Process termination helpers never return to the caller. */
+
 void exit(int status) {
     sys_exit(status);
     for (;;) {
         __asm__ volatile("hlt");
     }
+}
+
+/* Thread wrappers keep the public API stable over raw syscalls. */
+
+int thread_create(numos_thread_start_t start, void *arg) {
+    if (!start) return -1;
+    return (int)sys_thread_create((void *)start, arg,
+                                  (void *)__numos_user_thread_entry);
+}
+
+int thread_join(int tid, intptr_t *result) {
+    uint64_t value = 0;
+    int rc = (int)sys_thread_join(tid, result ? &value : 0);
+    if (rc != 0) return rc;
+    if (result) *result = (intptr_t)value;
+    return 0;
+}
+
+void thread_exit(intptr_t value) {
+    sys_thread_exit((uint64_t)value);
+    for (;;) {
+        __asm__ volatile("hlt");
+    }
+}
+
+int thread_self(void) {
+    return (int)sys_thread_self();
 }

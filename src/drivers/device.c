@@ -56,6 +56,59 @@ static struct device_entry  device_table[DEVICE_MAX_ENTRIES];
 static int                  device_count_val = 0;
 static struct hypervisor_info hv_info;
 
+static struct device_entry *register_device(const char *name,
+                                            device_type_t type,
+                                            device_bus_t bus);
+
+static void set_hypervisor_info(hypervisor_id_t id,
+                                const char *vendor,
+                                const char *name,
+                                int detected) {
+    memset(&hv_info, 0, sizeof(hv_info));
+    hv_info.id = id;
+    hv_info.detected = detected;
+
+    if (vendor) {
+        size_t vendor_len = strlen(vendor);
+        if (vendor_len > sizeof(hv_info.vendor_string) - 1) {
+            vendor_len = sizeof(hv_info.vendor_string) - 1;
+        }
+        memcpy(hv_info.vendor_string, vendor, vendor_len);
+        hv_info.vendor_string[vendor_len] = '\0';
+    }
+
+    if (name) {
+        size_t name_len = strlen(name);
+        if (name_len > sizeof(hv_info.name) - 1) {
+            name_len = sizeof(hv_info.name) - 1;
+        }
+        memcpy(hv_info.name, name, name_len);
+        hv_info.name[name_len] = '\0';
+    }
+}
+
+static void register_hypervisor_device(void) {
+    for (int i = 0; i < device_count_val; i++) {
+        if (device_table[i].type == DEVICE_TYPE_HYPERVISOR) return;
+    }
+
+    struct device_entry *e = register_device(hv_info.name,
+                                             DEVICE_TYPE_HYPERVISOR,
+                                             DEVICE_BUS_VIRTUAL);
+    (void)e;
+}
+
+static void detect_hypervisor_from_pci_fallback(void) {
+    if (hv_info.detected) return;
+    if (!device_is_virtualbox_pci()) return;
+
+    set_hypervisor_info(HYPERVISOR_VIRTUALBOX,
+                        "VBoxVBoxVBox",
+                        "VirtualBox",
+                        1);
+    register_hypervisor_device();
+}
+
 /* =========================================================================
  * Internal helpers
  * ======================================================================= */
@@ -112,6 +165,36 @@ uint8_t pci_config_read8(uint8_t bus, uint8_t slot,
     return (uint8_t)((inl(PCI_CONFIG_DATA) >> ((offset & 3) * 8)) & 0xFF);
 }
 
+uint16_t pci_config_read16(uint8_t bus, uint8_t slot,
+                           uint8_t func, uint8_t offset) {
+    outl(PCI_CONFIG_ADDRESS, pci_make_address(bus, slot, func, offset));
+    return (uint16_t)((inl(PCI_CONFIG_DATA) >> ((offset & 2) * 8)) & 0xFFFF);
+}
+
+void pci_config_write32(uint8_t bus, uint8_t slot,
+                        uint8_t func, uint8_t offset, uint32_t value) {
+    outl(PCI_CONFIG_ADDRESS, pci_make_address(bus, slot, func, offset));
+    outl(PCI_CONFIG_DATA, value);
+}
+
+void pci_config_write16(uint8_t bus, uint8_t slot,
+                        uint8_t func, uint8_t offset, uint16_t value) {
+    uint32_t current = pci_config_read32(bus, slot, func, offset);
+    uint32_t shift = (uint32_t)((offset & 2) * 8);
+    current &= ~(0xFFFFu << shift);
+    current |= ((uint32_t)value << shift);
+    pci_config_write32(bus, slot, func, offset, current);
+}
+
+void pci_config_write8(uint8_t bus, uint8_t slot,
+                       uint8_t func, uint8_t offset, uint8_t value) {
+    uint32_t current = pci_config_read32(bus, slot, func, offset);
+    uint32_t shift = (uint32_t)((offset & 3) * 8);
+    current &= ~(0xFFu << shift);
+    current |= ((uint32_t)value << shift);
+    pci_config_write32(bus, slot, func, offset, current);
+}
+
 /* =========================================================================
  * Hypervisor detection
  * =========================================================================
@@ -130,8 +213,7 @@ uint8_t pci_config_read8(uint8_t bus, uint8_t slot,
  *   "prl hyperv  "   -> Parallels
  */
 static void detect_hypervisor(void) {
-    memset(&hv_info, 0, sizeof(hv_info));
-    hv_info.id = HYPERVISOR_NONE;
+    set_hypervisor_info(HYPERVISOR_NONE, NULL, "Bare metal", 0);
 
     uint32_t eax, ebx, ecx, edx;
 
@@ -143,13 +225,8 @@ static void detect_hypervisor(void) {
     );
 
     if (!(ecx & (1u << 31))) {
-        /* No hypervisor indicated; fill a bare-metal entry */
-        memcpy(hv_info.name, "Bare metal", 10);
-        hv_info.detected = 0;
         return;
     }
-
-    hv_info.detected = 1;
 
     /* Step 2: read vendor string from leaf 0x40000000 */
     __asm__ volatile(
@@ -167,44 +244,32 @@ static void detect_hypervisor(void) {
     const char *vs = hv_info.vendor_string;
 
     if (memcmp(vs, "KVMKVMKVM", 9) == 0) {
-        hv_info.id = HYPERVISOR_KVM;
-        memcpy(hv_info.name, "KVM (QEMU/KVM)", 14);
-        hv_info.name[14] = '\0';
+        set_hypervisor_info(HYPERVISOR_KVM, hv_info.vendor_string,
+                            "KVM (QEMU/KVM)", 1);
     } else if (memcmp(vs, "TCGTCGTCGTCG", 12) == 0) {
-        hv_info.id = HYPERVISOR_QEMU;
-        memcpy(hv_info.name, "QEMU (TCG)", 10);
-        hv_info.name[10] = '\0';
+        set_hypervisor_info(HYPERVISOR_QEMU, hv_info.vendor_string,
+                            "QEMU (TCG)", 1);
     } else if (memcmp(vs, "VMwareVMware", 12) == 0) {
-        hv_info.id = HYPERVISOR_VMWARE;
-        memcpy(hv_info.name, "VMware", 6);
-        hv_info.name[6] = '\0';
+        set_hypervisor_info(HYPERVISOR_VMWARE, hv_info.vendor_string,
+                            "VMware", 1);
     } else if (memcmp(vs, "VBoxVBoxVBox", 12) == 0) {
-        hv_info.id = HYPERVISOR_VIRTUALBOX;
-        memcpy(hv_info.name, "VirtualBox", 10);
-        hv_info.name[10] = '\0';
+        set_hypervisor_info(HYPERVISOR_VIRTUALBOX, hv_info.vendor_string,
+                            "VirtualBox", 1);
     } else if (memcmp(vs, "Microsoft Hv", 12) == 0) {
-        hv_info.id = HYPERVISOR_HYPERV;
-        memcpy(hv_info.name, "Microsoft Hyper-V", 17);
-        hv_info.name[17] = '\0';
+        set_hypervisor_info(HYPERVISOR_HYPERV, hv_info.vendor_string,
+                            "Microsoft Hyper-V", 1);
     } else if (memcmp(vs, "XenVMMXenVMM", 12) == 0) {
-        hv_info.id = HYPERVISOR_XEN;
-        memcpy(hv_info.name, "Xen", 3);
-        hv_info.name[3] = '\0';
+        set_hypervisor_info(HYPERVISOR_XEN, hv_info.vendor_string,
+                            "Xen", 1);
     } else if (memcmp(vs, "prl hyperv", 10) == 0) {
-        hv_info.id = HYPERVISOR_PARALLELS;
-        memcpy(hv_info.name, "Parallels", 9);
-        hv_info.name[9] = '\0';
+        set_hypervisor_info(HYPERVISOR_PARALLELS, hv_info.vendor_string,
+                            "Parallels", 1);
     } else {
-        hv_info.id = HYPERVISOR_UNKNOWN;
-        memcpy(hv_info.name, "Unknown Hypervisor", 18);
-        hv_info.name[18] = '\0';
+        set_hypervisor_info(HYPERVISOR_UNKNOWN, hv_info.vendor_string,
+                            "Unknown Hypervisor", 1);
     }
 
-    /* Register as a virtual device in the table */
-    struct device_entry *e = register_device(hv_info.name,
-                                             DEVICE_TYPE_HYPERVISOR,
-                                             DEVICE_BUS_VIRTUAL);
-    (void)e;
+    register_hypervisor_device();
 }
 
 /* =========================================================================
@@ -270,6 +335,7 @@ static const char *pci_vendor_name(uint16_t vendor, uint16_t device,
     /* ---- Network adapters ---- */
     if (class == 0x02) {
         if (vendor == 0x8086 && device == 0x100E) return "Intel e1000 NIC";
+        if (vendor == 0x1022 && device == 0x2000) return "AMD PCnet NIC";
         if (vendor == 0x1AF4 && device == 0x1000) return "Virtio NIC";
         if (vendor == 0x10EC && device == 0x8139) return "Realtek RTL8139";
         if (vendor == 0x10EC && device == 0x8168) return "Realtek RTL8168";
@@ -481,6 +547,7 @@ void device_init(void) {
 
     vga_writestring("Device: Scanning PCI bus...\n");
     detect_pci_devices();
+    detect_hypervisor_from_pci_fallback();
 
     vga_writestring("Device: Found ");
     print_dec((uint64_t)device_count_val);
@@ -594,6 +661,7 @@ void device_print_all(void) {
 
 void device_detect_hypervisor_early(void) {
     detect_hypervisor();
+    detect_hypervisor_from_pci_fallback();
 }
 
 int device_is_virtualbox_pci(void) {

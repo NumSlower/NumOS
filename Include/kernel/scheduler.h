@@ -5,6 +5,8 @@
 #include "cpu/fpu.h"
 #include "kernel/procinfo.h"
 
+struct elf_load_result;
+
 /* =========================================================================
  * NumOS Process Scheduler
  *
@@ -63,10 +65,24 @@ struct cpu_context {
     uint64_t rip;   /* [rsp+48] – return address pushed by call instruction */
 };
 
+struct process_vm_space {
+    uint32_t ref_count;
+    uint32_t reserved;
+    uint64_t cr3;
+    uint64_t load_base;
+    uint64_t load_end;
+    uint64_t stack_cursor;
+    uint64_t tls_image_start;
+    uint64_t tls_filesz;
+    uint64_t tls_memsz;
+    uint64_t tls_align;
+};
+
 /* ---- Process Control Block (PCB) ----------------------------------------- */
 struct process {
     /* Identity */
     int      pid;                           /* Process ID (1-based)           */
+    int      group_id;                      /* Shared process ID for threads  */
     char     name[PROCESS_NAME_LEN];        /* Human-readable name            */
     char     cmdline[PROCESS_CMDLINE_LEN];  /* Command line for user process  */
     proc_state_t state;                     /* Current state                  */
@@ -85,12 +101,19 @@ struct process {
     uint64_t kernel_arg;                   /* Argument for kernel thread      */
 
     /* User address space */
+    struct process_vm_space *vm_space;     /* Shared mappings for thread set  */
     uint64_t user_entry;                   /* ELF entry point (virtual)       */
+    uint64_t user_arg0;                    /* Initial RDI on first entry      */
+    uint64_t user_arg1;                    /* Initial RSI on first entry      */
+    uint64_t user_arg2;                    /* Initial RDX on first entry      */
     uint64_t user_stack_top;              /* Top of user stack (virtual)      */
     uint64_t user_stack_bottom;           /* Bottom of user stack (for unmap) */
+    uint64_t user_tls_bottom;             /* Lowest mapped TLS page           */
+    uint64_t user_fs_base;                /* FS base / thread pointer         */
     uint64_t load_base;                   /* Lowest mapped virtual address    */
     uint64_t load_end;                    /* Highest mapped virtual address   */
     uint64_t cr3;                         /* Page table root (physical)       */
+    uint64_t thread_exit_value;           /* Full-width thread return value   */
     uint8_t  fpu_state[FPU_STATE_SIZE] __attribute__((aligned(16)));
 
     /* Sleep support */
@@ -138,13 +161,23 @@ struct process *process_spawn(const char *name,
                                uint64_t stack_top,
                                uint64_t stack_bottom);
 
+struct process *process_spawn_user_thread(const char *name,
+                                          uint64_t entry,
+                                          uint64_t arg0,
+                                          uint64_t arg1);
+
 struct process *process_spawn_kernel(const char *name,
                                      kernel_thread_entry_t entry,
                                      void *arg);
 
+int process_configure_image(struct process *proc,
+                            const struct elf_load_result *image,
+                            uint64_t cr3);
+
 /* Mark the current process as ZOMBIE and yield the CPU.
  * Never returns.                                                           */
 void process_exit(int exit_code);
+void process_exit_value(uint64_t exit_value);
 
 /* Block the current process until uptime_ms >= wake_ms                    */
 void process_sleep_until(uint64_t wake_ms);
@@ -167,6 +200,7 @@ void scheduler_print_stats(void);
 void scheduler_print_processes(void);
 void scheduler_get_stats(struct sched_stats *out);
 int  scheduler_list_processes(struct proc_info *out, int max);
+struct process *scheduler_find_process(int pid);
 
 /* ---- Assembly context switch (defined in context_switch.asm) ------------ */
 /* Saves callee-saved registers + rip of *old onto old's kernel stack,
@@ -177,5 +211,6 @@ extern void context_switch(struct cpu_context **old_ctx,
 /* ---- Helpers used by sys_exit / exception handler ---------------------- */
 void process_mark_zombie(struct process *proc, int exit_code);
 void process_reap(struct process *proc);
+void process_discard(struct process *proc);
 
 #endif /* SCHEDULER_H */

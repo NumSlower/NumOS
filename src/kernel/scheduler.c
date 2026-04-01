@@ -60,9 +60,20 @@ static void            dequeue(struct process *proc);
 static struct process *pick_next(void);
 static int             setup_kernel_stack(struct process *proc);
 static int             alloc_pid(void);
+static struct process_vm_space *alloc_vm_space(void);
+static void            retain_vm_space(struct process_vm_space *vm);
+static int             release_vm_space(struct process *proc);
+static int             map_zeroed_user_range(uint64_t start, uint64_t end,
+                                             uint64_t flags);
+static int             map_main_thread_tls(struct process *proc);
+static int             alloc_user_thread_region(struct process *proc);
+static void            write_fs_base(uint64_t value);
 static void            idle_loop(void);
 static void            process_trampoline(void);
 static void            copy_name(char *dst, const char *src, size_t cap);
+
+#define IA32_FS_BASE_MSR 0xC0000100
+#define USER_TLS_TCB_SIZE 8
 
 /* =========================================================================
  * process_trampoline
@@ -103,16 +114,25 @@ static void process_trampoline(void) {
 
     uint64_t urip = proc->user_entry;
     uint64_t ursp = proc->user_stack_top;
+    uint64_t uarg0 = proc->user_arg0;
+    uint64_t uarg1 = proc->user_arg1;
+    uint64_t uarg2 = proc->user_arg2;
+
+    write_fs_base(proc->user_fs_base);
 
     __asm__ volatile(
         "cli\n\t"
         "mov %[rip], %%rcx\n\t"   /* RCX <- user entry point */
         "mov $0x202, %%r11\n\t"   /* R11 <- RFLAGS: IF=1, bit1=1 */
+        "mov %[arg0], %%rdi\n\t"
+        "mov %[arg1], %%rsi\n\t"
+        "mov %[arg2], %%rdx\n\t"
         "mov %[rsp], %%rsp\n\t"   /* RSP <- user stack (last C stack ref) */
         "sysretq\n\t"
         :
-        : [rip] "r"(urip), [rsp] "r"(ursp)
-        : "rcx", "r11", "memory"
+        : [rip] "r"(urip), [rsp] "r"(ursp),
+          [arg0] "r"(uarg0), [arg1] "r"(uarg1), [arg2] "r"(uarg2)
+        : "rcx", "r11", "rdi", "rsi", "rdx", "memory"
     );
 
     while (1) __asm__ volatile("hlt");  /* unreachable */
@@ -149,6 +169,7 @@ static void free_process(struct process *proc) {
         proc->kernel_stack     = NULL;
         proc->kernel_stack_top = NULL;
     }
+    proc->vm_space = NULL;
     proc->state = PROC_UNUSED;
 }
 
@@ -255,6 +276,162 @@ static int alloc_pid(void) {
     return -1;
 }
 
+static struct process_vm_space *alloc_vm_space(void) {
+    struct process_vm_space *vm =
+        (struct process_vm_space *)kzalloc(sizeof(*vm));
+    if (!vm) return NULL;
+    vm->ref_count = 1;
+    return vm;
+}
+
+static void retain_vm_space(struct process_vm_space *vm) {
+    if (vm) vm->ref_count++;
+}
+
+static int release_vm_space(struct process *proc) {
+    if (!proc || !proc->vm_space) return 0;
+
+    struct process_vm_space *vm = proc->vm_space;
+    proc->vm_space = NULL;
+    if (vm->ref_count == 0) {
+        kfree(vm);
+        return 1;
+    }
+
+    vm->ref_count--;
+    if (vm->ref_count == 0) {
+        uint64_t old_cr3 = paging_get_current_cr3();
+        struct page_table *old_pml4 = paging_get_active_pml4();
+        if (vm->cr3 && vm->cr3 != old_cr3) {
+            paging_set_active_pml4((struct page_table *)(uintptr_t)vm->cr3);
+            paging_switch_to(vm->cr3);
+        }
+        if (vm->load_end > vm->load_base) {
+            elf_unload(vm->load_base, vm->load_end, 0, 0);
+        }
+        if (old_cr3 && old_cr3 != vm->cr3) {
+            paging_set_active_pml4(old_pml4);
+            paging_switch_to(old_cr3);
+        }
+        kfree(vm);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int map_zeroed_user_range(uint64_t start, uint64_t end, uint64_t flags) {
+    if (end <= start) return 0;
+
+    for (uint64_t virt = start; virt < end; virt += PAGE_SIZE) {
+        uint64_t phys = pmm_alloc_frame();
+        if (!phys) return -1;
+        if (paging_map_page(virt, phys, flags) != 0) {
+            pmm_free_frame(phys);
+            return -1;
+        }
+        memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
+    }
+
+    return 0;
+}
+
+static void write_fs_base(uint64_t value) {
+    __asm__ volatile("wrmsr" :: "c"(IA32_FS_BASE_MSR),
+                                "a"((uint32_t)value),
+                                "d"((uint32_t)(value >> 32))
+                     : "memory");
+}
+
+static int map_main_thread_tls(struct process *proc) {
+    if (!proc || !proc->vm_space) return -1;
+
+    proc->user_tls_bottom = proc->user_stack_bottom;
+    proc->user_fs_base = 0;
+
+    struct process_vm_space *vm = proc->vm_space;
+    if (vm->tls_memsz == 0) {
+        vm->stack_cursor = proc->user_stack_bottom;
+        return 0;
+    }
+
+    uint64_t align = vm->tls_align ? vm->tls_align : 1;
+    uint64_t tls_block_size = paging_align_up(vm->tls_memsz, align);
+    uint64_t tls_top = proc->user_stack_bottom;
+    uint64_t tls_data_start = tls_top - tls_block_size;
+    uint64_t tls_bottom = paging_align_down(tls_data_start - USER_TLS_TCB_SIZE,
+                                            PAGE_SIZE);
+
+    if (tls_bottom < vm->load_end) return -1;
+    if (map_zeroed_user_range(tls_bottom, tls_top,
+                              PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
+        return -1;
+    }
+
+    proc->user_tls_bottom = tls_bottom;
+    proc->user_fs_base = tls_top - USER_TLS_TCB_SIZE;
+    if (vm->tls_filesz != 0) {
+        memcpy((void *)(uintptr_t)tls_data_start,
+               (const void *)(uintptr_t)vm->tls_image_start,
+               (size_t)vm->tls_filesz);
+    }
+    *(uint64_t *)(uintptr_t)proc->user_fs_base = proc->user_fs_base;
+    vm->stack_cursor = tls_bottom;
+    return 0;
+}
+
+static int alloc_user_thread_region(struct process *proc) {
+    if (!proc || !proc->vm_space) return -1;
+
+    struct process_vm_space *vm = proc->vm_space;
+    uint64_t stack_top_page = vm->stack_cursor;
+    uint64_t stack_bottom = stack_top_page - USER_STACK_SIZE;
+    if (stack_bottom <= vm->load_end) return -1;
+
+    if (map_zeroed_user_range(stack_bottom, stack_top_page,
+                              PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
+        return -1;
+    }
+
+    proc->user_stack_bottom = stack_bottom;
+    proc->user_stack_top = (stack_top_page - 8) & ~(uint64_t)0xFULL;
+    proc->user_tls_bottom = stack_bottom;
+    proc->user_fs_base = 0;
+
+    if (vm->tls_memsz != 0) {
+        uint64_t align = vm->tls_align ? vm->tls_align : 1;
+        uint64_t tls_block_size = paging_align_up(vm->tls_memsz, align);
+        uint64_t tls_top = stack_bottom;
+        uint64_t tls_data_start = tls_top - tls_block_size;
+        uint64_t tls_bottom = paging_align_down(tls_data_start - USER_TLS_TCB_SIZE,
+                                                PAGE_SIZE);
+        if (tls_bottom <= vm->load_end) {
+            elf_unload(0, 0, stack_bottom, stack_top_page);
+            return -1;
+        }
+
+        if (map_zeroed_user_range(tls_bottom, tls_top,
+                                  PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
+            elf_unload(0, 0, stack_bottom, stack_top_page);
+            return -1;
+        }
+
+        proc->user_tls_bottom = tls_bottom;
+        proc->user_fs_base = tls_top - USER_TLS_TCB_SIZE;
+        if (vm->tls_filesz != 0) {
+            memcpy((void *)(uintptr_t)tls_data_start,
+                   (const void *)(uintptr_t)vm->tls_image_start,
+                   (size_t)vm->tls_filesz);
+        }
+        *(uint64_t *)(uintptr_t)proc->user_fs_base = proc->user_fs_base;
+        vm->stack_cursor = tls_bottom;
+    } else {
+        vm->stack_cursor = stack_bottom;
+    }
+
+    return 0;
+}
+
 /* =========================================================================
  * Kernel stack initialisation
  *
@@ -309,6 +486,7 @@ void scheduler_init(void) {
 
     idle_proc = alloc_process();
     idle_proc->pid             = 0;
+    idle_proc->group_id        = 0;
     idle_proc->state           = PROC_READY;
     idle_proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
     idle_proc->load_base       = (uint64_t)(uintptr_t)idle_loop;
@@ -359,12 +537,14 @@ struct process *process_create_user(const char *name,
         vga_writestring("Scheduler: no free pid\n");
         return NULL;
     }
+    proc->group_id        = proc->pid;
     proc->state           = PROC_READY;
     proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
     proc->created_at_ms   = timer_get_uptime_ms();
-    proc->user_entry       = entry;
-    proc->user_stack_top   = stack_top;
+    proc->user_entry        = entry;
+    proc->user_stack_top    = stack_top;
     proc->user_stack_bottom = stack_bottom;
+    proc->user_tls_bottom   = stack_bottom;
     strncpy(proc->name, name, PROCESS_NAME_LEN);
     proc->name[PROCESS_NAME_LEN - 1] = '\0';
     strncpy(proc->cmdline, name ? name : "", PROCESS_CMDLINE_LEN);
@@ -412,6 +592,7 @@ struct process *process_create_kernel(const char *name,
         return NULL;
     }
 
+    proc->group_id = proc->pid;
     proc->state = PROC_READY;
     proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
     proc->created_at_ms = timer_get_uptime_ms();
@@ -454,10 +635,108 @@ struct process *process_spawn(const char *name,
     return process_create_user(name, entry, stack_top, stack_bottom);
 }
 
+struct process *process_spawn_user_thread(const char *name,
+                                          uint64_t entry,
+                                          uint64_t arg0,
+                                          uint64_t arg1) {
+    if (!current_proc || !current_proc->vm_space) return NULL;
+
+    struct process *proc = alloc_process();
+    if (!proc) return NULL;
+
+    proc->pid = alloc_pid();
+    if (proc->pid < 0) {
+        free_process(proc);
+        return NULL;
+    }
+
+    proc->group_id = current_proc->group_id;
+    proc->state = PROC_READY;
+    proc->ticks_remaining = SCHED_TICKS_PER_SLICE;
+    proc->created_at_ms = timer_get_uptime_ms();
+    proc->vm_space = current_proc->vm_space;
+    retain_vm_space(proc->vm_space);
+    proc->user_entry = entry;
+    proc->user_arg0 = arg0;
+    proc->user_arg1 = arg1;
+    proc->load_base = proc->vm_space->load_base;
+    proc->load_end = proc->vm_space->load_end;
+    proc->cr3 = proc->vm_space->cr3;
+    copy_name(proc->name, name ? name : current_proc->name, sizeof(proc->name));
+    copy_name(proc->cmdline, current_proc->cmdline, sizeof(proc->cmdline));
+
+    if (setup_kernel_stack(proc) != 0) {
+        release_vm_space(proc);
+        free_process(proc);
+        return NULL;
+    }
+    fpu_init_state(proc->fpu_state);
+
+    if (alloc_user_thread_region(proc) != 0) {
+        if (proc->user_stack_bottom && proc->user_stack_top) {
+            uint64_t stack_top_page =
+                paging_align_up(proc->user_stack_top + 8, PAGE_SIZE);
+            elf_unload(0, 0, proc->user_tls_bottom, stack_top_page);
+        }
+        release_vm_space(proc);
+        free_process(proc);
+        return NULL;
+    }
+
+    enqueue(proc);
+    stats.processes_created++;
+    stats.active_processes++;
+    return proc;
+}
+
 struct process *process_spawn_kernel(const char *name,
                                      kernel_thread_entry_t entry,
                                      void *arg) {
     return process_create_kernel(name, entry, arg);
+}
+
+int process_configure_image(struct process *proc,
+                            const struct elf_load_result *image,
+                            uint64_t cr3) {
+    if (!proc || !image || !cr3) return -1;
+
+    struct process_vm_space *vm = alloc_vm_space();
+    if (!vm) return -1;
+
+    vm->cr3 = cr3;
+    vm->load_base = image->load_base;
+    vm->load_end = image->load_end;
+    vm->stack_cursor = image->stack_bottom;
+    vm->tls_image_start = image->tls_image_start;
+    vm->tls_filesz = image->tls_filesz;
+    vm->tls_memsz = image->tls_memsz;
+    vm->tls_align = image->tls_align ? image->tls_align : 1;
+
+    proc->vm_space = vm;
+    proc->load_base = vm->load_base;
+    proc->load_end = vm->load_end;
+    proc->cr3 = vm->cr3;
+
+    uint64_t old_cr3 = paging_get_current_cr3();
+    struct page_table *old_pml4 = paging_get_active_pml4();
+
+    __asm__ volatile("cli");
+    paging_set_active_pml4((struct page_table *)(uintptr_t)cr3);
+    paging_switch_to(cr3);
+    int rc = map_main_thread_tls(proc);
+    paging_set_active_pml4(old_pml4);
+    paging_switch_to(old_cr3);
+    __asm__ volatile("sti");
+
+    if (rc != 0) {
+        release_vm_space(proc);
+        proc->load_base = 0;
+        proc->load_end = 0;
+        proc->cr3 = 0;
+        return -1;
+    }
+
+    return 0;
 }
 
 /*
@@ -465,19 +744,26 @@ struct process *process_spawn_kernel(const char *name,
  * virtual address space.  Called from sys_exit() and the exception handler.
  */
 void process_mark_zombie(struct process *proc, int exit_code) {
+    if (!proc) return;
+
     proc->exit_code = exit_code;
+    proc->thread_exit_value = (uint64_t)(int64_t)exit_code;
     proc->state     = PROC_ZOMBIE;
     dequeue(proc);
     stats.processes_exited++;
     if (stats.active_processes > 0) stats.active_processes--;
 
-    /* Free user virtual pages so the address range can be reused */
     if (proc->user_entry != 0) {
         uint64_t stack_page_top =
             paging_align_up(proc->user_stack_top + 8, PAGE_SIZE);
-        elf_unload(proc->load_base,       proc->load_end,
-                   proc->user_stack_bottom, stack_page_top);
+        elf_unload(0, 0, proc->user_tls_bottom, stack_page_top);
+        proc->user_stack_top = 0;
+        proc->user_stack_bottom = 0;
+        proc->user_tls_bottom = 0;
+        proc->user_fs_base = 0;
     }
+
+    release_vm_space(proc);
 }
 
 /*
@@ -495,10 +781,25 @@ void process_reap(struct process *proc) {
     __asm__ volatile("sti");
 }
 
+void process_discard(struct process *proc) {
+    if (!proc) return;
+
+    __asm__ volatile("cli");
+    dequeue(proc);
+    release_vm_space(proc);
+    if (stats.active_processes > 0) stats.active_processes--;
+    free_process(proc);
+    __asm__ volatile("sti");
+}
+
 /*
  * process_exit - terminate the calling process.  Never returns.
  */
 void process_exit(int exit_code) {
+    process_exit_value((uint64_t)(int64_t)exit_code);
+}
+
+void process_exit_value(uint64_t exit_value) {
     __asm__ volatile("cli");
 
     if (current_proc && current_proc != idle_proc) {
@@ -507,10 +808,12 @@ void process_exit(int exit_code) {
         vga_writestring("' (pid ");
         print_dec((uint64_t)current_proc->pid);
         vga_writestring(") exited with code ");
-        print_dec((uint64_t)(uint32_t)exit_code);
+        print_dec(exit_value);
         vga_writestring("\n");
 
-        process_mark_zombie(current_proc, exit_code);
+        current_proc->thread_exit_value = exit_value;
+        process_mark_zombie(current_proc, (int)(int64_t)exit_value);
+        current_proc->thread_exit_value = exit_value;
     }
 
     __asm__ volatile("sti");
@@ -566,6 +869,7 @@ void schedule(void) {
 
     fpu_save(old->fpu_state);
     paging_switch_to(next->cr3);
+    write_fs_base(next->user_entry ? next->user_fs_base : 0);
     fpu_restore(next->fpu_state);
 
     __asm__ volatile("sti");
@@ -656,11 +960,25 @@ int scheduler_list_processes(struct proc_info *out, int max) {
         if (p->user_stack_top > p->user_stack_bottom) {
             dst->memory_bytes += p->user_stack_top - p->user_stack_bottom;
         }
+        if (p->user_stack_bottom > p->user_tls_bottom) {
+            dst->memory_bytes += p->user_stack_bottom - p->user_tls_bottom;
+        }
 
         copy_name(dst->name, p->name, PROCINFO_NAME_LEN);
         count++;
     }
     return count;
+}
+
+struct process *scheduler_find_process(int pid) {
+    if (pid < 0) return NULL;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].state != PROC_UNUSED &&
+            process_table[i].pid == pid) {
+            return &process_table[i];
+        }
+    }
+    return NULL;
 }
 
 /* =========================================================================
@@ -698,6 +1016,9 @@ void scheduler_print_processes(void) {
         }
         if (p->user_stack_top > p->user_stack_bottom) {
             mem_bytes += p->user_stack_top - p->user_stack_bottom;
+        }
+        if (p->user_stack_bottom > p->user_tls_bottom) {
+            mem_bytes += p->user_stack_bottom - p->user_tls_bottom;
         }
 
         vga_writestring("  ");

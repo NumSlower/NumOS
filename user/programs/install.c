@@ -1,5 +1,14 @@
+/*
+ * install.c - Native NumOS disk writer for simple install flows.
+ *
+ * This tool mirrors the host-side create_disk.py logic inside user space so
+ * the OS can lay down its own FAT32 payload when running from a live image.
+ */
+
 #include "libc.h"
 #include "syscalls.h"
+
+/* Fixed image layout shared with the host-side disk builder. */
 
 #define BYTES_PER_SECTOR    512u
 #define SECTORS_PER_CLUSTER 8u
@@ -11,6 +20,7 @@
 #define PARTITION_TYPE_FAT32_LBA 0x0Cu
 #define BYTES_PER_CLUSTER   (BYTES_PER_SECTOR * SECTORS_PER_CLUSTER)
 #define DATA_START_SECTOR   (RESERVED_SECTORS + (NUM_FATS * FAT_SIZE_SECTORS))
+#define TOTAL_CLUSTERS      ((FS_TOTAL_SECTORS - DATA_START_SECTOR) / SECTORS_PER_CLUSTER)
 
 #define ROOT_CLUSTER    2u
 #define INIT_CLUSTER    3u
@@ -26,6 +36,7 @@
 #define FAT32_ATTR_ARCHIVE   0x20u
 #define FAT32_EOC            0x0FFFFFFFu
 
+/* Each staged file records the short FAT name and the payload location. */
 struct staged_file {
     char name[13];
     char short_name[11];
@@ -51,6 +62,8 @@ static uint32_t file_pool_used = 0;
 static uint8_t fat_buffer[FAT_SIZE_SECTORS * BYTES_PER_SECTOR];
 static uint8_t cluster_buffer[BYTES_PER_CLUSTER];
 static uint8_t zero_buffer[BYTES_PER_CLUSTER];
+
+/* Console helpers keep status output small and dependency free. */
 
 static void write_str(const char *s) {
     sys_write(FD_STDOUT, s, strlen(s));
@@ -103,6 +116,24 @@ static void store_u32_le(uint8_t *dst, uint32_t value) {
     dst[1] = (uint8_t)((value >> 8) & 0xFFu);
     dst[2] = (uint8_t)((value >> 16) & 0xFFu);
     dst[3] = (uint8_t)((value >> 24) & 0xFFu);
+}
+
+static char ascii_upper(char c) {
+    if (c >= 'a' && c <= 'z') return (char)(c - 'a' + 'A');
+    return c;
+}
+
+static int ascii_casecmp(const char *a, const char *b) {
+    if (!a || !b) return -1;
+
+    while (*a && *b) {
+        char ca = ascii_upper(*a++);
+        char cb = ascii_upper(*b++);
+        if (ca != cb) return (int)((unsigned char)ca - (unsigned char)cb);
+    }
+
+    return (int)((unsigned char)ascii_upper(*a) -
+                 (unsigned char)ascii_upper(*b));
 }
 
 static uint32_t clusters_for(uint32_t size) {
@@ -223,9 +254,14 @@ static int stage_directory(const char *dir, struct staged_file *files, int *coun
 
 static int find_staged_file(const struct staged_file *files, int count, const char *name) {
     for (int i = 0; i < count; i++) {
-        if (strcmp(files[i].name, name) == 0) return i;
+        if (ascii_casecmp(files[i].name, name) == 0) return i;
     }
     return -1;
+}
+
+static uint32_t sectors_for_bytes(uint32_t size) {
+    if (size == 0) return 0;
+    return (size + BYTES_PER_SECTOR - 1u) / BYTES_PER_SECTOR;
 }
 
 static void assign_clusters(struct staged_file *files, int count, uint32_t *next_cluster) {
@@ -351,12 +387,12 @@ static void create_boot_sector(uint8_t *boot) {
     boot[511] = 0xAAu;
 }
 
-static void create_fsinfo(uint8_t *fsinfo) {
+static void create_fsinfo(uint8_t *fsinfo, uint32_t free_clusters, uint32_t next_free_cluster) {
     memset(fsinfo, 0, BYTES_PER_SECTOR);
     store_u32_le(fsinfo + 0, 0x41615252u);
     store_u32_le(fsinfo + 484, 0x61417272u);
-    store_u32_le(fsinfo + 488, 0xFFFFFFFFu);
-    store_u32_le(fsinfo + 492, 2u);
+    store_u32_le(fsinfo + 488, free_clusters);
+    store_u32_le(fsinfo + 492, next_free_cluster);
     store_u32_le(fsinfo + 508, 0xAA550000u);
 }
 
@@ -395,6 +431,33 @@ static int write_file_clusters(uint64_t partition_lba, const struct staged_file 
     return 0;
 }
 
+static int write_file_sectors(uint64_t lba, const struct staged_file *file) {
+    uint32_t written = 0;
+    uint64_t current_lba = lba;
+
+    if (!file) return -1;
+    if (file->size == 0) return 0;
+
+    while (written < file->size) {
+        uint32_t copy = file->size - written;
+        uint32_t sectors;
+        uint32_t bytes;
+
+        if (copy > sizeof(cluster_buffer)) copy = sizeof(cluster_buffer);
+        sectors = sectors_for_bytes(copy);
+        bytes = sectors * BYTES_PER_SECTOR;
+
+        memset(cluster_buffer, 0, bytes);
+        memcpy(cluster_buffer, file->data + written, copy);
+        if (sys_disk_write(current_lba, cluster_buffer, sectors) < 0) return -1;
+
+        current_lba += sectors;
+        written += copy;
+    }
+
+    return 0;
+}
+
 static int write_all_files(uint64_t partition_lba,
                            struct staged_file *files, int count) {
     for (int i = 0; i < count; i++) {
@@ -403,8 +466,11 @@ static int write_all_files(uint64_t partition_lba,
     return 0;
 }
 
-static void create_mbr(uint8_t *sector) {
+static void create_mbr(uint8_t *sector, const struct staged_file *grub_boot) {
     memset(sector, 0, BYTES_PER_SECTOR);
+    if (grub_boot && grub_boot->size >= BYTES_PER_SECTOR) {
+        memcpy(sector, grub_boot->data, 446);
+    }
     sector[446 + 0] = 0x00u;
     sector[446 + 1] = 0xFEu;
     sector[446 + 2] = 0xFFu;
@@ -426,6 +492,10 @@ static int install_to_primary_disk(void) {
     uint64_t partition_lba = PARTITION_START_LBA;
     struct fat32_dirent include_entries[16];
     int64_t include_dir_count = 0;
+    int boot_idx = -1;
+    int core_idx = -1;
+    int kern_idx = -1;
+    uint32_t grub_core_sectors = 0;
 
     if (sys_disk_info(&info) < 0 || !info.present) {
         write_str("install: no primary ATA disk\n");
@@ -450,7 +520,7 @@ static int install_to_primary_disk(void) {
         return 1;
     }
     for (int i = 0; i < include_dir_count; i++) {
-        if (strcmp(include_entries[i].name, "SYSCALLS.H") != 0) continue;
+        if (ascii_casecmp(include_entries[i].name, "SYSCALLS.H") != 0) continue;
         if (stage_named_file("/include", include_entries[i].name, include_entries[i].size,
                              include_files, &include_count) != 0) {
             write_str("install: failed to stage /include/SYSCALLS.H\n");
@@ -476,6 +546,30 @@ static int install_to_primary_disk(void) {
         return 1;
     }
 
+    boot_idx = find_staged_file(run_files, run_count, "GRUBBOOT.BIN");
+    if (boot_idx < 0) {
+        write_str("install: missing /run/GRUBBOOT.BIN\n");
+        return 1;
+    }
+
+    core_idx = find_staged_file(run_files, run_count, "GRUBCORE.BIN");
+    if (core_idx < 0) {
+        write_str("install: missing /run/GRUBCORE.BIN\n");
+        return 1;
+    }
+
+    kern_idx = find_staged_file(run_files, run_count, "KERN.BIN");
+    if (kern_idx < 0) {
+        write_str("install: missing /run/KERN.BIN\n");
+        return 1;
+    }
+
+    grub_core_sectors = sectors_for_bytes(run_files[core_idx].size);
+    if (grub_core_sectors >= PARTITION_START_LBA) {
+        write_str("install: GRUB core image does not fit before partition 1\n");
+        return 1;
+    }
+
     assign_clusters(include_files, include_count, &next_cluster);
     assign_clusters(bin_files, bin_count, &next_cluster);
     assign_clusters(run_files, run_count, &next_cluster);
@@ -483,13 +577,20 @@ static int install_to_primary_disk(void) {
 
     write_str("install: staged files into memory, writing disk\n");
 
-    create_mbr(sector);
+    create_mbr(sector, &run_files[boot_idx]);
     if (sys_disk_write(0, sector, 1) < 0) {
         write_str("install: failed to write MBR\n");
         return 1;
     }
 
-    if (disk_write_repeat(1, zero_buffer, PARTITION_START_LBA - 1u) != 0) {
+    if (write_file_sectors(1, &run_files[core_idx]) != 0) {
+        write_str("install: failed to write embedded GRUB core\n");
+        return 1;
+    }
+
+    if (PARTITION_START_LBA - 1u > grub_core_sectors &&
+        disk_write_repeat(1u + grub_core_sectors, zero_buffer,
+                          (PARTITION_START_LBA - 1u) - grub_core_sectors) != 0) {
         write_str("install: failed to clear disk gap\n");
         return 1;
     }
@@ -500,7 +601,9 @@ static int install_to_primary_disk(void) {
         return 1;
     }
 
-    create_fsinfo(sector);
+    create_fsinfo(sector,
+                  TOTAL_CLUSTERS - (next_cluster - ROOT_CLUSTER),
+                  next_cluster);
     if (sys_disk_write(partition_lba + 1, sector, 1) < 0) {
         write_str("install: failed to write fsinfo\n");
         return 1;
@@ -593,14 +696,14 @@ static int install_to_primary_disk(void) {
     }
 
     write_str("install: done\n");
-    write_str("install: reboot and boot the ATA disk entry\n");
+    write_str("install: reboot from the hard disk\n");
     return 0;
 }
 
 int main(int argc, char **argv) {
     if (argc < 2 || (strcmp(argv[1], "ata") != 0 && strcmp(argv[1], "disk") != 0)) {
         write_str("usage: install ata\n");
-        write_str("writes a 30 MB NumOS FAT32 system partition to the primary ATA disk\n");
+        write_str("writes a bootable 30 MB NumOS system partition to the primary ATA disk\n");
         return 1;
     }
 

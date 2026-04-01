@@ -31,6 +31,8 @@
 #include "drivers/timer.h"
 #include "drivers/ata.h"
 #include "drivers/device.h"
+#include "drivers/network.h"
+#include "drivers/usb.h"
 #include "cpu/heap.h"
 #include "fs/fat32.h"
 #include "fs/vfs.h"
@@ -374,6 +376,50 @@ static void test_syscalls(void) {
     syscall_print_stats();
 }
 
+static void test_network(void) {
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    vga_writestring("\n  === Network Test ===\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    struct net_info info;
+    if (net_get_info(&info) != 0 || !info.present) {
+        vga_writestring("  No supported NIC detected\n");
+        return;
+    }
+
+    vga_writestring("  NIC... ");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    vga_writestring("[PASS] ");
+    vga_writestring(info.interface_name);
+    vga_writestring("\n");
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_writestring("  Link... ");
+    if (info.link_up) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("[PASS] up\n");
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
+        vga_writestring("[WARN] down\n");
+    }
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+
+    vga_writestring("  DHCP... ");
+    if (info.dhcp_configured) {
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+        vga_writestring("[PASS] ");
+        print_dec((uint64_t)info.ipv4[0]); vga_putchar('.');
+        print_dec((uint64_t)info.ipv4[1]); vga_putchar('.');
+        print_dec((uint64_t)info.ipv4[2]); vga_putchar('.');
+        print_dec((uint64_t)info.ipv4[3]);
+        vga_putchar('\n');
+    } else {
+        vga_setcolor(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
+        vga_writestring("[WARN] no lease\n");
+    }
+    vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+}
+
 static void run_system_tests(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("\n  ========================================\n");
@@ -383,6 +429,7 @@ static void run_system_tests(void) {
     test_memory_allocation();
     test_filesystem();
     test_syscalls();
+    test_network();
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
     vga_writestring("  ========================================\n");
     vga_writestring("      Tests Complete\n");
@@ -413,10 +460,13 @@ static void launch_init_elf(void) {
 
     struct elf_load_result result;
     struct page_table *saved_pml4 = paging_get_active_pml4();
+    uint64_t saved_cr3 = paging_get_current_cr3();
     __asm__ volatile("cli");
     paging_set_active_pml4((struct page_table *)(uintptr_t)shell_cr3);
+    paging_switch_to(shell_cr3);
     int rc = elf_load_from_file(init_path, &result);
     paging_set_active_pml4(saved_pml4);
+    paging_switch_to(saved_cr3);
     __asm__ volatile("sti");
 
     if (rc != ELF_OK) {
@@ -437,10 +487,25 @@ static void launch_init_elf(void) {
         return;
     }
 
-    proc->load_base = result.load_base;
-    proc->load_end  = result.load_end;
-    proc->cr3       = shell_cr3;
-    proc->flags    |= PROC_FLAG_VERIFIED;
+    if (process_configure_image(proc, &result, shell_cr3) != 0) {
+        uint64_t stack_top_page = paging_align_up(result.stack_top, PAGE_SIZE);
+        uint64_t saved_cr3 = paging_get_current_cr3();
+        struct page_table *saved = paging_get_active_pml4();
+        __asm__ volatile("cli");
+        paging_set_active_pml4((struct page_table *)(uintptr_t)shell_cr3);
+        paging_switch_to(shell_cr3);
+        elf_unload(result.load_base, result.load_end, result.stack_bottom, stack_top_page);
+        paging_set_active_pml4(saved);
+        paging_switch_to(saved_cr3);
+        __asm__ volatile("sti");
+        process_discard(proc);
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        vga_writestring("  process image setup FAILED\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        return;
+    }
+
+    proc->flags |= PROC_FLAG_VERIFIED;
 
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
     vga_writestring("  User process spawned (pid ");
@@ -678,6 +743,8 @@ void kernel_init(uint64_t mb2_info_phys) {
     vga_writestring("  Scanning PCI bus and PS/2 ports...\n");
     device_init();
     boot_ok(10, 12, VGA_COLOR_LIGHT_BROWN, "Device registry populated");
+    net_init();
+    usb_init();
 
     boot_section("STORAGE & FILESYSTEM", VGA_COLOR_LIGHT_RED);
     vga_writestring("  Probing ATA primary bus...\n");
@@ -744,7 +811,7 @@ void kernel_main(uint64_t mb2_info_phys) {
     vga_writestring("  [S] Scroll mode     [L] List root dir\n");
     vga_writestring("  [I] Syscall stats   [P] Process list\n");
     vga_writestring("  [D] Device list     [V] Graphics mode info\n");
-    vga_writestring("  [R] Re-run ELF      [H] Halt\n");
+    vga_writestring("  [N] Network status  [R] Re-run ELF      [H] Halt\n");
     vga_writestring("\nPress a key: ");
 
     while (1) {
@@ -776,6 +843,9 @@ void kernel_main(uint64_t mb2_info_phys) {
                 vga_writestring("\nPress a key: "); break;
             case 'd': case 'D':
                 device_print_all();
+                vga_writestring("\nPress a key: "); break;
+            case 'n': case 'N':
+                net_print_status();
                 vga_writestring("\nPress a key: "); break;
             case 'h': case 'H':
                 vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
