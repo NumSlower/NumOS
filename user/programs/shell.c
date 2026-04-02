@@ -83,6 +83,41 @@ static int has_char(const char *s, char ch) {
     return 0;
 }
 
+static char ascii_upper(char c) {
+    if (c >= 'a' && c <= 'z') return (char)(c - 'a' + 'A');
+    return c;
+}
+
+static int build_prefixed_path(char *out, size_t cap, const char *prefix,
+                               const char *name, const char *suffix,
+                               int uppercase_name) {
+    size_t pos = 0;
+
+    if (!out || cap == 0 || !prefix || !name) return 0;
+    out[0] = '\0';
+
+    while (*prefix) {
+        if (pos + 1 >= cap) return 0;
+        out[pos++] = *prefix++;
+    }
+
+    while (*name) {
+        char ch = *name++;
+        if (pos + 1 >= cap) return 0;
+        out[pos++] = uppercase_name ? ascii_upper(ch) : ch;
+    }
+
+    if (suffix) {
+        while (*suffix) {
+            if (pos + 1 >= cap) return 0;
+            out[pos++] = *suffix++;
+        }
+    }
+
+    out[pos] = '\0';
+    return 1;
+}
+
 static int is_empty_or_now(const char *s) {
     if (!s || *s == '\0') return 1;
     return str_eq(s, "now");
@@ -247,18 +282,8 @@ static int try_exec_or_script(const char *cmd, const char *cmdline) {
     }
 
     if (!has_char(cmd, '.')) {
-        const char *prefix = "/bin/";
-        const char *suffix = ".ELF";
-        size_t pos = 0;
-        for (size_t i = 0; prefix[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = prefix[i];
-        for (size_t i = 0; cmd[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = cmd[i];
-        for (size_t i = 0; suffix[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = suffix[i];
-        path[pos] = '\0';
-
-        if (file_exists(path) && sys_exec_argv(path, line) >= 0) return 0;
+        if (build_prefixed_path(path, sizeof(path), "/bin/", cmd, ".ELF", 1) &&
+            file_exists(path) && sys_exec_argv(path, line) >= 0) return 0;
     }
 
     if (try_script_or_exec(cmd, line) == 0) return 0;
@@ -266,15 +291,8 @@ static int try_exec_or_script(const char *cmd, const char *cmdline) {
     if (has_char(cmd, '.')) {
         const char *prefixes[] = { "/bin/", "/run/" };
         for (size_t p = 0; p < sizeof(prefixes) / sizeof(prefixes[0]); p++) {
-            const char *prefix = prefixes[p];
-            size_t pos = 0;
-            for (size_t i = 0; prefix[i] && pos < sizeof(path) - 1; i++)
-                path[pos++] = prefix[i];
-            for (size_t i = 0; cmd[i] && pos < sizeof(path) - 1; i++)
-                path[pos++] = cmd[i];
-            path[pos] = '\0';
-
-            if (try_script_or_exec(path, line) == 0) return 0;
+            if (build_prefixed_path(path, sizeof(path), prefixes[p], cmd, "", 1) &&
+                try_script_or_exec(path, line) == 0) return 0;
         }
     }
 
@@ -304,40 +322,22 @@ static int try_exec_or_script_run(const char *cmd, const char *cmdline) {
     }
 
     if (has_char(cmd, '.')) {
-        const char *prefix = "/bin/";
-        size_t pos = 0;
-        for (size_t i = 0; prefix[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = prefix[i];
-        for (size_t i = 0; cmd[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = cmd[i];
-        path[pos] = '\0';
-        return (try_script_or_exec(path, line) == 0) ? 0 : -1;
+        if (build_prefixed_path(path, sizeof(path), "/bin/", cmd, "", 1)) {
+            return (try_script_or_exec(path, line) == 0) ? 0 : -1;
+        }
+        return -1;
     }
 
     {
-        const char *prefix = "/bin/";
-        const char *suffix = ".ELF";
-        size_t pos = 0;
-        for (size_t i = 0; prefix[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = prefix[i];
-        for (size_t i = 0; cmd[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = cmd[i];
-        for (size_t i = 0; suffix[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = suffix[i];
-        path[pos] = '\0';
-
-        if (file_exists(path) && sys_exec_argv(path, line) >= 0) return 0;
+        if (build_prefixed_path(path, sizeof(path), "/bin/", cmd, ".ELF", 1) &&
+            file_exists(path) && sys_exec_argv(path, line) >= 0) return 0;
     }
 
     {
-        const char *prefix = "/bin/";
-        size_t pos = 0;
-        for (size_t i = 0; prefix[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = prefix[i];
-        for (size_t i = 0; cmd[i] && pos < sizeof(path) - 1; i++)
-            path[pos++] = cmd[i];
-        path[pos] = '\0';
-        return (try_script_or_exec(path, line) == 0) ? 0 : -1;
+        if (build_prefixed_path(path, sizeof(path), "/bin/", cmd, "", 1)) {
+            return (try_script_or_exec(path, line) == 0) ? 0 : -1;
+        }
+        return -1;
     }
 }
 
@@ -443,10 +443,12 @@ static void print_help(void) {
     write_str("  ls           list directory entries\n");
     write_str("\nbundled tools:\n");
     write_str("  mk           run targets from /home/BUILD.MK or another build file\n");
+    write_str("  numloss      compress or decompress files with NMLS archives\n");
+    write_str("  empty        print text files safely\n");
     write_str("  pkg          install packages staged in /run/\n");
-    write_str("  net          inspect NIC state or request DHCP with subcommands\n");
+    write_str("  connect      inspect networking, TCP, HTTP, TLS, and HTTPS\n");
+    write_str("  tcp          legacy IPv4 TCP and HTTP tool\n");
     write_str("  see          send ICMP echo requests to an IPv4 host\n");
-    write_str("  usb          list USB controllers and root port state\n");
     write_str("\nrunning programs and scripts:\n");
     write_str("  <name>       run /bin/<NAME>.ELF\n");
     write_str("  <file>       run file in current directory\n");
@@ -611,5 +613,3 @@ int main(void) {
 
     return 0;
 }
-
-

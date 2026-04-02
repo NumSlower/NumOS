@@ -64,7 +64,7 @@ USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
 # Root Makefile expects ELFs at ../build/user/*.elf
 OUTPUT_DIR ?= ../build/user
 STAGED_BIN_DIR ?= files/bin
-PREINSTALLED_BINS := shell install pkg
+PREINSTALLED_BINS := shell install pkg numloss empty edit proc
 STAGED_BIN_ELFS := $(addprefix $(STAGED_BIN_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
 
 TOPLEVEL_SRCS := $(shell find . -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)

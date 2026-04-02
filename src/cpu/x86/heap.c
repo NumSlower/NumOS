@@ -21,7 +21,6 @@
  * ======================================================================= */
 
 static struct heap_block *heap_start     = NULL;  /* First block in the heap */
-static struct heap_block *heap_free_list = NULL;  /* Head of the free list   */
 static struct heap_stats  heap_stats     = {0};   /* Usage statistics        */
 static void              *heap_end       = NULL;  /* One past the last byte  */
 static int                heap_initialized = 0;   /* Init guard              */
@@ -95,30 +94,24 @@ static int heap_validate_block(struct heap_block *block) {
  * ======================================================================= */
 
 /*
- * heap_add_to_free_list - prepend block to the head of the free list.
+ * heap_add_to_free_list - compatibility stub.
+ *
+ * The allocator walks the physical block chain headed by heap_start.
+ * The prev/next pointers therefore must always describe neighboring heap
+ * blocks, so there is no separate free-list link to update here.
  */
 static void heap_add_to_free_list(struct heap_block *block) {
-    block->next = heap_free_list;
-    if (heap_free_list) {
-        heap_free_list->prev = block;
-    }
-    heap_free_list = block;
-    block->prev    = NULL;
+    (void)block;
 }
 
 /*
- * heap_remove_from_free_list - unlink block from the free list.
+ * heap_remove_from_free_list - compatibility stub.
+ *
+ * Kept so the existing call sites remain simple while the allocator scans
+ * the full physical block chain for free space.
  */
 static void heap_remove_from_free_list(struct heap_block *block) {
-    if (block->prev) {
-        block->prev->next = block->next;
-    } else {
-        heap_free_list = block->next;
-    }
-
-    if (block->next) {
-        block->next->prev = block->prev;
-    }
+    (void)block;
 }
 
 /* =========================================================================
@@ -126,15 +119,16 @@ static void heap_remove_from_free_list(struct heap_block *block) {
  * ======================================================================= */
 
 /*
- * heap_find_best_fit - scan the free list for the smallest block >= size.
+ * heap_find_best_fit - scan the physical block chain for the smallest
+ * free block >= size.
  * Returns NULL if no suitable block exists.
  */
 static struct heap_block *heap_find_best_fit(size_t size) {
-    struct heap_block *current  = heap_free_list;
+    struct heap_block *current  = heap_start;
     struct heap_block *best_fit = NULL;
     size_t             best_size = (size_t)-1;
 
-    while (current) {
+    while (current && (uint8_t *)current < (uint8_t *)heap_end) {
         if ((current->flags & HEAP_FLAG_FREE) && current->size >= size) {
             if (current->size < best_size) {
                 best_fit  = current;
@@ -311,8 +305,6 @@ void heap_init(void) {
     heap_start->prev     = NULL;
     heap_start->next     = NULL;
     heap_start->checksum = heap_calculate_checksum(heap_start);
-
-    heap_free_list = heap_start;
 
     /* Initialise statistics */
     memset(&heap_stats, 0, sizeof(struct heap_stats));

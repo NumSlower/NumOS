@@ -918,6 +918,108 @@ int64_t sys_net_ping(const uint8_t *ipv4, uint32_t timeout_ms,
     return 0;
 }
 
+int64_t sys_net_tcp_connect(const uint8_t *ipv4, uint16_t port, uint32_t timeout_ms) {
+    uint8_t addr[4];
+
+    if (!ipv4) return SYSCALL_EFAULT;
+    if (!is_user_range(ipv4, sizeof(addr))) return SYSCALL_EFAULT;
+    memcpy(addr, ipv4, sizeof(addr));
+    return net_tcp_connect_ipv4(addr, port, timeout_ms);
+}
+
+int64_t sys_net_tcp_send(int handle, const void *buf, size_t len, uint32_t timeout_ms) {
+    if (!buf) return SYSCALL_EFAULT;
+    if (len && !is_user_range(buf, len)) return SYSCALL_EFAULT;
+    return net_tcp_send(handle, buf, len, timeout_ms);
+}
+
+int64_t sys_net_tcp_recv(int handle, void *buf, size_t len, uint32_t timeout_ms) {
+    if (!buf) return SYSCALL_EFAULT;
+    if (len && !is_user_range(buf, len)) return SYSCALL_EFAULT;
+    return net_tcp_recv(handle, buf, len, timeout_ms);
+}
+
+int64_t sys_net_tcp_close(int handle, uint32_t timeout_ms) {
+    return net_tcp_close(handle, timeout_ms);
+}
+
+int64_t sys_net_tcp_info(int handle, struct numos_net_tcp_info *out) {
+    struct net_tcp_info info;
+    struct numos_net_tcp_info user_info;
+
+    if (!out) return SYSCALL_EFAULT;
+    if (!is_user_range(out, sizeof(*out))) return SYSCALL_EFAULT;
+    if (net_tcp_get_info(handle, &info) != 0) return SYSCALL_EINVAL;
+
+    memset(&user_info, 0, sizeof(user_info));
+    memcpy(&user_info, &info, sizeof(user_info));
+    memcpy(out, &user_info, sizeof(user_info));
+    return 0;
+}
+
+int64_t sys_net_tls_probe(const uint8_t *ipv4,
+                          uint16_t port,
+                          const char *server_name,
+                          uint32_t flags,
+                          uint32_t timeout_ms,
+                          struct numos_net_tls_result *out) {
+    uint8_t addr[4];
+    char server_name_copy[64];
+    struct net_tls_result result;
+    struct numos_net_tls_result user_result;
+
+    if (!ipv4 || !server_name || !out) return SYSCALL_EFAULT;
+    if (!is_user_range(ipv4, sizeof(addr)) ||
+        !is_user_range(server_name, 1) ||
+        !is_user_range(out, sizeof(*out))) {
+        return SYSCALL_EFAULT;
+    }
+
+    memcpy(addr, ipv4, sizeof(addr));
+    size_t i = 0;
+    for (; i + 1 < sizeof(server_name_copy); i++) {
+        if (!is_user_range(server_name + i, 1)) return SYSCALL_EFAULT;
+        server_name_copy[i] = server_name[i];
+        if (server_name_copy[i] == 0) break;
+    }
+    server_name_copy[sizeof(server_name_copy) - 1] = '\0';
+
+    if (net_tls_probe_ipv4(addr, port, server_name_copy, flags, timeout_ms, &result) != 0) {
+        return SYSCALL_EINVAL;
+    }
+
+    memset(&user_result, 0, sizeof(user_result));
+    memcpy(&user_result, &result, sizeof(user_result));
+    memcpy(out, &user_result, sizeof(user_result));
+    return 0;
+}
+
+int64_t sys_net_http_get(const struct numos_net_http_request *request,
+                         void *buf,
+                         size_t len,
+                         struct numos_net_http_result *out) {
+    struct net_http_request kernel_request;
+    struct net_http_result kernel_result;
+    ssize_t rc;
+
+    if (!request || !buf || !out) return SYSCALL_EFAULT;
+    if (!is_user_range(request, sizeof(*request)) ||
+        !is_user_range(buf, len) ||
+        !is_user_range(out, sizeof(*out))) {
+        return SYSCALL_EFAULT;
+    }
+
+    memcpy(&kernel_request, request, sizeof(kernel_request));
+    rc = net_http_get_ipv4(&kernel_request, buf, len, &kernel_result);
+    if (rc < 0) return SYSCALL_EINVAL;
+
+    struct numos_net_http_result user_result;
+    memset(&user_result, 0, sizeof(user_result));
+    memcpy(&user_result, &kernel_result, sizeof(user_result));
+    memcpy(out, &user_result, sizeof(user_result));
+    return rc;
+}
+
 /* =========================================================================
  * Dispatcher
  * ======================================================================= */
@@ -1055,6 +1157,44 @@ int64_t syscall_dispatch(struct syscall_regs *regs) {
                                (uint32_t)regs->rsi,
                                (struct numos_net_ping_result *)regs->rdx);
             break;
+        case SYS_NET_TCP_CONNECT:
+            ret = sys_net_tcp_connect((const uint8_t *)regs->rdi,
+                                      (uint16_t)regs->rsi,
+                                      (uint32_t)regs->rdx);
+            break;
+        case SYS_NET_TCP_SEND:
+            ret = sys_net_tcp_send((int)regs->rdi,
+                                   (const void *)regs->rsi,
+                                   (size_t)regs->rdx,
+                                   (uint32_t)regs->r10);
+            break;
+        case SYS_NET_TCP_RECV:
+            ret = sys_net_tcp_recv((int)regs->rdi,
+                                   (void *)regs->rsi,
+                                   (size_t)regs->rdx,
+                                   (uint32_t)regs->r10);
+            break;
+        case SYS_NET_TCP_CLOSE:
+            ret = sys_net_tcp_close((int)regs->rdi, (uint32_t)regs->rsi);
+            break;
+        case SYS_NET_TCP_INFO:
+            ret = sys_net_tcp_info((int)regs->rdi,
+                                   (struct numos_net_tcp_info *)regs->rsi);
+            break;
+        case SYS_NET_TLS_PROBE:
+            ret = sys_net_tls_probe((const uint8_t *)regs->rdi,
+                                    (uint16_t)regs->rsi,
+                                    (const char *)regs->rdx,
+                                    (uint32_t)regs->r10,
+                                    (uint32_t)regs->r8,
+                                    (struct numos_net_tls_result *)regs->r9);
+            break;
+        case SYS_NET_HTTP_GET:
+            ret = sys_net_http_get((const struct numos_net_http_request *)regs->rdi,
+                                   (void *)regs->rsi,
+                                   (size_t)regs->rdx,
+                                   (struct numos_net_http_result *)regs->r10);
+            break;
         case SYS_POWEROFF:
             ret = sys_poweroff();
             break;
@@ -1140,6 +1280,13 @@ void syscall_print_stats(void) {
     names[SYS_NET_INFO]             = "net_info";
     names[SYS_NET_DHCP]             = "net_dhcp";
     names[SYS_NET_PING]             = "net_ping";
+    names[SYS_NET_TCP_CONNECT]      = "net_tcp_connect";
+    names[SYS_NET_TCP_SEND]         = "net_tcp_send";
+    names[SYS_NET_TCP_RECV]         = "net_tcp_recv";
+    names[SYS_NET_TCP_CLOSE]        = "net_tcp_close";
+    names[SYS_NET_TCP_INFO]         = "net_tcp_info";
+    names[SYS_NET_TLS_PROBE]        = "net_tls_probe";
+    names[SYS_NET_HTTP_GET]         = "net_http_get";
     names[SYS_POWEROFF]             = "poweroff";
     names[SYS_REBOOT]    = "reboot";
     names[SYS_FB_INFO]   = "fb_info";
@@ -1160,4 +1307,3 @@ void syscall_print_stats(void) {
         vga_writestring("\n");
     }
 }
-

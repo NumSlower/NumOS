@@ -20,6 +20,7 @@
 
 #include "kernel/elf_loader.h"
 #include "kernel/kernel.h"
+#include "kernel/numloss.h"
 #include "drivers/graphices/vga.h"
 #include "cpu/paging.h"
 #include "fs/fat32.h"
@@ -491,8 +492,45 @@ int elf_load_from_file(const char *path, struct elf_load_result *result) {
     print_dec((uint64_t)got);
     vga_writestring(" bytes OK\n");
 
-    int rc = elf_load_from_memory(buf, (size_t)got, result);
-    kfree(buf);
+    uint8_t *load_buf = buf;
+    size_t load_size = (size_t)got;
+
+    if (numloss_is_archive(buf, (uint32_t)got)) {
+        uint32_t original_size = 0;
+        uint32_t decoded_size = 0;
+
+        if (numloss_read_header(buf, (uint32_t)got, &original_size, 0) != NUMLOSS_OK ||
+            original_size == 0) {
+            kfree(buf);
+            return elf_err(result, ELF_ERR_IO, "Invalid numloss archive");
+        }
+
+        load_buf = (uint8_t *)kmalloc(original_size);
+        if (!load_buf) {
+            kfree(buf);
+            return elf_err(result, ELF_ERR_NOMEM,
+                           "Cannot allocate numloss buffer");
+        }
+
+        if (numloss_decode(buf, (uint32_t)got, load_buf, original_size,
+                           &decoded_size) != NUMLOSS_OK ||
+            decoded_size != original_size) {
+            kfree(load_buf);
+            kfree(buf);
+            return elf_err(result, ELF_ERR_IO, "Cannot unpack numloss ELF");
+        }
+
+        kfree(buf);
+
+        vga_writestring("ELF: Numloss unpacked to ");
+        print_dec(decoded_size);
+        vga_writestring(" bytes\n");
+
+        load_size = decoded_size;
+    }
+
+    int rc = elf_load_from_memory(load_buf, load_size, result);
+    kfree(load_buf);
     return rc;
 }
 

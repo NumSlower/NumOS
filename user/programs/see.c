@@ -137,7 +137,7 @@ int main(void) {
 
     if (!info.dhcp_configured) {
         write_str("see: network is not configured\n");
-        write_str("see: run net dhcp first\n");
+        write_str("see: run connect --dhcp first\n");
         return 1;
     }
 

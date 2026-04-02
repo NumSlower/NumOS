@@ -97,6 +97,7 @@ PART_END      ?= 100%
 PART_FORMAT   ?= 0
 PART_APPLY    ?= 0
 PART_POPULATE ?= 1
+NUMOS_PACK_USER_ELF ?= 1
 
 # Read NUMOS_ENABLE_FRAMEBUFFER and NUMOS_FB_ENABLE_VBE from config.h.
 # The default kernel follows NUMOS_FB_ENABLE_VBE. A second kernel image is
@@ -105,6 +106,12 @@ FB_ENABLED := $(shell grep -E '^\s*#\s*define\s+NUMOS_ENABLE_FRAMEBUFFER\s' \
                   Include/kernel/config.h | awk '{print $$3}' | tr -d '\r\n')
 VBE_TAG := $(shell grep -E '^\s*#\s*define\s+NUMOS_FB_ENABLE_VBE\s' \
                   Include/kernel/config.h | awk '{print $$3}' | tr -d '\r\n')
+FB_WIDTH := $(shell grep -E '^\s*#\s*define\s+NUMOS_FB_WIDTH\s' \
+                  Include/kernel/config.h | awk '{print $$3}' | tr -d '\r\n')
+FB_HEIGHT := $(shell grep -E '^\s*#\s*define\s+NUMOS_FB_HEIGHT\s' \
+                   Include/kernel/config.h | awk '{print $$3}' | tr -d '\r\n')
+FB_BPP ?= 32
+GRUB_VESA_MODE := $(FB_WIDTH)x$(FB_HEIGHT)x$(FB_BPP)
 FORCE_VBE ?= 0
 ifeq ($(FORCE_VBE),1)
     VBE_TAG := 1
@@ -115,11 +122,11 @@ else
     GRUB_GFX_ENABLED := 0
 endif
 ifeq ($(VBE_TAG),1)
-    ASFLAGS_MULTIBOOT := -f elf64 -D ENABLE_FRAMEBUFFER=1
+    ASFLAGS_MULTIBOOT := -f elf64 -D ENABLE_FRAMEBUFFER=1 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
 else
-    ASFLAGS_MULTIBOOT := -f elf64 -D ENABLE_FRAMEBUFFER=0
+    ASFLAGS_MULTIBOOT := -f elf64 -D ENABLE_FRAMEBUFFER=0 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
 endif
-ASFLAGS_MULTIBOOT_VESA := -f elf64 -D ENABLE_FRAMEBUFFER=1
+ASFLAGS_MULTIBOOT_VESA := -f elf64 -D ENABLE_FRAMEBUFFER=1 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
 
 KERNEL_CFLAGS := $(KERNEL_ARCH_CFLAGS) -ffreestanding -fstack-protector-strong \
                  -mstack-protector-guard=global -fno-pic \
@@ -299,11 +306,20 @@ $(BOOT_SUPPORT_STAMP): $(KERNEL) $(KERNEL_VESA) $(TOOLS_DIR)/build_boot_support.
 		--kernel $(KERNEL_VESA)
 	@touch $@
 
+.PHONY: pkg-download
+pkg-download:
+	@if [ -z "$(PKG_URL)" ]; then \
+		echo "Usage: make pkg-download PKG_URL=https://example.com/OCLDEV.PKG"; \
+		false; \
+	fi
+	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(BOOT_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
+
 # ---- Disk image ------------------------------------------------------------
 .PHONY: disk
 disk: user_space $(KERNEL) boot-support
 	@mkdir -p $(BUILD_DIR)
-	@python3 $(TOOLS_DIR)/create_disk.py $(DISK_IMAGE) $(INIT_ELF) $(INIT_ELF_NAME)
+	@NUMOS_PACK_USER_ELF=$(NUMOS_PACK_USER_ELF) \
+		python3 $(TOOLS_DIR)/create_disk.py $(DISK_IMAGE) $(INIT_ELF) $(INIT_ELF_NAME)
 	@echo "[OK]  $(DISK_IMAGE)"
 
 .PHONY: partition-list
@@ -404,8 +420,8 @@ ifeq ($(GRUB_GFX_ENABLED),1)
 	  '    boot' \
 	  '}' \
 	  '' \
-	  'menuentry "NumOS (VESA 1920x1200x32)" {' \
-	  '    set gfxmode=1920x1200x32' \
+	  'menuentry "NumOS (VESA $(GRUB_VESA_MODE))" {' \
+	  '    set gfxmode=$(GRUB_VESA_MODE)' \
 	  '    set gfxpayload=keep' \
 	  '    if loadfont unicode; then' \
 	  '        terminal_output gfxterm' \
@@ -474,13 +490,13 @@ else
 	  '    boot' \
 	  '}' \
 	  '' \
-	  'menuentry "NumOS (VESA 1920x1200)" {' \
+	  'menuentry "NumOS (VESA $(GRUB_VESA_MODE))" {' \
 	  '    insmod all_video' \
 	  '    insmod vbe' \
 	  '    insmod vga' \
 	  '    insmod gfxterm' \
 	  '    insmod font' \
-	  '    set gfxmode=1920x1200x32' \
+	  '    set gfxmode=$(GRUB_VESA_MODE)' \
 	  '    set gfxpayload=keep' \
 	  '    if loadfont unicode; then' \
 	  '        terminal_output gfxterm' \
@@ -577,6 +593,7 @@ help:
 	@echo "  make partition PART_TARGET=/dev/sdX PART_APPLY=1 PART_FORMAT=1"
 	@echo "  make partition PART_TARGET=build/disk.img PART_APPLY=1 PART_FORMAT=1"
 	@echo "    add PART_POPULATE=0 to keep filesystem empty"
+	@echo "  make pkg-download PKG_URL=https://example.com/OCLDEV.PKG"
 	@echo "  make clean - remove build artefacts"
 	@echo "OS: $(OS_TYPE)"
 	@echo "Architecture: $(NUMOS_ARCH)"

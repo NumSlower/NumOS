@@ -6,7 +6,7 @@ Current focus:
 
 - x86_64 PC boot through GRUB Multiboot2
 - a freestanding kernel with paging, interrupts, scheduling, ELF loading, and syscalls
-- a small userland with native tools such as `shell`, `edit`, `mk`, `pkg`, `net`, `proc`, `thread`, and `usb`
+- a small userland with native tools such as `shell`, `edit`, `mk`, `pkg`, `connect`, and `proc`
 - FAT32 based image creation and partition population flows
 
 ARM64 work is planned. The current port plan lives in `docs/PORTING_RPI5_ARM64.md`.
@@ -18,6 +18,7 @@ What works today:
 - kernel boots on x86_64 through GRUB
 - kernel and user runtimes use stack protection
 - ELF64 `ET_EXEC` and `ET_DYN` loading works
+- the kernel can unpack `numloss` compressed ELF payloads before loading them
 - user processes run in ring 3
 - basic threads and TLS work in user space
 - FAT32 and ramdisk paths are present
@@ -161,18 +162,40 @@ The image currently stages these user tools:
 - `mk`, small build helper
 - `pkg`, staged package installer
 - `proc`, process inspection
-- `thread`, thread and TLS validation
-- `net`, link, DHCP, and ping checks
-- `usb`, USB controller and root port reporting
-- `date`, RTC-backed date output
+- `connect`, DHCP, ping, TCP, HTTP, TLS, and HTTPS checks
+- `tcp`, legacy IPv4 TCP connect checks and plain HTTP GET
 - `see`, file viewer
 - `install`, native install helper
+- staged non-init `.elf` files are packed with `numloss` by default when this makes them smaller
 
 Example flow after boot:
 
 - `pkg list`, inspect staged packages in `/run`
 - `pkg install OCLDEV`, install the sample OCL development package
+- `pkg http://203.0.113.10/packages/OCLDEV.PKG`, download a remote package into `/run` and install it
 - `mk`, run the default target from `/home/BUILD.MK`
+
+Disable host-side ELF packing for a disk build:
+
+```bash
+make disk NUMOS_PACK_USER_ELF=0
+```
+
+Remote URL installs run inside NumOS. Start networking first with `connect --dhcp`. URL hosts currently need an IPv4 literal address.
+
+Fetch a package from your website into the host staging area before `make disk` or `make iso`:
+
+```bash
+python3 tools/download_pkg.py https://example.com/packages/OCLDEV.PKG
+```
+
+Or use the Make helper:
+
+```bash
+make pkg-download PKG_URL=https://example.com/packages/OCLDEV.PKG
+```
+
+The downloader stores the `.PKG` manifest and every `copy` source file in `build/stage/run`, which becomes `/run` inside the image.
 
 ## Repository Layout
 

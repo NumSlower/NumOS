@@ -10,6 +10,12 @@ import os
 import struct
 import sys
 
+TOOLS_DIR = os.path.dirname(__file__)
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+import numloss_codec
+
 
 # FAT32 image geometry. The current boot flow depends on this fixed layout.
 DEFAULT_DISK_SIZE_MB = 32
@@ -38,6 +44,25 @@ FAT_EOC = 0x0FFFFFFF
 
 FAT32_NTRES_LOWER_BASE = 0x08
 FAT32_NTRES_LOWER_EXT = 0x10
+
+PREINSTALLED_BIN_NAMES = {
+    "connect.elf",
+    "date.elf",
+    "empty.elf",
+    "edit.elf",
+    "install.elf",
+    "mk.elf",
+    "net.elf",
+    "numloss.elf",
+    "ocl.elf",
+    "pkg.elf",
+    "proc.elf",
+    "see.elf",
+    "shell.elf",
+    "tcp.elf",
+    "thread.elf",
+    "usb.elf",
+}
 
 
 def cluster_count_for_size(size):
@@ -404,6 +429,52 @@ def create_file_record(name, data):
     }
 
 
+def should_pack_user_elf():
+    """Return True when staged user ELFs should be packed with numloss."""
+    return os.environ.get("NUMOS_PACK_USER_ELF", "1") == "1"
+
+
+def maybe_pack_record(record):
+    """Pack one staged ELF when numloss makes it smaller."""
+    if not record:
+        return record
+    if not record["name"].lower().endswith(".elf"):
+        return record
+    if record["size"] == 0:
+        return record
+    if numloss_codec.is_archive(record["data"]):
+        return record
+
+    packed_data = numloss_codec.encode(record["data"])
+    if len(packed_data) >= record["size"]:
+        return record
+
+    packed_record = dict(record)
+    packed_record["data"] = packed_data
+    packed_record["size"] = len(packed_data)
+    packed_record["clusters"] = cluster_count_for_size(len(packed_data))
+    packed_record["packed"] = True
+    packed_record["source_size"] = record["size"]
+    return packed_record
+
+
+def maybe_pack_records(records, enabled):
+    """Pack staged ELF records when the build enables the feature."""
+    if not enabled:
+        return records
+
+    packed_records = []
+    for record in records:
+        packed = maybe_pack_record(record)
+        if packed is not record and packed.get("packed"):
+            print(
+                f"  [PACK] {record['name']}: "
+                f"{record['size']} -> {packed['size']} bytes"
+            )
+        packed_records.append(packed)
+    return packed_records
+
+
 def assign_record_clusters(records, next_cluster):
     """Assign clusters in order so on-disk layout matches directory order."""
     for record in records:
@@ -529,6 +600,7 @@ def main():
     DISK_SIZE_MB = parse_disk_size_mb()
     offset_bytes = parse_offset_bytes()
     preserve_prefix = os.environ.get("NUMOS_DISK_PRESERVE_PREFIX", "0") == "1"
+    pack_user_elf = should_pack_user_elf()
 
     syscalls_record = None
     syscalls_path = os.path.join(root_dir, "user", "include", "syscalls.h")
@@ -537,26 +609,12 @@ def main():
             "SYSCALLS.H", load_binary_file(syscalls_path, "SYSCALLS.H")
         )
 
-    preinstalled_bin_names = {
-        "date.elf",
-        "edit.elf",
-        "install.elf",
-        "mk.elf",
-        "net.elf",
-        "ocl.elf",
-        "pkg.elf",
-        "proc.elf",
-        "see.elf",
-        "shell.elf",
-        "thread.elf",
-        "usb.elf",
-    }
     bin_programs = load_staged_files_from_dirs(
         [
             os.path.join(root_dir, "user", "files", "bin"),
             os.path.join(root_dir, "build", "user"),
         ],
-        preinstalled_bin_names,
+        PREINSTALLED_BIN_NAMES,
     )
     run_files = load_staged_files_from_dirs(
         [
@@ -574,6 +632,9 @@ def main():
         bin_programs = [
             program for program in bin_programs if program["name"].lower() != init_name_lower
         ]
+
+    bin_programs = maybe_pack_records(bin_programs, pack_user_elf)
+    run_files = maybe_pack_records(run_files, pack_user_elf)
 
     total_sectors = (DISK_SIZE_MB * 1024 * 1024) // BYTES_PER_SECTOR
     data_start_sector = RESERVED_SECTORS + (NUM_FATS * FAT_SIZE_SECTORS)

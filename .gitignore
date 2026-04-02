@@ -10,11 +10,15 @@
 !/user/programs/shell.c
 !/user/programs/net.c
 !/user/programs/see.c
+!/user/programs/numloss/
+!/user/programs/numloss/*
 
 # Editor temp files
 *.swp
 *.swo
 *~
+__pycache__/
+*.pyc
 
 # OS clutter
 .DS_Store

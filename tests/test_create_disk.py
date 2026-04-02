@@ -91,6 +91,11 @@ class CreateDiskTest(unittest.TestCase):
         self.assertEqual(files[0]["data"], b"first")
         self.assertEqual(files[1]["data"], b"usb")
 
+    def test_preinstalled_bin_names_include_connect(self):
+        # The shell help advertises connect as a bundled tool, so the disk
+        # image must stage the ELF into /bin.
+        self.assertIn("connect.elf", create_disk.PREINSTALLED_BIN_NAMES)
+
 
 if __name__ == "__main__":
     unittest.main()

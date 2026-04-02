@@ -1,17 +1,116 @@
 #!/bin/bash
-# Cross-Compiler Build Script for x86_64-elf
-# This builds GCC and binutils for bare-metal x86-64 development
+# Cross-Compiler Build Script
+# Supports: x86_64-elf, aarch64-elf, aarch64-linux-gnu, amd64 (x86_64 alias)
 
 set -euo pipefail
 
-# Configuration
-export PREFIX="$HOME/opt/cross"
-export TARGET=x86_64-elf
-export PATH="$PREFIX/bin:$PATH"
-
-# Versions (you can update these)
+# Versions
 BINUTILS_VERSION=2.41
 GCC_VERSION=13.2.0
+
+# Architecture presets
+declare -A ARCH_TARGETS=(
+    [x86_64]="x86_64-elf"
+    [amd64]="x86_64-elf"
+    [arm64]="aarch64-elf"
+    [aarch64]="aarch64-elf"
+    [arm]="arm-eabi"
+    [armhf]="arm-linux-gnueabihf"
+    [aarch64-linux]="aarch64-linux-gnu"
+)
+
+declare -A ARCH_LANGUAGES=(
+    [x86_64-elf]="c,c++"
+    [aarch64-elf]="c,c++"
+    [arm-eabi]="c,c++"
+    [arm-linux-gnueabihf]="c,c++"
+    [aarch64-linux-gnu]="c,c++"
+)
+
+usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  -a, --arch ARCH     Target architecture (default: x86_64)"
+    echo "  -t, --target TARGET Full target triple (overrides --arch)"
+    echo "  -p, --prefix PATH   Installation prefix (default: \$HOME/opt/cross)"
+    echo "  -j, --jobs N        Parallel jobs (default: nproc)"
+    echo "  --list-archs        List supported architecture shortcuts"
+    echo "  -h, --help          Show this help"
+    echo ""
+    echo "Supported arch shortcuts:"
+    for arch in "${!ARCH_TARGETS[@]}"; do
+        printf "  %-16s -> %s\n" "$arch" "${ARCH_TARGETS[$arch]}"
+    done | sort
+    exit 0
+}
+
+list_archs() {
+    echo "Supported architecture shortcuts:"
+    echo ""
+    for arch in "${!ARCH_TARGETS[@]}"; do
+        printf "  %-16s -> %s\n" "$arch" "${ARCH_TARGETS[$arch]}"
+    done | sort
+    echo ""
+    echo "You can also pass any valid GCC target triple directly with --target."
+    exit 0
+}
+
+# Defaults
+ARCH="x86_64"
+TARGET=""
+PREFIX="$HOME/opt/cross"
+NPROC="$(nproc)"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--arch)
+            ARCH="$2"
+            shift 2
+            ;;
+        -t|--target)
+            TARGET="$2"
+            shift 2
+            ;;
+        -p|--prefix)
+            PREFIX="$2"
+            shift 2
+            ;;
+        -j|--jobs)
+            NPROC="$2"
+            shift 2
+            ;;
+        --list-archs)
+            list_archs
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
+# Resolve target triple
+if [ -z "$TARGET" ]; then
+    if [[ -v ARCH_TARGETS[$ARCH] ]]; then
+        TARGET="${ARCH_TARGETS[$ARCH]}"
+    else
+        echo "Unknown arch: $ARCH"
+        echo "Use --list-archs to see supported shortcuts, or pass a full triple with --target."
+        exit 1
+    fi
+fi
+
+# Resolve languages for target
+LANGUAGES="${ARCH_LANGUAGES[$TARGET]:-c,c++}"
+
+export PREFIX
+export TARGET
+export PATH="$PREFIX/bin:$PATH"
 
 download_archive() {
     local url="$1"
@@ -48,30 +147,43 @@ download_archive() {
     mv "$tmp_archive" "$archive"
 }
 
-# Validate host tools before starting a long build.
-if ! command -v makeinfo >/dev/null 2>&1; then
-    echo "Missing required host tool: makeinfo"
-    echo "Install Texinfo first, then rerun this script."
-    echo "Ubuntu or Debian: sudo apt install texinfo"
-    echo "Fedora: sudo dnf install texinfo"
-    echo "Arch: sudo pacman -S texinfo"
-    exit 1
+# Validate host tools
+check_tool() {
+    local tool="$1"
+    local hint="$2"
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Missing required host tool: $tool"
+        echo "$hint"
+        exit 1
+    fi
+}
+
+check_tool makeinfo \
+    "Install Texinfo first. Ubuntu/Debian: sudo apt install texinfo | Fedora: sudo dnf install texinfo | Arch: sudo pacman -S texinfo"
+
+# For ARM targets, confirm required multilib/arm support on host
+if [[ "$TARGET" == arm* ]] && ! gcc -dumpmachine 2>/dev/null | grep -q arm; then
+    if ! dpkg -l gcc-arm-linux-gnueabihf >/dev/null 2>&1 && \
+       ! command -v arm-linux-gnueabihf-gcc >/dev/null 2>&1; then
+        echo "Note: Building ARM cross-compiler from an x86 host."
+        echo "If the build fails, install: sudo apt install gcc-arm-linux-gnueabihf"
+    fi
 fi
 
-NPROC="$(nproc)"
-
-# Create directories
+# Setup
 mkdir -p "$HOME/src"
 cd "$HOME/src"
 
-echo "=== Building x86_64-elf cross-compiler ==="
+echo "=== Building $TARGET cross-compiler ==="
 echo "This will take 30-60 minutes depending on your system"
 echo ""
 echo "Installation directory: $PREFIX"
-echo "Target: $TARGET"
+echo "Target:                 $TARGET"
+echo "Languages:              $LANGUAGES"
+echo "Parallel jobs:          $NPROC"
 echo ""
 
-# Download source archives
+# Download
 download_archive \
     "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VERSION.tar.xz" \
     "binutils-$BINUTILS_VERSION.tar.xz"
@@ -79,13 +191,13 @@ download_archive \
     "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz" \
     "gcc-$GCC_VERSION.tar.xz"
 
-# Extract binutils
+# Build binutils
 echo ""
 echo "=== Building binutils ==="
-rm -rf "binutils-$BINUTILS_VERSION" build-binutils
+rm -rf "binutils-$BINUTILS_VERSION" "build-binutils-$TARGET"
 tar -xf "binutils-$BINUTILS_VERSION.tar.xz"
-mkdir -p build-binutils
-cd build-binutils
+mkdir -p "build-binutils-$TARGET"
+cd "build-binutils-$TARGET"
 
 ../"binutils-$BINUTILS_VERSION"/configure \
     --target="$TARGET" \
@@ -99,24 +211,46 @@ make install
 
 cd ..
 
-# Extract GCC
+# Build GCC
 echo ""
 echo "=== Building GCC ==="
-rm -rf "gcc-$GCC_VERSION" build-gcc
+rm -rf "gcc-$GCC_VERSION" "build-gcc-$TARGET"
 tar -xf "gcc-$GCC_VERSION.tar.xz"
 (
     cd "gcc-$GCC_VERSION"
     bash contrib/download_prerequisites
 )
-mkdir -p build-gcc
-cd build-gcc
+mkdir -p "build-gcc-$TARGET"
+cd "build-gcc-$TARGET"
 
+GCC_CONFIGURE_EXTRA=""
+
+# Target-specific configure flags
+case "$TARGET" in
+    aarch64-elf)
+        GCC_CONFIGURE_EXTRA="--without-headers --with-newlib --disable-shared --disable-threads"
+        ;;
+    arm-eabi)
+        GCC_CONFIGURE_EXTRA="--without-headers --with-newlib --disable-shared --disable-threads --with-arch=armv7-a --with-mode=thumb"
+        ;;
+    arm-linux-gnueabihf)
+        GCC_CONFIGURE_EXTRA="--with-float=hard --with-fpu=vfpv3-d16 --with-arch=armv7-a"
+        ;;
+    aarch64-linux-gnu)
+        GCC_CONFIGURE_EXTRA=""
+        ;;
+    x86_64-elf)
+        GCC_CONFIGURE_EXTRA="--without-headers"
+        ;;
+esac
+
+# shellcheck disable=SC2086
 ../"gcc-$GCC_VERSION"/configure \
     --target="$TARGET" \
     --prefix="$PREFIX" \
     --disable-nls \
-    --enable-languages=c,c++ \
-    --without-headers
+    --enable-languages="$LANGUAGES" \
+    $GCC_CONFIGURE_EXTRA
 
 make -j"$NPROC" all-gcc
 make -j"$NPROC" all-target-libgcc
@@ -127,10 +261,10 @@ echo ""
 echo "=== Cross-compiler installation complete! ==="
 echo ""
 echo "Add this to your ~/.bashrc or ~/.zshrc:"
-echo "export PATH=\"\$HOME/opt/cross/bin:\$PATH\""
+echo "  export PATH=\"\$HOME/opt/cross/bin:\$PATH\""
 echo ""
 echo "Then run: source ~/.bashrc"
 echo ""
 echo "Verify installation:"
-echo "  x86_64-elf-gcc --version"
-echo "  x86_64-elf-ld --version"
+echo "  ${TARGET}-gcc --version"
+echo "  ${TARGET}-ld --version"

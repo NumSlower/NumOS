@@ -15,6 +15,18 @@
 ; Reference: Multiboot2 spec §3.1.6
 ;            https://wiki.osdev.org/Multiboot#Multiboot_2
 
+%ifndef FB_WIDTH
+%define FB_WIDTH 1024
+%endif
+
+%ifndef FB_HEIGHT
+%define FB_HEIGHT 768
+%endif
+
+%ifndef FB_BPP
+%define FB_BPP 32
+%endif
+
 section .multiboot
 align 8
 
@@ -50,9 +62,9 @@ framebuffer_tag_start:
     dw 5        ; type  = framebuffer
     dw 1        ; flags = optional (don't abort if VBE is unavailable)
     dd framebuffer_tag_end - framebuffer_tag_start
-    dd 1024     ; width
-    dd 768      ; height
-    dd 32       ; depth  = 32 bpp preferred
+    dd FB_WIDTH   ; width
+    dd FB_HEIGHT  ; height
+    dd FB_BPP     ; depth  = 32 bpp preferred
 framebuffer_tag_end:
 
 %endif

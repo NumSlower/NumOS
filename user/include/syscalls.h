@@ -182,6 +182,57 @@ struct numos_net_ping_result {
     uint32_t roundtrip_ms;
 };
 
+struct numos_net_tcp_info {
+    uint8_t  state;
+    uint8_t  reset;
+    uint8_t  remote_closed;
+    uint8_t  reserved0;
+    uint16_t local_port;
+    uint16_t remote_port;
+    uint32_t recv_ready;
+    uint32_t send_ready;
+    uint8_t  remote_ip[4];
+};
+
+struct numos_net_tls_result {
+    uint8_t  success;
+    uint8_t  secure;
+    uint16_t protocol_version;
+    uint16_t cipher_suite;
+    uint16_t remote_port;
+    uint8_t  remote_ip[4];
+    char     server_name[64];
+};
+
+struct numos_net_http_request {
+    uint8_t  remote_ip[4];
+    uint16_t remote_port;
+    uint16_t secure;
+    uint32_t flags;
+    uint32_t timeout_ms;
+    char     host[64];
+    char     path[192];
+};
+
+struct numos_net_http_result {
+    uint16_t status_code;
+    uint16_t protocol_version;
+    uint16_t cipher_suite;
+    uint16_t remote_port;
+    uint8_t  secure;
+    uint8_t  truncated;
+    uint8_t  headers_included;
+    uint8_t  reserved0;
+    uint32_t bytes_received;
+    uint32_t body_offset;
+    uint8_t  remote_ip[4];
+    char     content_type[64];
+    char     location[192];
+};
+
+#define NUMOS_NET_FLAG_INSECURE      0x00000001u
+#define NUMOS_HTTP_FLAG_INCLUDE_HEADERS 0x00000002u
+
 #define NUMOS_TIMER_PERIODIC 0x01u
 
 /* Syscall numbers */
@@ -231,6 +282,13 @@ struct numos_net_ping_result {
 #define SYS_NET_DHCP             232
 #define SYS_NET_PING             233
 #define SYS_POWEROFF             234
+#define SYS_NET_TCP_CONNECT      235
+#define SYS_NET_TCP_SEND         236
+#define SYS_NET_TCP_RECV         237
+#define SYS_NET_TCP_CLOSE        238
+#define SYS_NET_TCP_INFO         239
+#define SYS_NET_TLS_PROBE        240
+#define SYS_NET_HTTP_GET         241
 
 /* Special key codes returned by SYS_INPUT and SYS_INPUT_PEEK. */
 #define KEY_SPECIAL_UP    '\x01'
@@ -306,6 +364,20 @@ static inline int64_t sys_call5(int64_t n, int64_t a1, int64_t a2,
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+static inline int64_t sys_call6(int64_t n, int64_t a1, int64_t a2,
+                                int64_t a3, int64_t a4, int64_t a5,
+                                int64_t a6) {
+    int64_t ret;
+    register int64_t r10 __asm__("r10") = a4;
+    register int64_t r8  __asm__("r8")  = a5;
+    register int64_t r9  __asm__("r9")  = a6;
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8), "r"(r9)
                      : "rcx", "r11", "memory");
     return ret;
 }
@@ -494,6 +566,51 @@ static inline int64_t sys_net_dhcp(uint32_t timeout_ms) {
 static inline int64_t sys_net_ping(const uint8_t *ipv4, uint32_t timeout_ms,
                                    struct numos_net_ping_result *out) {
     return sys_call3(SYS_NET_PING, (int64_t)ipv4, (int64_t)timeout_ms, (int64_t)out);
+}
+
+static inline int64_t sys_net_tcp_connect(const uint8_t *ipv4, uint16_t port,
+                                          uint32_t timeout_ms) {
+    return sys_call3(SYS_NET_TCP_CONNECT, (int64_t)ipv4, (int64_t)port,
+                     (int64_t)timeout_ms);
+}
+
+static inline int64_t sys_net_tcp_send(int handle, const void *buf, size_t len,
+                                       uint32_t timeout_ms) {
+    return sys_call4(SYS_NET_TCP_SEND, (int64_t)handle, (int64_t)buf,
+                     (int64_t)len, (int64_t)timeout_ms);
+}
+
+static inline int64_t sys_net_tcp_recv(int handle, void *buf, size_t len,
+                                       uint32_t timeout_ms) {
+    return sys_call4(SYS_NET_TCP_RECV, (int64_t)handle, (int64_t)buf,
+                     (int64_t)len, (int64_t)timeout_ms);
+}
+
+static inline int64_t sys_net_tcp_close(int handle, uint32_t timeout_ms) {
+    return sys_call2(SYS_NET_TCP_CLOSE, (int64_t)handle, (int64_t)timeout_ms);
+}
+
+static inline int64_t sys_net_tcp_info(int handle, struct numos_net_tcp_info *out) {
+    return sys_call2(SYS_NET_TCP_INFO, (int64_t)handle, (int64_t)out);
+}
+
+static inline int64_t sys_net_tls_probe(const uint8_t *ipv4,
+                                        uint16_t port,
+                                        const char *server_name,
+                                        uint32_t flags,
+                                        uint32_t timeout_ms,
+                                        struct numos_net_tls_result *out) {
+    return sys_call6(SYS_NET_TLS_PROBE, (int64_t)ipv4, (int64_t)port,
+                     (int64_t)server_name, (int64_t)flags,
+                     (int64_t)timeout_ms, (int64_t)out);
+}
+
+static inline int64_t sys_net_http_get(const struct numos_net_http_request *request,
+                                       void *buf,
+                                       size_t len,
+                                       struct numos_net_http_result *out) {
+    return sys_call4(SYS_NET_HTTP_GET, (int64_t)request, (int64_t)buf,
+                     (int64_t)len, (int64_t)out);
 }
 
 static inline int64_t sys_poweroff(void) {
