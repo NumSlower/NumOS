@@ -4,6 +4,8 @@
 /user/files/bin/*.elf
 
 # Nested local repo
+/user/files/home/*
+/user/files/run/*
 /user/programs/ocl/
 /user/programs/*
 !/user/programs/install.c
