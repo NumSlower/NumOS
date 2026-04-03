@@ -144,6 +144,7 @@ continue
 The build creates `build/disk.img` with a fixed FAT32 layout and staged payloads from:
 
 - `build/user`
+- `build/stage/boot`
 - `build/stage/run`
 - `user/files/bin`
 - `user/files/home`
@@ -185,6 +186,7 @@ The image currently stages these user tools:
 - `connect`, DHCP, ping, TCP, HTTP, TLS, and HTTPS checks
 - `tcp`, legacy IPv4 TCP connect checks and plain HTTP GET
 - `see`, file viewer
+- `usb`, USB controller and port inspection
 - `install`, native install helper
 - staged non-init `.elf` files are packed with `numloss` by default when this makes them smaller
 
@@ -202,6 +204,51 @@ make disk NUMOS_PACK_USER_ELF=0
 ```
 
 Remote URL installs run inside NumOS. Start networking first with `connect --dhcp`. URL hosts currently need an IPv4 literal address.
+
+## Kernel Update Flow
+
+Installed NumOS disks now stage immutable kernel artifacts in `/boot`:
+
+- `/boot/kern0001.bin`, known-good kernel
+- `/boot/kern0002.bin`, newly staged kernel
+- `/boot/boot.cfg`, default and fallback selection
+- `/boot/status.cfg`, boot state marker
+- `/boot/grub/grubenv`, one-shot pending state for GRUB fallback
+
+Inside NumOS you can stage a new kernel from a local file or a direct IPv4 HTTP or HTTPS URL:
+
+```bash
+install kernel /run/KERN0002.BIN
+install kernel http://203.0.113.10/kern0002.bin reboot
+```
+
+The installer never overwrites the running kernel in place. It copies the new kernel to a fresh `/boot/kernNNNN.bin`, updates `/boot/boot.cfg`, and marks `/boot/status.cfg` as `pending`. Early kernel init rewrites `/boot/status.cfg` to `success` after the filesystem mounts. If the pending kernel fails before then, the installed GRUB path retries once and then falls back to the previous kernel on the next boot.
+
+For remote installs, bring networking up first:
+
+```bash
+connect --dhcp
+install kernel http://203.0.113.10/kern0002.bin reboot
+```
+
+Remote kernel URLs currently need an IPv4 literal host, like the package downloader.
+
+## USB And VirtualBox
+
+NumOS now includes a native USB inspection tool:
+
+```bash
+usb
+usb controllers
+usb ports 0
+```
+
+This reports detected USB controllers, PCI location, and per-port state exposed by the current USB driver path.
+
+VirtualBox USB passthrough and VirtualBox shared folders are different features:
+
+- USB passthrough appears as a USB controller and device inside the guest. Enable a USB controller in the VM, add a USB filter for your device, then use `usb` inside NumOS to see what the guest can detect.
+- Shared folders do not appear as USB devices. They need a dedicated VirtualBox guest driver and filesystem implementation. NumOS does not ship a `vboxsf` style guest driver yet, so adding a shared folder in VirtualBox will not make a new disk or USB device appear inside NumOS.
 
 Fetch a package from your website into the host staging area before `make disk` or `make iso`:
 

@@ -439,6 +439,7 @@ static void print_help(void) {
     write_str("  help         show this help\n");
     write_str("  lang         show interpreter rule\n");
     write_str("  install ata  write a bootable NumOS system to the primary ATA disk\n");
+    write_str("  install kernel <path|URL> [reboot]  stage a new /boot kernel with fallback\n");
     write_str("  run          list or run programs in /bin/\n");
     write_str("  ls           list directory entries\n");
     write_str("\nbundled tools:\n");
@@ -449,6 +450,7 @@ static void print_help(void) {
     write_str("  connect      inspect networking, TCP, HTTP, TLS, and HTTPS\n");
     write_str("  tcp          legacy IPv4 TCP and HTTP tool\n");
     write_str("  see          send ICMP echo requests to an IPv4 host\n");
+    write_str("  usb          inspect USB controllers and ports\n");
     write_str("\nrunning programs and scripts:\n");
     write_str("  <name>       run /bin/<NAME>.ELF\n");
     write_str("  <file>       run file in current directory\n");

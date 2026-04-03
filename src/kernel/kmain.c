@@ -44,10 +44,28 @@
 static char init_path_buf[128];
 static const char *init_path = NUMOS_INIT_PATH;
 static volatile uint64_t kernel_thread_probe_runs = 0;
+static const char boot_status_success_text[] =
+    "set numos_boot_status=\"success\"\n";
 
 static void kernel_thread_probe(void *arg) {
     volatile uint64_t *runs = (volatile uint64_t *)arg;
     if (runs) (*runs)++;
+}
+
+static void mark_boot_success(void) {
+    int fd = vfs_open("/boot/status.cfg", FAT32_O_WRONLY | FAT32_O_CREAT | FAT32_O_TRUNC);
+    if (fd < 0) return;
+
+    ssize_t wrote = vfs_write(fd,
+                              boot_status_success_text,
+                              sizeof(boot_status_success_text) - 1);
+    vfs_close(fd);
+
+    if (wrote == (ssize_t)(sizeof(boot_status_success_text) - 1)) {
+        vga_writestring("  Boot status: success\n");
+    } else {
+        vga_writestring("  Boot status: update failed\n");
+    }
 }
 
 /* =========================================================================
@@ -414,8 +432,8 @@ static void test_network(void) {
         print_dec((uint64_t)info.ipv4[3]);
         vga_putchar('\n');
     } else {
-        vga_setcolor(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));
-        vga_writestring("[WARN] no lease\n");
+        vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        vga_writestring("[INFO] idle, run connect --dhcp\n");
     }
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
 }
@@ -773,6 +791,7 @@ void kernel_init(uint64_t mb2_info_phys) {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
         vga_writestring("  FAT32: Mounted OK\n");
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK));
+        mark_boot_success();
     } else {
         vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
         vga_writestring("  FAT32: MOUNT FAILED\n");

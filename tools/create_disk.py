@@ -34,7 +34,9 @@ BIN_DIRECTORY_CLUSTER = 4
 RUN_DIRECTORY_CLUSTER = 5
 HOME_DIRECTORY_CLUSTER = 6
 INCLUDE_DIRECTORY_CLUSTER = 7
-FIRST_FILE_CLUSTER = 8
+BOOT_DIRECTORY_CLUSTER = 8
+BOOT_GRUB_DIRECTORY_CLUSTER = 9
+FIRST_FILE_CLUSTER = 10
 
 # FAT32 directory attributes and entry values.
 DIRECTORY_ATTR = 0x10
@@ -165,6 +167,8 @@ def create_fat(
     bin_programs=None,
     run_files=None,
     home_files=None,
+    boot_files=None,
+    boot_grub_files=None,
 ):
     """Create the FAT table for the image."""
     fat_table = bytearray(fat_size * BYTES_PER_SECTOR)
@@ -179,6 +183,8 @@ def create_fat(
         RUN_DIRECTORY_CLUSTER,
         HOME_DIRECTORY_CLUSTER,
         INCLUDE_DIRECTORY_CLUSTER,
+        BOOT_DIRECTORY_CLUSTER,
+        BOOT_GRUB_DIRECTORY_CLUSTER,
     ):
         write_fat_entry(fat_table, cluster, FAT_EOC)
 
@@ -188,6 +194,8 @@ def create_fat(
         + list(bin_programs or [])
         + list(run_files or [])
         + list(home_files or [])
+        + list(boot_files or [])
+        + list(boot_grub_files or [])
     ):
         if record:
             next_cluster = append_cluster_chain(fat_table, next_cluster, record)
@@ -347,6 +355,9 @@ def create_root_directory():
     cluster[192:224] = create_directory_entry(
         "INCLUDE    ", DIRECTORY_ATTR, INCLUDE_DIRECTORY_CLUSTER
     )
+    cluster[224:256] = create_directory_entry(
+        "BOOT       ", DIRECTORY_ATTR, BOOT_DIRECTORY_CLUSTER
+    )
     return bytes(cluster)
 
 
@@ -401,6 +412,23 @@ def create_include_directory(syscalls_record=None):
     """Create the /include directory with exported headers."""
     cluster = create_base_directory(INCLUDE_DIRECTORY_CLUSTER)
     append_directory_file_entries(cluster, 64, [syscalls_record] if syscalls_record else [], "include")
+    return bytes(cluster)
+
+
+def create_boot_directory(boot_files):
+    """Create the /boot directory with kernel artifacts and the grub subdir."""
+    cluster = create_base_directory(BOOT_DIRECTORY_CLUSTER)
+    cluster[64:96] = create_directory_entry(
+        "GRUB       ", DIRECTORY_ATTR, BOOT_GRUB_DIRECTORY_CLUSTER
+    )
+    append_directory_file_entries(cluster, 96, boot_files, "boot")
+    return bytes(cluster)
+
+
+def create_boot_grub_directory(boot_grub_files):
+    """Create the /boot/grub directory with GRUB state files."""
+    cluster = create_base_directory(BOOT_GRUB_DIRECTORY_CLUSTER, BOOT_DIRECTORY_CLUSTER)
+    append_directory_file_entries(cluster, 64, boot_grub_files, "boot/grub")
     return bytes(cluster)
 
 
@@ -625,6 +653,12 @@ def main():
     home_files = load_staged_files_from_dirs(
         [os.path.join(root_dir, "user", "files", "home")]
     )
+    boot_files = load_staged_files_from_dirs(
+        [os.path.join(root_dir, "build", "stage", "boot")]
+    )
+    boot_grub_files = load_staged_files_from_dirs(
+        [os.path.join(root_dir, "build", "stage", "boot", "grub")]
+    )
 
     init_record = load_init_record(init_elf_file, init_name_arg)
     if init_record:
@@ -650,6 +684,8 @@ def main():
     next_cluster = assign_record_clusters(bin_programs, next_cluster)
     next_cluster = assign_record_clusters(run_files, next_cluster)
     next_cluster = assign_record_clusters(home_files, next_cluster)
+    next_cluster = assign_record_clusters(boot_files, next_cluster)
+    next_cluster = assign_record_clusters(boot_grub_files, next_cluster)
 
     file_mode = "r+b" if preserve_prefix else "wb"
     if preserve_prefix and not os.path.exists(output_file):
@@ -680,6 +716,8 @@ def main():
             bin_programs=bin_programs,
             run_files=run_files,
             home_files=home_files,
+            boot_files=boot_files,
+            boot_grub_files=boot_grub_files,
         )
         for _ in range(NUM_FATS):
             image_file.write(fat_data)
@@ -696,8 +734,19 @@ def main():
         image_file.write(create_home_directory(home_files))
         print("  Writing cluster 7 (/include directory)...")
         image_file.write(create_include_directory(syscalls_record))
+        print("  Writing cluster 8 (/boot directory)...")
+        image_file.write(create_boot_directory(boot_files))
+        print("  Writing cluster 9 (/boot/grub directory)...")
+        image_file.write(create_boot_grub_directory(boot_grub_files))
 
-        for record in [init_record, syscalls_record] + bin_programs + run_files + home_files:
+        for record in (
+            [init_record, syscalls_record]
+            + bin_programs
+            + run_files
+            + home_files
+            + boot_files
+            + boot_grub_files
+        ):
             write_record_payload(image_file, record)
 
         current_pos = image_file.tell()
@@ -728,8 +777,17 @@ def main():
     print(f"    Cluster 5 (sector {data_start_sector + 3 * SECTORS_PER_CLUSTER}): /run directory")
     print(f"    Cluster 6 (sector {data_start_sector + 4 * SECTORS_PER_CLUSTER}): /home directory")
     print(f"    Cluster 7 (sector {data_start_sector + 5 * SECTORS_PER_CLUSTER}): /include directory")
+    print(f"    Cluster 8 (sector {data_start_sector + 6 * SECTORS_PER_CLUSTER}): /boot directory")
+    print(f"    Cluster 9 (sector {data_start_sector + 7 * SECTORS_PER_CLUSTER}): /boot/grub directory")
 
-    for record in [init_record, syscalls_record] + bin_programs + run_files + home_files:
+    for record in (
+        [init_record, syscalls_record]
+        + bin_programs
+        + run_files
+        + home_files
+        + boot_files
+        + boot_grub_files
+    ):
         print_record_layout(record, data_start_sector)
 
     print("\nDisk contents:")
@@ -752,6 +810,16 @@ def main():
             print_record_contents("/home", record)
     else:
         print("  /home - Empty")
+    if boot_files:
+        for record in boot_files:
+            print_record_contents("/boot", record)
+    else:
+        print("  /boot - Empty")
+    if boot_grub_files:
+        for record in boot_grub_files:
+            print_record_contents("/boot/grub", record)
+    else:
+        print("  /boot/grub - Empty")
 
 
 if __name__ == "__main__":

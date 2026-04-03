@@ -59,6 +59,20 @@ class CreateDiskTest(unittest.TestCase):
         self.assertIn(b"TEST    OCL", cluster)
         self.assertEqual(cluster[64 + 12], 0x18)
 
+    def test_create_root_directory_includes_boot_folder(self):
+        # Kernel update flows expect a fixed /boot directory to exist before
+        # user space stages immutable kernel artifacts.
+        cluster = create_disk.create_root_directory()
+
+        self.assertIn(b"BOOT       ", cluster)
+
+    def test_create_boot_directory_includes_grub_subdir(self):
+        # The bootloader stores retry state in /boot/grub/grubenv, so the
+        # builder needs to emit that nested directory from the start.
+        cluster = create_disk.create_boot_directory([])
+
+        self.assertIn(b"GRUB       ", cluster)
+
     def test_fat_short_name_case_flags_preserves_uppercase_when_requested(self):
         # Lower-case-only names should set the NT reserved flags, while mixed
         # or fully upper-case names stay unchanged.

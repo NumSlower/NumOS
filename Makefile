@@ -16,12 +16,6 @@ NUMOS_BUILD_JOBS ?= $(HOST_CPU_COUNT)
 NUMOS_OPT_LEVEL ?= 3
 NUMOS_COMMON_OPT_FLAGS ?= -O$(NUMOS_OPT_LEVEL) -pipe
 
-ifneq ($(filter -j% --jobs=%,$(MAKEFLAGS)),)
-    NUMOS_PARALLEL_DEFAULT :=
-else
-    MAKEFLAGS += -j$(NUMOS_BUILD_JOBS)
-endif
-
 HOST_ARCH := $(shell uname -m 2>/dev/null || echo unknown)
 ifeq ($(HOST_ARCH),aarch64)
     NUMOS_ARCH ?= arm64
@@ -95,7 +89,9 @@ BUILD_DIR    := build
 BUILD_KERNEL := $(BUILD_DIR)/kernel
 BUILD_KERNEL_ATA := $(BUILD_DIR)/kernel-ata
 BUILD_USER   := $(BUILD_DIR)/user
-BOOT_STAGE_DIR := $(BUILD_DIR)/stage/run
+STAGE_DIR    := $(BUILD_DIR)/stage
+RUN_STAGE_DIR := $(STAGE_DIR)/run
+BOOT_STAGE_DIR := $(STAGE_DIR)/boot
 ISO_DIR      := $(BUILD_DIR)/iso
 GRUB_DIR     := $(ISO_DIR)/boot/grub
 TOOLS_DIR    := tools
@@ -361,7 +357,8 @@ pkg-download:
 		echo "Usage: make pkg-download PKG_URL=https://example.com/OCLDEV.PKG"; \
 		false; \
 	fi
-	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(BOOT_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
+	@mkdir -p "$(RUN_STAGE_DIR)"
+	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(RUN_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
 
 .PHONY: run
 run: kernel disk
@@ -478,9 +475,9 @@ user_space: check-arch check-host-tools
 boot-support: check-arch $(BOOT_SUPPORT_STAMP)
 
 $(BOOT_SUPPORT_STAMP): $(KERNEL) $(KERNEL_VESA) $(TOOLS_DIR)/build_boot_support.py
-	@mkdir -p $(dir $(BOOT_SUPPORT_STAMP)) $(BOOT_STAGE_DIR)
+	@mkdir -p $(dir $(BOOT_SUPPORT_STAMP)) $(STAGE_DIR)
 	@python3 $(TOOLS_DIR)/build_boot_support.py \
-		--output-dir $(BOOT_STAGE_DIR) \
+		--output-dir $(STAGE_DIR) \
 		--kernel $(KERNEL_VESA)
 	@touch $@
 
@@ -490,7 +487,8 @@ pkg-download:
 		echo "Usage: make pkg-download PKG_URL=https://example.com/OCLDEV.PKG"; \
 		false; \
 	fi
-	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(BOOT_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
+	@mkdir -p "$(RUN_STAGE_DIR)"
+	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(RUN_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
 
 # ---- Disk image ------------------------------------------------------------
 .PHONY: disk

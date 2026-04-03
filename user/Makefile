@@ -59,12 +59,6 @@ USER_CFLAGS_MODE := -fno-pic
 USER_LDFLAGS_MODE := -static -T $(USER_LINKER_SCRIPT_STD)
 endif
 
-ifneq ($(filter -j% --jobs=%,$(MAKEFLAGS)),)
-NUMOS_PARALLEL_DEFAULT :=
-else
-MAKEFLAGS += -j$(NUMOS_BUILD_JOBS)
-endif
-
 USER_CFLAGS := $(USER_CFLAGS_ARCH) -ffreestanding -fstack-protector-strong \
                -mstack-protector-guard=global $(USER_CFLAGS_MODE) \
                -ftls-model=local-exec \
@@ -78,7 +72,7 @@ USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
 # Root Makefile expects ELFs at ../build/user/*.elf
 OUTPUT_DIR ?= ../build/user
 STAGED_BIN_DIR ?= files/bin
-PREINSTALLED_BIN_CANDIDATES := shell install pkg numloss empty edit proc
+PREINSTALLED_BIN_CANDIDATES := connect shell install pkg numloss empty edit proc see tcp usb
 
 TOPLEVEL_SRCS := $(shell find . -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)
 COMMON_SRCS   := runtime/runtime.c runtime/libc.c
