@@ -45,6 +45,7 @@
 
 /* ---- Machine type (e_machine) -------------------------------------------- */
 #define EM_X86_64       62
+#define EM_AARCH64      183
 
 /* ---- ELF version --------------------------------------------------------- */
 #define EV_CURRENT      1
@@ -151,6 +152,13 @@ struct elf64_sym {
 #define R_X86_64_GLOB_DAT  6
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE  8
+
+/* AArch64 relocation types */
+#define R_AARCH64_NONE      0
+#define R_AARCH64_ABS64     257
+#define R_AARCH64_GLOB_DAT  1025
+#define R_AARCH64_JUMP_SLOT 1026
+#define R_AARCH64_RELATIVE  1027
 
 /* ---- Result returned by elf_load() --------------------------------------- */
 struct elf_load_result {

@@ -109,7 +109,11 @@ ARM64_KERNEL_NAME ?= kernel-arm64.elf
 DISK_NAME     ?= disk.img
 ISO_NAME      ?= $(OS_NAME).iso
 ISO_KERNEL_ONLY_NAME ?= $(OS_NAME)-kernel-only.iso
+ifeq ($(NUMOS_ARCH),arm64)
+INIT_ELF_NAME ?= empty.elf
+else
 INIT_ELF_NAME ?= shell.elf
+endif
 INIT_PATH     ?= /bin/$(INIT_ELF_NAME)
 PART_TARGET   ?= $(DISK_IMAGE)
 PART_TABLE    ?= gpt
@@ -181,8 +185,14 @@ COMMON_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS) $(TRAMPOLINE_OBJ)
 else ifeq ($(NUMOS_ARCH),arm64)
 ARM64_BOOT_SOURCES := $(wildcard $(SRC_DIR)/boot/arm64/*.S)
 ARM64_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/arm64/*.c) \
+                   $(SRC_DIR)/kernel/elf_loader.c \
+                   $(SRC_DIR)/kernel/numloss.c \
                    $(wildcard $(SRC_DIR)/cpu/arm64/*.c) \
-                   $(wildcard $(SRC_DIR)/drivers/arm64/*.c)
+                   $(wildcard $(SRC_DIR)/drivers/arm64/*.c) \
+                   $(SRC_DIR)/drivers/framebuffer.c \
+                   $(SRC_DIR)/drivers/font.c \
+                   $(SRC_DIR)/drivers/ramdisk.c \
+                   $(wildcard $(SRC_DIR)/fs/*.c)
 ARM64_BOOT_OBJECTS := $(patsubst $(SRC_DIR)/boot/arm64/%.S,$(BUILD_KERNEL)/boot/arm64/%.o,$(ARM64_BOOT_SOURCES))
 ARM64_C_OBJECTS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL)/%.o,$(ARM64_C_SOURCES))
 ARM64_OBJECTS := $(ARM64_BOOT_OBJECTS) $(ARM64_C_OBJECTS)
@@ -285,9 +295,13 @@ $(ARM64_KERNEL): $(ARM64_OBJECTS)
 	@echo "[OK]  $(ARM64_KERNEL)"
 
 .PHONY: user_space
-user_space:
-	@echo "[ERROR] ARM64 user-space is not wired into the kernel yet. See $(ARCH_DOC)."
-	@false
+user_space: check-arch check-host-tools
+	@$(MAKE) -C $(USER_DIR) install \
+		NUMOS_ARCH=$(NUMOS_ARCH) \
+		NUMOS_TARGET=$(NUMOS_TARGET) \
+		NUMOS_AS=$(NUMOS_AS) \
+		NUMOS_CC=$(NUMOS_CC) \
+		NUMOS_LD=$(NUMOS_LD)
 
 .PHONY: boot-support
 boot-support:
@@ -295,9 +309,11 @@ boot-support:
 	@false
 
 .PHONY: disk
-disk:
-	@echo "[ERROR] ARM64 disk image packaging is not implemented yet."
-	@false
+disk: user_space
+	@mkdir -p $(BUILD_DIR)
+	@NUMOS_PACK_USER_ELF=$(NUMOS_PACK_USER_ELF) \
+		python3 $(TOOLS_DIR)/create_disk.py $(DISK_IMAGE) $(INIT_ELF) $(INIT_ELF_NAME)
+	@echo "[OK]  $(DISK_IMAGE)"
 
 .PHONY: partition-list
 partition-list:
@@ -333,14 +349,15 @@ pkg-download:
 	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(BOOT_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
 
 .PHONY: run
-run: kernel
+run: kernel disk
 	@echo "[QEMU] Starting NumOS ARM64..."
 	@$(NUMOS_QEMU) \
 		-machine virt \
 		-cpu cortex-a72 \
 		-m 1024 \
 		-nographic \
-		-kernel $(ARM64_KERNEL)
+		-kernel $(ARM64_KERNEL) \
+		-initrd $(DISK_IMAGE)
 
 .PHONY: run-partition
 run-partition:
@@ -350,14 +367,28 @@ run-partition:
 .PHONY: run-nographic
 run-nographic: run
 
+.PHONY: run-framebuffer
+run-framebuffer: kernel disk
+	@echo "[QEMU] Starting NumOS ARM64 with framebuffer..."
+	@$(NUMOS_QEMU) \
+		-machine virt \
+		-cpu cortex-a72 \
+		-m 1024 \
+		-monitor none \
+		-serial stdio \
+		-device ramfb \
+		-kernel $(ARM64_KERNEL) \
+		-initrd $(DISK_IMAGE)
+
 .PHONY: debug
-debug: kernel
+debug: kernel disk
 	@$(NUMOS_QEMU) \
 		-machine virt \
 		-cpu cortex-a72 \
 		-m 1024 \
 		-nographic \
 		-kernel $(ARM64_KERNEL) \
+		-initrd $(DISK_IMAGE) \
 		-s -S
 else
 kernel: check-arch check-host-tools $(KERNEL) $(KERNEL_VESA)

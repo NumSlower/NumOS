@@ -26,6 +26,12 @@
 #include "fs/fat32.h"
 #include "fs/vfs.h"
 
+#if defined(__aarch64__)
+#define NUMOS_ELF_MACHINE EM_AARCH64
+#else
+#define NUMOS_ELF_MACHINE EM_X86_64
+#endif
+
 /* =========================================================================
  * Internal helpers
  * ======================================================================= */
@@ -58,7 +64,7 @@ int elf_validate(const struct elf64_hdr *hdr) {
     }
     if (hdr->e_ident[EI_CLASS] != ELFCLASS64)  return ELF_ERR_CLASS;
     if (hdr->e_ident[EI_DATA]  != ELFDATA2LSB) return ELF_ERR_CLASS;
-    if (hdr->e_machine         != EM_X86_64)   return ELF_ERR_MACHINE;
+    if (hdr->e_machine         != NUMOS_ELF_MACHINE) return ELF_ERR_MACHINE;
     if (hdr->e_type != ET_EXEC && hdr->e_type != ET_DYN) return ELF_ERR_TYPE;
     if (hdr->e_phnum           == 0)            return ELF_ERR_NOPHDR;
     return ELF_OK;
@@ -97,6 +103,22 @@ static int apply_relocation_table(const struct elf64_rela *rela,
         uint64_t value = 0;
 
         switch (type) {
+#if defined(__aarch64__)
+            case R_AARCH64_NONE:
+                continue;
+            case R_AARCH64_RELATIVE:
+                value = load_bias + (uint64_t)ent->r_addend;
+                break;
+            case R_AARCH64_ABS64:
+            case R_AARCH64_GLOB_DAT:
+            case R_AARCH64_JUMP_SLOT:
+                if (!symtab || sym_ent_size != sizeof(struct elf64_sym)) {
+                    return ELF_ERR_IO;
+                }
+                value = load_bias + symtab[sym_index].st_value;
+                if (type == R_AARCH64_ABS64) value += (uint64_t)ent->r_addend;
+                break;
+#else
             case R_X86_64_NONE:
                 continue;
             case R_X86_64_RELATIVE:
@@ -113,6 +135,7 @@ static int apply_relocation_table(const struct elf64_rela *rela,
                 break;
             default:
                 return ELF_ERR_IO;
+#endif
         }
 
         *where = value;
@@ -222,11 +245,17 @@ static int map_segment(const uint8_t        *data,
             *entry = phys | entry_flags;
             paging_flush_page(virt);
         } else {
+#if defined(__aarch64__)
+            phys = virt;
+#else
             phys = pmm_alloc_frame();
             if (!phys) return ELF_ERR_NOMEM;
+#endif
 
             if (paging_map_page(virt, phys, pflags) != 0) {
+#if !defined(__aarch64__)
                 pmm_free_frame(phys);
+#endif
                 return ELF_ERR_MAP;
             }
 
@@ -289,11 +318,17 @@ static uint64_t allocate_user_stack(uint64_t  stack_top_virt,
     uint64_t pflags       = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
 
     for (uint64_t virt = stack_bottom; virt < stack_top_virt; virt += PAGE_SIZE) {
+#if defined(__aarch64__)
+        uint64_t phys = virt;
+#else
         uint64_t phys = pmm_alloc_frame();
         if (!phys) return 0;
+#endif
 
         if (paging_map_page(virt, phys, pflags) != 0) {
+#if !defined(__aarch64__)
             pmm_free_frame(phys);
+#endif
             return 0;
         }
 
@@ -564,11 +599,15 @@ void elf_unload(uint64_t load_base,    uint64_t load_end,
     }
 
     /* Full TLB flush via CR3 reload */
+#if defined(__aarch64__)
+    __asm__ volatile("tlbi vmalle1\n\tdsb ish\n\tisb" ::: "memory");
+#else
     __asm__ volatile(
         "mov %%cr3, %%rax\n\t"
         "mov %%rax, %%cr3\n\t"
         ::: "rax", "memory"
     );
+#endif
 
     vga_writestring("ELF: Unloaded ");
     print_dec(pages_freed);

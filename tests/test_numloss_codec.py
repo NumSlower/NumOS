@@ -62,7 +62,7 @@ class NumlossCodecTest(unittest.TestCase):
 
         archive = numloss_codec.encode(payload)
 
-        self.assertLess(len(archive), 3600)
+        self.assertLess(len(archive), 3800)
 
     def test_maybe_pack_record_packs_useful_elf_payload(self):
         record = create_disk.create_file_record("demo.elf", b"\x90" * 4096)

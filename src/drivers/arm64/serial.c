@@ -10,6 +10,7 @@
 #define PL011_IMSC   0x038
 #define PL011_ICR    0x044
 
+#define PL011_FR_RXFE (1u << 4)
 #define PL011_FR_TXFF (1u << 5)
 #define PL011_CR_UARTEN (1u << 0)
 #define PL011_CR_TXE    (1u << 8)
@@ -60,4 +61,19 @@ void serial_write_len(const char *text, size_t len) {
     for (size_t i = 0; i < len; i++) {
         serial_putc(text[i]);
     }
+}
+
+int serial_try_getc(char *out) {
+    if (!out) return 0;
+    if (!serial_ready) serial_init();
+    if (mmio_read(PL011_FR) & PL011_FR_RXFE) return 0;
+    *out = (char)(mmio_read(PL011_DR) & 0xFFu);
+    return 1;
+}
+
+char serial_getc(void) {
+    char c = 0;
+    while (!serial_try_getc(&c)) {
+    }
+    return c;
 }
