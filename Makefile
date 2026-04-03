@@ -71,7 +71,7 @@ else ifeq ($(NUMOS_ARCH),arm64)
     NUMOS_QEMU := qemu-system-aarch64
     NUMOS_ARCH_NAME := ARM64
     NUMOS_CPU_MODE_NAME := EL1
-    NUMOS_BOOT_PROTOCOL_NAME := QEMU virt direct boot
+    NUMOS_BOOT_PROTOCOL_NAME := QEMU-virt-direct-boot
     NUMOS_CPU_DIR := arm64
     LDFLAGS := -T linker/kernel-arm64.ld -nostdlib -z noexecstack
 else

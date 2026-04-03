@@ -467,7 +467,7 @@ static inline int64_t sys_call6(int64_t n, int64_t a1, int64_t a2,
 #endif
 }
 
-static inline void numos_user_wait_forever(void) {
+static inline __attribute__((noreturn)) void numos_user_wait_forever(void) {
     for (;;) {
 #if defined(__aarch64__)
         __asm__ volatile("wfe");

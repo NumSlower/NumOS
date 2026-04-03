@@ -31,7 +31,7 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -a, --arch ARCH     Target architecture (default: x86_64)"
+    echo "  -a, --arch ARCH     Target architecture, default: detected host arch"
     echo "  -t, --target TARGET Full target triple (overrides --arch)"
     echo "  -p, --prefix PATH   Installation prefix (default: \$HOME/opt/cross)"
     echo "  -j, --jobs N        Parallel jobs (default: nproc)"
@@ -57,7 +57,29 @@ list_archs() {
 }
 
 # Defaults
-ARCH="x86_64"
+detect_default_arch() {
+    local host_arch
+    host_arch="$(uname -m 2>/dev/null || echo unknown)"
+    case "$host_arch" in
+        x86_64|amd64)
+            echo "x86_64"
+            ;;
+        aarch64|arm64)
+            echo "arm64"
+            ;;
+        armv7l|armv7*|armhf)
+            echo "armhf"
+            ;;
+        armv6l|armv6*)
+            echo "arm"
+            ;;
+        *)
+            echo "x86_64"
+            ;;
+    esac
+}
+
+ARCH="$(detect_default_arch)"
 TARGET=""
 PREFIX="$HOME/opt/cross"
 NPROC="$(nproc)"
@@ -177,6 +199,7 @@ cd "$HOME/src"
 echo "=== Building $TARGET cross-compiler ==="
 echo "This will take 30-60 minutes depending on your system"
 echo ""
+echo "Detected host arch:     $(uname -m 2>/dev/null || echo unknown)"
 echo "Installation directory: $PREFIX"
 echo "Target:                 $TARGET"
 echo "Languages:              $LANGUAGES"
