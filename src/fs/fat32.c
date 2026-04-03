@@ -52,6 +52,43 @@ static int fat32_probe_gpt_partition_start(uint32_t *start_lba);
 static uint8_t fat32_short_name_case_flags(const char *filename);
 static uint32_t fat32_count_free_clusters(void);
 
+static uint16_t fat32_le16(const uint8_t *ptr) {
+    return (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8);
+}
+
+static uint32_t fat32_le32(const uint8_t *ptr) {
+    return (uint32_t)ptr[0] |
+           ((uint32_t)ptr[1] << 8) |
+           ((uint32_t)ptr[2] << 16) |
+           ((uint32_t)ptr[3] << 24);
+}
+
+static int fat32_is_power_of_two(uint8_t value) {
+    return value != 0 && (value & (uint8_t)(value - 1)) == 0;
+}
+
+static int fat32_boot_sector_looks_valid(const uint8_t *sector) {
+    if (!sector) return 0;
+    if (sector[510] != 0x55 || sector[511] != 0xAA) return 0;
+
+    uint16_t bytes_per_sector = fat32_le16(&sector[11]);
+    uint8_t sectors_per_cluster = sector[13];
+    uint16_t reserved_sectors = fat32_le16(&sector[14]);
+    uint8_t num_fats = sector[16];
+    uint32_t total_sectors_32 = fat32_le32(&sector[32]);
+    uint32_t fat_size_32 = fat32_le32(&sector[36]);
+    uint32_t root_cluster = fat32_le32(&sector[44]);
+
+    if (bytes_per_sector != 512) return 0;
+    if (!fat32_is_power_of_two(sectors_per_cluster)) return 0;
+    if (reserved_sectors == 0) return 0;
+    if (num_fats == 0) return 0;
+    if (total_sectors_32 == 0) return 0;
+    if (fat_size_32 == 0) return 0;
+    if (root_cluster < 2) return 0;
+    return 1;
+}
+
 /* =========================================================================
  * Low-level sector and cluster I/O
  * ======================================================================= */
@@ -83,10 +120,12 @@ static int fat32_raw_write_sector(uint32_t sector, const void *buffer) {
 }
 
 static int fat32_try_mount_at_lba(uint32_t start_lba) {
+    uint8_t boot_sector[512];
+
     g_fs.partition_lba_start = start_lba;
-    if (fat32_raw_read_sector(start_lba, &g_fs.boot) != 0) return -1;
-    if (strncmp((const char *)g_fs.boot.fs_type, "FAT32   ", 8) != 0) return -1;
-    if (g_fs.boot.bytes_per_sector != 512) return -1;
+    if (fat32_raw_read_sector(start_lba, boot_sector) != 0) return -1;
+    if (!fat32_boot_sector_looks_valid(boot_sector)) return -1;
+    memcpy(&g_fs.boot, boot_sector, sizeof(g_fs.boot));
     return 0;
 }
 
