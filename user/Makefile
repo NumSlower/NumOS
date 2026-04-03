@@ -79,7 +79,6 @@ USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
 OUTPUT_DIR ?= ../build/user
 STAGED_BIN_DIR ?= files/bin
 PREINSTALLED_BINS := shell install pkg numloss empty edit proc
-STAGED_BIN_ELFS := $(addprefix $(STAGED_BIN_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
 
 TOPLEVEL_SRCS := $(shell find . -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)
 COMMON_SRCS   := runtime/runtime.c runtime/libc.c
@@ -164,10 +163,17 @@ build/%.o: %.c include/syscalls.h
 # ---- Install ----------------------------------------------------------------
 
 .PHONY: stage-bin
-stage-bin: $(STAGED_BIN_ELFS)
-
-$(STAGED_BIN_DIR)/%.elf: $(OUTPUT_DIR)/%.elf | $(STAGED_BIN_DIR)
-	@cp $< $@
+stage-bin: $(USER_ELFS) | $(STAGED_BIN_DIR)
+	@set -e; \
+	for bin in $(PREINSTALLED_BINS); do \
+		src="$(OUTPUT_DIR)/$$bin.elf"; \
+		dst="$(STAGED_BIN_DIR)/$$bin.elf"; \
+		if [ ! -f "$$src" ]; then \
+			echo "[ERROR] Missing built ELF: $$src"; \
+			exit 1; \
+		fi; \
+		cp "$$src" "$$dst"; \
+	done
 
 .PHONY: install
 install: check-arch all stage-bin

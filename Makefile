@@ -22,7 +22,14 @@ else
     MAKEFLAGS += -j$(NUMOS_BUILD_JOBS)
 endif
 
-NUMOS_ARCH ?= x86_64
+HOST_ARCH := $(shell uname -m 2>/dev/null || echo unknown)
+ifeq ($(HOST_ARCH),aarch64)
+    NUMOS_ARCH ?= arm64
+else ifeq ($(HOST_ARCH),arm64)
+    NUMOS_ARCH ?= arm64
+else
+    NUMOS_ARCH ?= x86_64
+endif
 NUMOS_MACHINE ?= pc
 ARCH_DOC := docs/PORTING_RPI5_ARM64.md
 ARM64_DOC := docs/ARM64_QEMU_VIRT.md
