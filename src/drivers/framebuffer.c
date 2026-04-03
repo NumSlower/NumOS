@@ -92,6 +92,16 @@ static inline void fb_write_pixel_raw(uint8_t *p, uint32_t c) {
     }
 }
 
+static inline void fb_console_wait_for_input(void) {
+#if defined(__aarch64__)
+    __asm__ volatile("wfi" ::: "memory");
+#elif defined(__x86_64__)
+    __asm__ volatile("sti; hlt; cli" ::: "memory");
+#else
+    __asm__ volatile("" ::: "memory");
+#endif
+}
+
 /* Console */
 static int     con_x0, con_y0, con_w, con_h;
 static int     con_cx, con_cy, con_cols, con_rows, con_scale;
@@ -721,9 +731,7 @@ void fb_con_enter_scroll_mode(void) {
             next_repeat_ms = 0;
         }
 
-        if (!had_input && !did_repeat) {
-            __asm__ volatile("sti; hlt; cli" ::: "memory");
-        }
+        if (!had_input && !did_repeat) fb_console_wait_for_input();
     }
 
     con_scroll_offset = 0;
