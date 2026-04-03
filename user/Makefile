@@ -79,6 +79,7 @@ USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
 OUTPUT_DIR ?= ../build/user
 STAGED_BIN_DIR ?= files/bin
 PREINSTALLED_BINS := shell install pkg numloss empty edit proc
+PREINSTALLED_ELFS := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
 
 TOPLEVEL_SRCS := $(shell find . -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)
 COMMON_SRCS   := runtime/runtime.c runtime/libc.c
@@ -163,7 +164,14 @@ build/%.o: %.c include/syscalls.h
 # ---- Install ----------------------------------------------------------------
 
 .PHONY: stage-bin
-stage-bin: all | $(STAGED_BIN_DIR)
+stage-bin: | $(STAGED_BIN_DIR)
+	@set -e; \
+	for elf in $(PREINSTALLED_ELFS); do \
+		if [ -e "$$elf" ] && [ ! -f "$$elf" ]; then \
+			rm -rf "$$elf"; \
+		fi; \
+	done
+	@$(MAKE) all
 	@set -e; \
 	for bin in $(PREINSTALLED_BINS); do \
 		src="$(OUTPUT_DIR)/$$bin.elf"; \
