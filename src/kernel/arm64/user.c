@@ -149,9 +149,19 @@ static void copy_text(char *dst, size_t cap, const char *src) {
     dst[i] = '\0';
 }
 
-static void arm64_log_hex(const char *label, uint64_t value) {
+static void __attribute__((no_stack_protector))
+arm64_serial_write_hex64(uint64_t value) {
+    static const char digits[] = "0123456789ABCDEF";
+    serial_write("0x");
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        serial_putc(digits[(value >> shift) & 0xFu]);
+    }
+}
+
+static void __attribute__((no_stack_protector))
+arm64_log_hex(const char *label, uint64_t value) {
     serial_write(label);
-    print_hex(value);
+    arm64_serial_write_hex64(value);
     serial_putc('\n');
 }
 
@@ -327,7 +337,8 @@ user_return:
     return (int)(int64_t)arm64_user_exit_value;
 }
 
-void arm64_handle_exception(struct arm64_exception_frame *frame) {
+void __attribute__((no_stack_protector))
+arm64_handle_exception(struct arm64_exception_frame *frame) {
     uint32_t ec = (uint32_t)((frame->esr_el1 >> ARM64_ESR_EC_SHIFT) &
                               ARM64_ESR_EC_MASK);
 
@@ -338,6 +349,7 @@ void arm64_handle_exception(struct arm64_exception_frame *frame) {
     }
 
     serial_write("\nARM64 exception\n");
+    arm64_log_hex("EC:  ", ec);
     arm64_log_hex("ESR: ", frame->esr_el1);
     arm64_log_hex("FAR: ", frame->far_el1);
     arm64_log_hex("ELR: ", frame->elr_el1);
