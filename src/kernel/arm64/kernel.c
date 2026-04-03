@@ -75,6 +75,23 @@ char *strncpy(char *dest, const char *src, size_t n) {
     return dest;
 }
 
+char *strstr(const char *haystack, const char *needle) {
+    if (!*needle) return (char *)haystack;
+
+    while (*haystack) {
+        const char *h = haystack;
+        const char *n = needle;
+        while (*h && *n && (*h == *n)) {
+            h++;
+            n++;
+        }
+        if (!*n) return (char *)haystack;
+        haystack++;
+    }
+
+    return NULL;
+}
+
 static const char hex_chars[] = "0123456789ABCDEF";
 
 void print_hex(uint64_t value) {
