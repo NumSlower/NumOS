@@ -78,8 +78,7 @@ USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
 # Root Makefile expects ELFs at ../build/user/*.elf
 OUTPUT_DIR ?= ../build/user
 STAGED_BIN_DIR ?= files/bin
-PREINSTALLED_BINS := shell install pkg numloss empty edit proc
-PREINSTALLED_ELFS := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
+PREINSTALLED_BIN_CANDIDATES := shell install pkg numloss empty edit proc
 
 TOPLEVEL_SRCS := $(shell find . -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)
 COMMON_SRCS   := runtime/runtime.c runtime/libc.c
@@ -87,6 +86,9 @@ PROGRAM_TOPLEVEL_SRCS := $(filter-out $(COMMON_SRCS),$(TOPLEVEL_SRCS))
 PROGRAM_FILE_SRCS := $(shell find programs -mindepth 1 -maxdepth 1 -type f -name '*.c' -printf '%P\n' | sort)
 PROGRAM_BUNDLES := $(shell find programs -mindepth 1 -maxdepth 1 -type d ! -name '.*' ! -name build -printf '%P\n' | sort)
 DIRECT_PROGS := $(sort $(basename $(notdir $(PROGRAM_TOPLEVEL_SRCS) $(PROGRAM_FILE_SRCS))))
+AVAILABLE_USER_BINS := $(sort $(DIRECT_PROGS) $(PROGRAM_BUNDLES))
+PREINSTALLED_BINS := $(strip $(foreach bin,$(PREINSTALLED_BIN_CANDIDATES),$(if $(filter $(bin),$(AVAILABLE_USER_BINS)),$(bin))))
+PREINSTALLED_ELFS := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
 USER_ELFS    := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .elf,$(DIRECT_PROGS) $(PROGRAM_BUNDLES)))
 COMMON_OBJS   := $(addprefix build/,$(COMMON_SRCS:.c=.o))
 
