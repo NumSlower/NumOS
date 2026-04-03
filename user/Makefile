@@ -164,14 +164,18 @@ build/%.o: %.c include/syscalls.h
 # ---- Install ----------------------------------------------------------------
 
 .PHONY: stage-bin
-stage-bin: | $(STAGED_BIN_DIR)
+stage-bin: check-arch sanitize-preinstalled-elfs $(PREINSTALLED_ELFS) | $(STAGED_BIN_DIR)
+
+.PHONY: sanitize-preinstalled-elfs
+sanitize-preinstalled-elfs:
 	@set -e; \
 	for elf in $(PREINSTALLED_ELFS); do \
 		if [ -e "$$elf" ] && [ ! -f "$$elf" ]; then \
 			rm -rf "$$elf"; \
 		fi; \
 	done
-	@$(MAKE) all
+
+stage-bin:
 	@set -e; \
 	for bin in $(PREINSTALLED_BINS); do \
 		src="$(OUTPUT_DIR)/$$bin.elf"; \
