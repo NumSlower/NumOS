@@ -163,7 +163,7 @@ build/%.o: %.c include/syscalls.h
 # ---- Install ----------------------------------------------------------------
 
 .PHONY: stage-bin
-stage-bin: $(USER_ELFS) | $(STAGED_BIN_DIR)
+stage-bin: all | $(STAGED_BIN_DIR)
 	@set -e; \
 	for bin in $(PREINSTALLED_BINS); do \
 		src="$(OUTPUT_DIR)/$$bin.elf"; \
@@ -176,7 +176,7 @@ stage-bin: $(USER_ELFS) | $(STAGED_BIN_DIR)
 	done
 
 .PHONY: install
-install: check-arch all stage-bin
+install: check-arch stage-bin
 
 # ---- Clean ------------------------------------------------------------------
 
