@@ -118,11 +118,14 @@ static void arm64_enable_mmu(uint64_t root_phys) {
     __asm__ volatile("msr tcr_el1, %0" :: "r"(tcr) : "memory");
     __asm__ volatile("msr ttbr0_el1, %0" :: "r"(root_phys) : "memory");
     __asm__ volatile("msr ttbr1_el1, %0" :: "r"(root_phys) : "memory");
-    __asm__ volatile("isb" ::: "memory");
+    __asm__ volatile("tlbi vmalle1\n\tdsb sy\n\tisb" ::: "memory");
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     sctlr |= (1ULL << 0);
-    sctlr |= (1ULL << 2);
-    sctlr |= (1ULL << 12);
+    /*
+     * Bring up translation first. Turning on caches at the same moment made
+     * early QEMU virt boot fragile and could stop serial output before the
+     * next progress marker.
+     */
     __asm__ volatile("msr sctlr_el1, %0\n\tisb" :: "r"(sctlr) : "memory");
     paging_mmu_enabled = 1;
 }
