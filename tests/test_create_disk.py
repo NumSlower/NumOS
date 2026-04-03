@@ -96,6 +96,19 @@ class CreateDiskTest(unittest.TestCase):
         # image must stage the ELF into /bin.
         self.assertIn("connect.elf", create_disk.PREINSTALLED_BIN_NAMES)
 
+    def test_write_reserved_area_copies_backup_boot_sector(self):
+        # FAT32 stores a backup boot sector in reserved sector 6. The runtime
+        # mount path uses that copy when sector 0 was clobbered.
+        with tempfile.NamedTemporaryFile() as tmp:
+            with open(tmp.name, "wb") as image_file:
+                image_file.write(create_disk.create_boot_sector())
+                image_file.write(create_disk.create_fsinfo(0, 0))
+                create_disk.write_reserved_area(image_file)
+
+            image = pathlib.Path(tmp.name).read_bytes()
+
+        self.assertEqual(image[0:512], image[6 * 512:7 * 512])
+
 
 if __name__ == "__main__":
     unittest.main()

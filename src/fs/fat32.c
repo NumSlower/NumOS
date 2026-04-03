@@ -119,13 +119,31 @@ static int fat32_raw_write_sector(uint32_t sector, const void *buffer) {
     return ata_write_sectors(&ata_primary_master, sector, 1, buffer);
 }
 
+static int fat32_try_load_boot_sector(uint32_t sector_lba, uint8_t *boot_sector) {
+    if (!boot_sector) return -1;
+    if (fat32_raw_read_sector(sector_lba, boot_sector) != 0) return -1;
+    if (!fat32_boot_sector_looks_valid(boot_sector)) return -1;
+    return 0;
+}
+
 static int fat32_try_mount_at_lba(uint32_t start_lba) {
     uint8_t boot_sector[512];
+    int used_backup_boot = 0;
 
     g_fs.partition_lba_start = start_lba;
-    if (fat32_raw_read_sector(start_lba, boot_sector) != 0) return -1;
-    if (!fat32_boot_sector_looks_valid(boot_sector)) return -1;
+    if (fat32_try_load_boot_sector(start_lba, boot_sector) != 0) {
+        uint32_t backup_boot_lba = start_lba + 6;
+        if (fat32_try_load_boot_sector(backup_boot_lba, boot_sector) != 0) {
+            return -1;
+        }
+        used_backup_boot = 1;
+    }
     memcpy(&g_fs.boot, boot_sector, sizeof(g_fs.boot));
+    if (used_backup_boot) {
+        vga_writestring("FAT32: Using backup boot sector at LBA ");
+        print_dec(start_lba + 6);
+        vga_writestring("\n");
+    }
     return 0;
 }
 
