@@ -121,6 +121,13 @@ $(foreach src,$(PROGRAM_TOPLEVEL_SRCS),$(eval $(call DIRECT_PROGRAM_template,$(b
 $(foreach src,$(PROGRAM_FILE_SRCS),$(eval $(call DIRECT_PROGRAM_template,$(basename $(notdir $(src))),programs/$(src))))
 $(foreach bundle,$(PROGRAM_BUNDLES),$(eval $(call BUNDLE_PROGRAM_template,$(bundle))))
 
+# Fallback for direct programs stored as programs/*.c.
+# This keeps stage-bin working even if source discovery misses a file.
+$(OUTPUT_DIR)/%.elf: build/enteryusr.o $(COMMON_OBJS) build/programs/%.o | $(OUTPUT_DIR)
+	@echo "[LD user] $@"
+	@$(NUMOS_LD) $(USER_LDFLAGS) -o $@ build/enteryusr.o $(COMMON_OBJS) build/programs/$*.o
+	@echo "[INFO] $@: $$(wc -c < $@) bytes, entry=0x60000000"
+
 # ---- Targets ----------------------------------------------------------------
 
 .PHONY: all
