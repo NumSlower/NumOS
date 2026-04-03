@@ -134,9 +134,7 @@ void *realloc(void *ptr, size_t size) {
 
 void abort(void) {
     sys_exit(134);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    numos_user_wait_forever();
 }
 
 char *getenv(const char *name) {

@@ -14,6 +14,10 @@ USER_ASFORMAT :=
 USER_CFLAGS_ARCH :=
 USER_LDFLAGS_ARCH :=
 USER_LINK_MODE ?= pie
+USER_ENTRY_SOURCE := runtime/entry.asm
+USER_ENTRY_OBJECT := build/enteryusr.o
+USER_LINKER_SCRIPT_STD := linker/linker.ld
+USER_LINKER_SCRIPT_PIE := linker/linker-pie.ld
 
 ifeq ($(NUMOS_ARCH),x86_64)
 ARCH_BUILD_READY := 1
@@ -23,26 +27,36 @@ USER_ASFORMAT := elf64
 USER_CFLAGS_ARCH := -m64 -fno-tree-vectorize -mno-mmx -msse -msse2 -mfpmath=sse
 USER_LDFLAGS_ARCH := -m elf_x86_64
 else ifeq ($(NUMOS_ARCH),arm64)
-ARCH_STATUS := Planned. NumOS user-space is still x86-64 only. See ../docs/PORTING_RPI5_ARM64.md.
+ARCH_BUILD_READY := 1
+ARCH_STATUS := Preview. ARM64 user-space objects build with an AArch64 runtime and linker scripts.
 NUMOS_TARGET_TRIPLE := aarch64-none-elf
+USER_ENTRY_SOURCE := runtime/entry_arm64.S
+USER_LINKER_SCRIPT_STD := linker/linker-arm64.ld
+USER_LINKER_SCRIPT_PIE := linker/linker-pie-arm64.ld
+USER_LDFLAGS_ARCH := -m aarch64elf
 else
 NUMOS_TARGET_TRIPLE := $(NUMOS_ARCH)-elf
 endif
 
 NUMOS_TARGET ?= $(NUMOS_TARGET_TRIPLE)
 NUMOS_AS  ?= $(or $(shell command -v nasm 2>/dev/null),$(shell command -v yasm 2>/dev/null))
+ifeq ($(NUMOS_ARCH),arm64)
+NUMOS_CC  ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),$(NUMOS_TARGET)-gcc)
+NUMOS_LD  ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v aarch64-linux-gnu-ld 2>/dev/null),$(NUMOS_TARGET)-ld)
+else
 NUMOS_CC  ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v gcc 2>/dev/null),$(shell command -v clang 2>/dev/null))
 NUMOS_LD  ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v ld 2>/dev/null),$(shell command -v ld.lld 2>/dev/null))
+endif
 
-USER_LINKER_SCRIPT := linker/linker.ld
+USER_LINKER_SCRIPT := $(USER_LINKER_SCRIPT_STD)
 
 ifeq ($(USER_LINK_MODE),pie)
 USER_CFLAGS_MODE := -fpie
-USER_LDFLAGS_MODE := -pie --no-dynamic-linker -T linker/linker-pie.ld
-USER_LINKER_SCRIPT := linker/linker-pie.ld
+USER_LDFLAGS_MODE := -pie --no-dynamic-linker -T $(USER_LINKER_SCRIPT_PIE)
+USER_LINKER_SCRIPT := $(USER_LINKER_SCRIPT_PIE)
 else
 USER_CFLAGS_MODE := -fno-pic
-USER_LDFLAGS_MODE := -static -T linker/linker.ld
+USER_LDFLAGS_MODE := -static -T $(USER_LINKER_SCRIPT_STD)
 endif
 
 ifneq ($(filter -j% --jobs=%,$(MAKEFLAGS)),)
@@ -129,10 +143,16 @@ $(STAGED_BIN_DIR):
 
 # ---- Assembly entry object --------------------------------------------------
 
-build/enteryusr.o: runtime/entry.asm
+build/enteryusr.o: $(USER_ENTRY_SOURCE)
+ifeq ($(NUMOS_ARCH),x86_64)
 	@echo "[AS user] runtime/entry.asm"
 	@mkdir -p build
 	@$(NUMOS_AS) -f $(USER_ASFORMAT) runtime/entry.asm -o build/enteryusr.o
+else
+	@echo "[CC user] $(USER_ENTRY_SOURCE)"
+	@mkdir -p build
+	@$(NUMOS_CC) $(USER_CFLAGS) -c $(USER_ENTRY_SOURCE) -o build/enteryusr.o
+endif
 
 # ---- Compile: top-level sources --------------------------------------------
 

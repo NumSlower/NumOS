@@ -100,9 +100,7 @@ int puts(const char *str) {
 
 void exit(int status) {
     sys_exit(status);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    numos_user_wait_forever();
 }
 
 /* Thread wrappers keep the public API stable over raw syscalls. */
@@ -123,9 +121,7 @@ int thread_join(int tid, intptr_t *result) {
 
 void thread_exit(intptr_t value) {
     sys_thread_exit((uint64_t)value);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    numos_user_wait_forever();
 }
 
 int thread_self(void) {

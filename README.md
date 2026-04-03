@@ -5,11 +5,12 @@ NumOS is a small 64 bit operating system project written in C, assembly, and a s
 Current focus:
 
 - x86_64 PC boot through GRUB Multiboot2
+- arm64 QEMU `virt` serial bring up
 - a freestanding kernel with paging, interrupts, scheduling, ELF loading, and syscalls
 - a small userland with native tools such as `shell`, `edit`, `mk`, `pkg`, `connect`, and `proc`
 - FAT32 based image creation and partition population flows
 
-ARM64 work is planned. The current port plan lives in `docs/PORTING_RPI5_ARM64.md`.
+ARM64 planning for Raspberry Pi still lives in `docs/PORTING_RPI5_ARM64.md`. The current QEMU bring up notes live in `docs/ARM64_QEMU_VIRT.md`.
 
 ## Status
 
@@ -33,7 +34,7 @@ What is still incomplete:
 - SMP path is not production safe yet
 - networking does not include TCP or sockets
 - USB support is limited to controller and port inspection
-- ARM64 is not implemented in this tree
+- ARM64 is early bring up only. The current path is serial first on QEMU `virt`
 
 ## Host Requirements
 
@@ -48,6 +49,13 @@ Required for a full x86_64 build:
 - `mtools`
 - `qemu-system-x86_64` for local boot tests
 - `python3`
+
+Required for the ARM64 bring up path:
+
+- `make`
+- `aarch64-none-elf-gcc` or another usable AArch64 freestanding compiler
+- `aarch64-none-elf-ld` or another usable AArch64 linker
+- `qemu-system-aarch64` for local boot tests
 
 Ubuntu or Debian example:
 
@@ -64,6 +72,18 @@ Show the active architecture and support state:
 
 ```bash
 make arch-status
+```
+
+Build the ARM64 preview kernel:
+
+```bash
+make NUMOS_ARCH=arm64 kernel
+```
+
+Run the ARM64 preview in QEMU `virt`:
+
+```bash
+make NUMOS_ARCH=arm64 run
 ```
 
 Build the userland, kernel, disk image, and ISO:
@@ -100,7 +120,7 @@ The default supported target is:
 - `NUMOS_ARCH=x86_64`
 - `NUMOS_MACHINE=pc`
 
-The tree carries early ARM64 planning, but `NUMOS_ARCH=arm64` is not bootable yet.
+The tree now carries an ARM64 serial bring up path for QEMU `virt`. Full storage, MMU, and user mode support are still in progress.
 
 ## Debug Flow
 

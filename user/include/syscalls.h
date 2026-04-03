@@ -310,43 +310,98 @@ struct numos_net_http_result {
 #define FAT32_O_APPEND      0x10
 
 static inline int64_t sys_call0(int64_t n) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0");
+    __asm__ volatile("svc #0"
+                     : "=r"(x0)
+                     : "r"(x8)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(n)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
 }
 
 static inline int64_t sys_call1(int64_t n, int64_t a1) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0") = a1;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(n), "D"(a1)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
 }
 
 static inline int64_t sys_call2(int64_t n, int64_t a1, int64_t a2) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0") = a1;
+    register int64_t x1 __asm__("x1") = a2;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(n), "D"(a1), "S"(a2)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
 }
 
 static inline int64_t sys_call3(int64_t n, int64_t a1, int64_t a2, int64_t a3) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0") = a1;
+    register int64_t x1 __asm__("x1") = a2;
+    register int64_t x2 __asm__("x2") = a3;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(n), "D"(a1), "S"(a2), "d"(a3)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
 }
 
 static inline int64_t sys_call4(int64_t n, int64_t a1, int64_t a2,
                                 int64_t a3, int64_t a4) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0") = a1;
+    register int64_t x1 __asm__("x1") = a2;
+    register int64_t x2 __asm__("x2") = a3;
+    register int64_t x3 __asm__("x3") = a4;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     register int64_t r10 __asm__("r10") = a4;
     __asm__ volatile("syscall"
@@ -354,10 +409,24 @@ static inline int64_t sys_call4(int64_t n, int64_t a1, int64_t a2,
                      : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
 }
 
 static inline int64_t sys_call5(int64_t n, int64_t a1, int64_t a2,
                                 int64_t a3, int64_t a4, int64_t a5) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0") = a1;
+    register int64_t x1 __asm__("x1") = a2;
+    register int64_t x2 __asm__("x2") = a3;
+    register int64_t x3 __asm__("x3") = a4;
+    register int64_t x4 __asm__("x4") = a5;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     register int64_t r10 __asm__("r10") = a4;
     register int64_t r8  __asm__("r8")  = a5;
@@ -366,11 +435,26 @@ static inline int64_t sys_call5(int64_t n, int64_t a1, int64_t a2,
                      : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
 }
 
 static inline int64_t sys_call6(int64_t n, int64_t a1, int64_t a2,
                                 int64_t a3, int64_t a4, int64_t a5,
                                 int64_t a6) {
+#if defined(__aarch64__)
+    register int64_t x8 __asm__("x8") = n;
+    register int64_t x0 __asm__("x0") = a1;
+    register int64_t x1 __asm__("x1") = a2;
+    register int64_t x2 __asm__("x2") = a3;
+    register int64_t x3 __asm__("x3") = a4;
+    register int64_t x4 __asm__("x4") = a5;
+    register int64_t x5 __asm__("x5") = a6;
+    __asm__ volatile("svc #0"
+                     : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+                     : "memory");
+    return x0;
+#else
     int64_t ret;
     register int64_t r10 __asm__("r10") = a4;
     register int64_t r8  __asm__("r8")  = a5;
@@ -380,6 +464,17 @@ static inline int64_t sys_call6(int64_t n, int64_t a1, int64_t a2,
                      : "a"(n), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8), "r"(r9)
                      : "rcx", "r11", "memory");
     return ret;
+#endif
+}
+
+static inline void numos_user_wait_forever(void) {
+    for (;;) {
+#if defined(__aarch64__)
+        __asm__ volatile("wfe");
+#else
+        __asm__ volatile("hlt");
+#endif
+    }
 }
 
 static inline int64_t sys_read(int fd, void *buf, size_t count) {

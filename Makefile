@@ -25,6 +25,13 @@ endif
 NUMOS_ARCH ?= x86_64
 NUMOS_MACHINE ?= pc
 ARCH_DOC := docs/PORTING_RPI5_ARM64.md
+ARM64_DOC := docs/ARM64_QEMU_VIRT.md
+
+ifeq ($(NUMOS_ARCH),arm64)
+ifeq ($(NUMOS_MACHINE),pc)
+    NUMOS_MACHINE := virt
+endif
+endif
 
 ARCH_BUILD_READY := 0
 ARCH_STATUS := Unsupported NUMOS_ARCH=$(NUMOS_ARCH). Supported values: x86_64, arm64.
@@ -51,13 +58,15 @@ ifeq ($(NUMOS_ARCH),x86_64)
     KERNEL_ARCH_CFLAGS := -m64 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel
     LDFLAGS := -T linker/kernel.ld -nostdlib --nmagic -z noexecstack
 else ifeq ($(NUMOS_ARCH),arm64)
-    ARCH_STATUS := Planned. Raspberry Pi 5 support needs a new ARM64 boot path, exception vectors, MMU setup, timer, interrupt controller, and driver layer. See $(ARCH_DOC).
+    ARCH_BUILD_READY := 1
+    ARCH_STATUS := Preview. NumOS builds a serial first ARM64 kernel for QEMU virt. See $(ARM64_DOC) and $(ARCH_DOC).
     NUMOS_TARGET_TRIPLE := aarch64-none-elf
     NUMOS_QEMU := qemu-system-aarch64
     NUMOS_ARCH_NAME := ARM64
     NUMOS_CPU_MODE_NAME := EL1
-    NUMOS_BOOT_PROTOCOL_NAME := board boot
+    NUMOS_BOOT_PROTOCOL_NAME := QEMU virt direct boot
     NUMOS_CPU_DIR := arm64
+    LDFLAGS := -T linker/kernel-arm64.ld -nostdlib -z noexecstack
 else
     NUMOS_TARGET_TRIPLE := $(NUMOS_ARCH)-elf
     NUMOS_QEMU := qemu-system-$(NUMOS_ARCH)
@@ -65,8 +74,13 @@ endif
 
 NUMOS_TARGET ?= $(NUMOS_TARGET_TRIPLE)
 NUMOS_AS ?= $(or $(shell command -v nasm 2>/dev/null),$(shell command -v yasm 2>/dev/null),nasm)
+ifeq ($(NUMOS_ARCH),arm64)
+NUMOS_CC ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),$(NUMOS_TARGET)-gcc)
+NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v aarch64-linux-gnu-ld 2>/dev/null),$(NUMOS_TARGET)-ld)
+else
 NUMOS_CC ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v gcc 2>/dev/null),$(shell command -v clang 2>/dev/null),$(NUMOS_TARGET)-gcc)
 NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v ld 2>/dev/null),$(shell command -v ld.lld 2>/dev/null),$(NUMOS_TARGET)-ld)
+endif
 
 SRC_DIR      := src
 BUILD_DIR    := build
@@ -84,6 +98,7 @@ OS_NAME       ?= NumOS
 KERNEL_NAME   ?= kernel.bin
 KERNEL_VESA_NAME ?= kernel-vesa.bin
 KERNEL_ATA_NAME ?= kernel-ata.bin
+ARM64_KERNEL_NAME ?= kernel-arm64.elf
 DISK_NAME     ?= disk.img
 ISO_NAME      ?= $(OS_NAME).iso
 ISO_KERNEL_ONLY_NAME ?= $(OS_NAME)-kernel-only.iso
@@ -136,6 +151,7 @@ KERNEL_CFLAGS := $(KERNEL_ARCH_CFLAGS) -ffreestanding -fstack-protector-strong \
                  -DNUMOS_BOOT_PROTOCOL_NAME=\"$(NUMOS_BOOT_PROTOCOL_NAME)\" \
                  -DNUMOS_INIT_PATH=\"$(INIT_PATH)\"
 
+ifeq ($(NUMOS_ARCH),x86_64)
 ASM_SOURCES := $(wildcard $(SRC_DIR)/boot/*.asm)
 ASM_COMMON_SOURCES := $(filter-out $(SRC_DIR)/boot/multiboot_header.asm,$(ASM_SOURCES))
 
@@ -155,10 +171,20 @@ MULTIBOOT_OBJECT_VESA := $(BUILD_KERNEL)/boot/multiboot_header.vesa.o
 KERNEL_C_OBJECTS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL)/%.o,$(KERNEL_C_SOURCES))
 KERNEL_C_OBJECTS_ATA := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL_ATA)/%.o,$(KERNEL_C_SOURCES))
 COMMON_KERNEL_OBJECTS := $(ASM_OBJECTS) $(KERNEL_C_OBJECTS) $(TRAMPOLINE_OBJ)
+else ifeq ($(NUMOS_ARCH),arm64)
+ARM64_BOOT_SOURCES := $(wildcard $(SRC_DIR)/boot/arm64/*.S)
+ARM64_C_SOURCES := $(wildcard $(SRC_DIR)/kernel/arm64/*.c) \
+                   $(wildcard $(SRC_DIR)/cpu/arm64/*.c) \
+                   $(wildcard $(SRC_DIR)/drivers/arm64/*.c)
+ARM64_BOOT_OBJECTS := $(patsubst $(SRC_DIR)/boot/arm64/%.S,$(BUILD_KERNEL)/boot/arm64/%.o,$(ARM64_BOOT_SOURCES))
+ARM64_C_OBJECTS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_KERNEL)/%.o,$(ARM64_C_SOURCES))
+ARM64_OBJECTS := $(ARM64_BOOT_OBJECTS) $(ARM64_C_OBJECTS)
+endif
 
 KERNEL     := $(BUILD_DIR)/$(KERNEL_NAME)
 KERNEL_VESA := $(BUILD_DIR)/$(KERNEL_VESA_NAME)
 KERNEL_ATA := $(BUILD_DIR)/$(KERNEL_ATA_NAME)
+ARM64_KERNEL := $(BUILD_DIR)/$(ARM64_KERNEL_NAME)
 ISO_FILE   := $(BUILD_DIR)/$(ISO_NAME)
 ISO_KERNEL_ONLY_FILE := $(BUILD_DIR)/$(ISO_KERNEL_ONLY_NAME)
 DISK_IMAGE := $(BUILD_DIR)/$(DISK_NAME)
@@ -168,7 +194,11 @@ GRUB_KERNEL_DIR := $(ISO_KERNEL_DIR)/boot/grub
 BOOT_SUPPORT_STAMP := $(BUILD_DIR)/stage/.boot-support.stamp
 
 .PHONY: all
+ifeq ($(NUMOS_ARCH),arm64)
+all: kernel
+else
 all: iso
+endif
 
 .PHONY: check-arch
 check-arch:
@@ -199,12 +229,12 @@ ifeq ($(NUMOS_ARCH),x86_64)
 endif
 	@if ! command -v $(NUMOS_CC) >/dev/null 2>&1; then \
 		echo "[ERROR] Missing compiler: $(NUMOS_CC)"; \
-		echo "Install $(NUMOS_TARGET)-gcc, gcc, or clang, or set NUMOS_CC=/path/to/compiler"; \
+		echo "Install $(NUMOS_TARGET)-gcc or another usable cross compiler, or set NUMOS_CC=/path/to/compiler"; \
 		false; \
 	fi
 	@if ! command -v $(NUMOS_LD) >/dev/null 2>&1; then \
 		echo "[ERROR] Missing linker: $(NUMOS_LD)"; \
-		echo "Install $(NUMOS_TARGET)-ld, ld, or ld.lld, or set NUMOS_LD=/path/to/linker"; \
+		echo "Install $(NUMOS_TARGET)-ld or another usable linker, or set NUMOS_LD=/path/to/linker"; \
 		false; \
 	fi
 
@@ -228,6 +258,101 @@ check-iso-tools:
 
 # ---- Kernel ----------------------------------------------------------------
 .PHONY: kernel
+ifeq ($(NUMOS_ARCH),arm64)
+kernel: check-arch check-host-tools $(ARM64_KERNEL)
+
+$(BUILD_KERNEL)/boot/arm64/%.o: $(SRC_DIR)/boot/arm64/%.S
+	@echo "[CC]  $<"
+	@mkdir -p $(dir $@)
+	@$(NUMOS_CC) $(KERNEL_CFLAGS) $< -o $@
+
+$(BUILD_KERNEL)/%.o: $(SRC_DIR)/%.c
+	@echo "[CC]  $<"
+	@mkdir -p $(dir $@)
+	@$(NUMOS_CC) $(KERNEL_CFLAGS) $< -o $@
+
+$(ARM64_KERNEL): $(ARM64_OBJECTS)
+	@echo "[LD]  kernel-arm64"
+	@mkdir -p $(BUILD_DIR)
+	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
+	@echo "[OK]  $(ARM64_KERNEL)"
+
+.PHONY: user_space
+user_space:
+	@echo "[ERROR] ARM64 user-space is not wired into the kernel yet. See $(ARCH_DOC)."
+	@false
+
+.PHONY: boot-support
+boot-support:
+	@echo "[ERROR] ARM64 does not use the x86 boot-support staging path."
+	@false
+
+.PHONY: disk
+disk:
+	@echo "[ERROR] ARM64 disk image packaging is not implemented yet."
+	@false
+
+.PHONY: partition-list
+partition-list:
+	@python3 $(TOOLS_DIR)/partition_storage.py list
+
+.PHONY: partition
+partition:
+	@python3 $(TOOLS_DIR)/partition_storage.py create $(PART_TARGET) \
+		--table $(PART_TABLE) \
+		--fs $(PART_FS) \
+		--start $(PART_START) \
+		--end $(PART_END) \
+		$(if $(filter 1,$(PART_FORMAT)),--format,) \
+		$(if $(filter 1,$(PART_APPLY)),--apply,) \
+		$(if $(filter 0,$(PART_POPULATE)),--no-populate-numos,)
+
+.PHONY: iso-kernel-only
+iso-kernel-only:
+	@echo "[ERROR] ARM64 does not use the GRUB ISO flow."
+	@false
+
+.PHONY: iso
+iso:
+	@echo "[ERROR] ARM64 does not use the GRUB ISO flow."
+	@false
+
+.PHONY: pkg-download
+pkg-download:
+	@if [ -z "$(PKG_URL)" ]; then \
+		echo "Usage: make pkg-download PKG_URL=https://example.com/OCLDEV.PKG"; \
+		false; \
+	fi
+	@python3 $(TOOLS_DIR)/download_pkg.py "$(PKG_URL)" --stage-dir "$(BOOT_STAGE_DIR)" $(if $(PKG_BASE_URL),--base-url "$(PKG_BASE_URL)",)
+
+.PHONY: run
+run: kernel
+	@echo "[QEMU] Starting NumOS ARM64..."
+	@$(NUMOS_QEMU) \
+		-machine virt \
+		-cpu cortex-a72 \
+		-m 1024 \
+		-nographic \
+		-kernel $(ARM64_KERNEL)
+
+.PHONY: run-partition
+run-partition:
+	@echo "[ERROR] ARM64 run-partition is not implemented."
+	@false
+
+.PHONY: run-nographic
+run-nographic: run
+
+.PHONY: debug
+debug: kernel
+	@$(NUMOS_QEMU) \
+		-machine virt \
+		-cpu cortex-a72 \
+		-m 1024 \
+		-nographic \
+		-kernel $(ARM64_KERNEL) \
+		-s -S
+else
 kernel: check-arch check-host-tools $(KERNEL) $(KERNEL_VESA)
 
 $(BUILD_KERNEL)/boot/%.o: $(SRC_DIR)/boot/%.asm
@@ -570,6 +695,7 @@ debug: iso
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=2 \
 		-serial stdio -s -S
+endif
 
 # ---- VirtualBox ------------------------------------------------------------
 # Attach NumOS.iso as optical drive only.  disk.img is embedded inside as
@@ -585,9 +711,15 @@ clean:
 .PHONY: help
 help:
 	@echo "NumOS Build System"
+ifeq ($(NUMOS_ARCH),arm64)
+	@echo "  make kernel NUMOS_ARCH=arm64 - build the ARM64 QEMU virt kernel"
+	@echo "  make run NUMOS_ARCH=arm64    - boot the ARM64 kernel in QEMU"
+	@echo "  make debug NUMOS_ARCH=arm64  - boot ARM64 with a GDB stub"
+else
 	@echo "  make run   - QEMU: disk.img on primary IDE, ISO on secondary IDE"
 	@echo "  make run-partition PART_TARGET=build/disk.img"
 	@echo "  make debug - same + GDB stub on :1234"
+endif
 	@echo "  make arch-status - print current architecture support state"
 	@echo "  make partition-list - list host block devices"
 	@echo "  make partition PART_TARGET=/dev/sdX PART_APPLY=1 PART_FORMAT=1"
@@ -599,6 +731,11 @@ help:
 	@echo "Architecture: $(NUMOS_ARCH)"
 	@echo "Status: $(ARCH_STATUS)"
 	@echo ""
+ifeq ($(NUMOS_ARCH),arm64)
+	@echo "ARM64 display: early bring up uses the PL011 serial console on QEMU virt."
+	@echo "Storage, MMU, and user mode are still in progress."
+else
 	@echo "VESA/VBE display: GRUB reads the framebuffer tag from the multiboot"
 	@echo "header and calls INT 0x10 to set the mode before booting the kernel."
 	@echo "The active mode is reported at boot and accessible via key [V]."
+endif

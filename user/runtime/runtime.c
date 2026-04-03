@@ -74,9 +74,7 @@ void __attribute__((no_stack_protector)) __stack_chk_fail(void) {
     const char *msg = "numos: stack protector trapped corruption\n";
     sys_write(FD_STDERR, msg, strlen(msg));
     sys_exit(127);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    numos_user_wait_forever();
 }
 
 void __stack_chk_fail_local(void) __attribute__((alias("__stack_chk_fail")));
@@ -87,7 +85,5 @@ __numos_user_thread_entry(numos_thread_start_t start, void *arg) {
     intptr_t rc = 0;
     if (start) rc = start(arg);
     thread_exit(rc);
-    for (;;) {
-        __asm__ volatile("hlt");
-    }
+    numos_user_wait_forever();
 }
