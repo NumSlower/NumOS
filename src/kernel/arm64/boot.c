@@ -185,10 +185,10 @@ void arm64_boot_main(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3)
     serial_write("[2] runtime ok\n");
     idt_init();
     serial_write("[3] vectors ok\n");
-    paging_init(0);
-    serial_write("[4] paging ok\n");
     fpu_init();
-    serial_write("[5] fpu ok\n");
+    serial_write("[4] fpu ok\n");
+    paging_init(0);
+    serial_write("[5] paging ok\n");
     heap_init();
     serial_write("[6] heap ok\n");
     timer_init(0);
