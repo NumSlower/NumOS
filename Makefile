@@ -84,6 +84,7 @@ NUMOS_AS ?= $(or $(shell command -v nasm 2>/dev/null),$(shell command -v yasm 2>
 ifeq ($(NUMOS_ARCH),arm64)
 NUMOS_CC ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),$(NUMOS_TARGET)-gcc)
 NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v aarch64-linux-gnu-ld 2>/dev/null),$(NUMOS_TARGET)-ld)
+NUMOS_OBJCOPY ?= $(or $(shell command -v $(NUMOS_TARGET)-objcopy 2>/dev/null),$(shell command -v aarch64-linux-gnu-objcopy 2>/dev/null),$(shell command -v llvm-objcopy 2>/dev/null),$(shell command -v objcopy 2>/dev/null),$(NUMOS_TARGET)-objcopy)
 else
 NUMOS_CC ?= $(or $(shell command -v $(NUMOS_TARGET)-gcc 2>/dev/null),$(shell command -v gcc 2>/dev/null),$(shell command -v clang 2>/dev/null),$(NUMOS_TARGET)-gcc)
 NUMOS_LD ?= $(or $(shell command -v $(NUMOS_TARGET)-ld 2>/dev/null),$(shell command -v ld 2>/dev/null),$(shell command -v ld.lld 2>/dev/null),$(NUMOS_TARGET)-ld)
@@ -106,6 +107,7 @@ KERNEL_NAME   ?= kernel.bin
 KERNEL_VESA_NAME ?= kernel-vesa.bin
 KERNEL_ATA_NAME ?= kernel-ata.bin
 ARM64_KERNEL_NAME ?= kernel-arm64.elf
+ARM64_KERNEL_IMAGE_NAME ?= kernel-arm64.bin
 DISK_NAME     ?= disk.img
 ISO_NAME      ?= $(OS_NAME).iso
 ISO_KERNEL_ONLY_NAME ?= $(OS_NAME)-kernel-only.iso
@@ -202,6 +204,7 @@ KERNEL     := $(BUILD_DIR)/$(KERNEL_NAME)
 KERNEL_VESA := $(BUILD_DIR)/$(KERNEL_VESA_NAME)
 KERNEL_ATA := $(BUILD_DIR)/$(KERNEL_ATA_NAME)
 ARM64_KERNEL := $(BUILD_DIR)/$(ARM64_KERNEL_NAME)
+ARM64_KERNEL_IMAGE := $(BUILD_DIR)/$(ARM64_KERNEL_IMAGE_NAME)
 ISO_FILE   := $(BUILD_DIR)/$(ISO_NAME)
 ISO_KERNEL_ONLY_FILE := $(BUILD_DIR)/$(ISO_KERNEL_ONLY_NAME)
 DISK_IMAGE := $(BUILD_DIR)/$(DISK_NAME)
@@ -254,6 +257,13 @@ endif
 		echo "Install $(NUMOS_TARGET)-ld or another usable linker, or set NUMOS_LD=/path/to/linker"; \
 		false; \
 	fi
+ifeq ($(NUMOS_ARCH),arm64)
+	@if ! command -v $(NUMOS_OBJCOPY) >/dev/null 2>&1; then \
+		echo "[ERROR] Missing objcopy: $(NUMOS_OBJCOPY)"; \
+		echo "Install $(NUMOS_TARGET)-objcopy, llvm-objcopy, or GNU objcopy"; \
+		false; \
+	fi
+endif
 
 .PHONY: check-iso-tools
 check-iso-tools:
@@ -276,7 +286,7 @@ check-iso-tools:
 # ---- Kernel ----------------------------------------------------------------
 .PHONY: kernel
 ifeq ($(NUMOS_ARCH),arm64)
-kernel: check-arch check-host-tools $(ARM64_KERNEL)
+kernel: check-arch check-host-tools $(ARM64_KERNEL) $(ARM64_KERNEL_IMAGE)
 
 $(BUILD_KERNEL)/boot/arm64/%.o: $(SRC_DIR)/boot/arm64/%.S
 	@echo "[CC]  $<"
@@ -293,6 +303,11 @@ $(ARM64_KERNEL): $(ARM64_OBJECTS)
 	@mkdir -p $(BUILD_DIR)
 	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
 	@echo "[OK]  $(ARM64_KERNEL)"
+
+$(ARM64_KERNEL_IMAGE): $(ARM64_KERNEL)
+	@echo "[OBJCOPY]  kernel-arm64.bin"
+	@$(NUMOS_OBJCOPY) -O binary $< $@
+	@echo "[OK]  $(ARM64_KERNEL_IMAGE)"
 
 .PHONY: user_space
 user_space: check-arch check-host-tools
@@ -356,7 +371,7 @@ run: kernel disk
 		-cpu cortex-a72 \
 		-m 1024 \
 		-nographic \
-		-kernel $(ARM64_KERNEL) \
+		-kernel $(ARM64_KERNEL_IMAGE) \
 		-initrd $(DISK_IMAGE)
 
 .PHONY: run-partition
@@ -377,7 +392,7 @@ run-framebuffer: kernel disk
 		-monitor none \
 		-serial stdio \
 		-device ramfb \
-		-kernel $(ARM64_KERNEL) \
+		-kernel $(ARM64_KERNEL_IMAGE) \
 		-initrd $(DISK_IMAGE)
 
 .PHONY: debug
@@ -387,7 +402,7 @@ debug: kernel disk
 		-cpu cortex-a72 \
 		-m 1024 \
 		-nographic \
-		-kernel $(ARM64_KERNEL) \
+		-kernel $(ARM64_KERNEL_IMAGE) \
 		-initrd $(DISK_IMAGE) \
 		-s -S
 else
