@@ -31,5 +31,6 @@ int fdt_find_initrd(uint64_t fdt_addr, struct numos_fdt_initrd *out);
 int fdt_get_bootargs(uint64_t fdt_addr, struct numos_fdt_bootargs *out);
 int fdt_find_simple_framebuffer(uint64_t fdt_addr,
                                 struct numos_fdt_framebuffer *out);
+int fdt_is_valid_blob(uint64_t fdt_addr);
 
 #endif /* NUMOS_KERNEL_FDT_H */

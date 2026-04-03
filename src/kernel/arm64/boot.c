@@ -19,6 +19,10 @@
 #define NUMOS_INIT_PATH "/bin/empty.elf"
 #endif
 
+#define NUMOS_ARM64_QEMU_RAM_BASE 0x40000000ULL
+#define NUMOS_ARM64_QEMU_RAM_END  0x80000000ULL
+#define NUMOS_ARM64_FDT_SCAN_STEP 0x1000ULL
+
 static void __attribute__((no_stack_protector))
 serial_write_hex64(uint64_t value) {
     static const char digits[] = "0123456789ABCDEF";
@@ -117,6 +121,28 @@ static void resolve_init_path(const char *bootargs, char *out, size_t cap) {
     }
 }
 
+static uint64_t __attribute__((no_stack_protector))
+scan_fdt_range(uint64_t start, uint64_t end) {
+    for (uint64_t addr = start;
+         addr + NUMOS_ARM64_FDT_SCAN_STEP <= end;
+         addr += NUMOS_ARM64_FDT_SCAN_STEP) {
+        if (fdt_is_valid_blob(addr)) return addr;
+    }
+    return 0;
+}
+
+static uint64_t __attribute__((no_stack_protector))
+locate_fdt_blob(uint64_t boot_arg) {
+    if (fdt_is_valid_blob(boot_arg)) return boot_arg;
+
+    uint64_t found = scan_fdt_range(NUMOS_ARM64_QEMU_RAM_BASE, USER_VIRTUAL_BASE);
+    if (found) return found;
+    found = scan_fdt_range(USER_STACK_TOP, NUMOS_ARM64_QEMU_RAM_END);
+    if (found) return found;
+
+    return 0;
+}
+
 static void __attribute__((no_stack_protector))
 probe_init_elf(const char *path) {
     struct elf64_hdr hdr;
@@ -178,6 +204,7 @@ void arm64_boot_main(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3)
 
     struct numos_fdt_bootargs bootargs;
     char init_path[128];
+    uint64_t fdt_addr = 0;
 
     serial_init();
     serial_write("[1] serial ok\n");
@@ -193,7 +220,8 @@ void arm64_boot_main(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3)
     serial_write("[6] heap ok\n");
     timer_init(0);
     serial_write("[7] timer ok\n");
-    if (arm64_init_framebuffer(arg0) == 0) {
+    fdt_addr = locate_fdt_blob(arg0);
+    if (arm64_init_framebuffer(fdt_addr) == 0) {
         serial_write("[8] framebuffer ok\n");
     } else {
         serial_write("[8] framebuffer skipped\n");
@@ -202,11 +230,12 @@ void arm64_boot_main(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3)
     serial_write("\nNumOS ARM64 bring up\n");
     serial_write("Target: QEMU virt\n");
     banner_hex_line("Boot arg: ", arg0);
+    banner_hex_line("FDT: ", fdt_addr);
     banner_hex_line("Core: ", arm64_core_id());
     banner_hex_line("EL: ", arm64_exception_level());
     banner_hex_line("CNTFRQ: ", arm64_counter_frequency());
     banner_dec_line("Uptime ms: ", timer_get_uptime_ms());
-    if (fdt_get_bootargs(arg0, &bootargs) == 0) {
+    if (fdt_get_bootargs(fdt_addr, &bootargs) == 0) {
         banner_text_line("Bootargs: ", bootargs.text);
     } else {
         bootargs.text[0] = '\0';
@@ -216,7 +245,7 @@ void arm64_boot_main(uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3)
     banner_text_line("Init path: ", init_path);
 
     struct numos_fdt_initrd initrd;
-    if (fdt_find_initrd(arg0, &initrd) == 0) {
+    if (fdt_find_initrd(fdt_addr, &initrd) == 0) {
         banner_hex_line("Initrd start: ", initrd.start);
         banner_hex_line("Initrd end: ", initrd.end);
         ramdisk_init(initrd.start, initrd.end - initrd.start);

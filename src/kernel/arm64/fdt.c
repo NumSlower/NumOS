@@ -71,11 +71,31 @@ static int copy_text(char *dst, size_t cap, const uint8_t *src, size_t len) {
     return (n > 0) ? 0 : -1;
 }
 
+int fdt_is_valid_blob(uint64_t fdt_addr) {
+    if (!fdt_addr) return 0;
+
+    const struct fdt_header *hdr = (const struct fdt_header *)(uintptr_t)fdt_addr;
+    if (be32(&hdr->magic) != FDT_MAGIC) return 0;
+
+    uint32_t totalsize = be32(&hdr->totalsize);
+    uint32_t off_struct = be32(&hdr->off_dt_struct);
+    uint32_t size_struct = be32(&hdr->size_dt_struct);
+    uint32_t off_strings = be32(&hdr->off_dt_strings);
+    uint32_t size_strings = be32(&hdr->size_dt_strings);
+
+    if (totalsize < sizeof(struct fdt_header)) return 0;
+    if (totalsize > (2u * 1024u * 1024u)) return 0;
+    if (off_struct >= totalsize || off_strings >= totalsize) return 0;
+    if (size_struct > totalsize - off_struct) return 0;
+    if (size_strings > totalsize - off_strings) return 0;
+    return 1;
+}
+
 int fdt_find_initrd(uint64_t fdt_addr, struct numos_fdt_initrd *out) {
     if (!fdt_addr || !out) return -1;
 
     const struct fdt_header *hdr = (const struct fdt_header *)(uintptr_t)fdt_addr;
-    if (be32(&hdr->magic) != FDT_MAGIC) return -1;
+    if (!fdt_is_valid_blob(fdt_addr)) return -1;
 
     const uint8_t *blob = (const uint8_t *)(uintptr_t)fdt_addr;
     uint32_t off_struct = be32(&hdr->off_dt_struct);
@@ -154,7 +174,7 @@ int fdt_get_bootargs(uint64_t fdt_addr, struct numos_fdt_bootargs *out) {
     if (!fdt_addr || !out) return -1;
 
     const struct fdt_header *hdr = (const struct fdt_header *)(uintptr_t)fdt_addr;
-    if (be32(&hdr->magic) != FDT_MAGIC) return -1;
+    if (!fdt_is_valid_blob(fdt_addr)) return -1;
 
     const uint8_t *blob = (const uint8_t *)(uintptr_t)fdt_addr;
     uint32_t off_struct = be32(&hdr->off_dt_struct);
@@ -227,7 +247,7 @@ int fdt_find_simple_framebuffer(uint64_t fdt_addr,
     if (!fdt_addr || !out) return -1;
 
     const struct fdt_header *hdr = (const struct fdt_header *)(uintptr_t)fdt_addr;
-    if (be32(&hdr->magic) != FDT_MAGIC) return -1;
+    if (!fdt_is_valid_blob(fdt_addr)) return -1;
 
     const uint8_t *blob = (const uint8_t *)(uintptr_t)fdt_addr;
     uint32_t off_struct = be32(&hdr->off_dt_struct);
