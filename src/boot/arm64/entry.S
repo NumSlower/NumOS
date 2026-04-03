@@ -17,11 +17,14 @@ _start:
     b .Lsecondary_wait
 
 .Lboot_cpu:
-    adr x5, _boot_stack_top
+    adrp x5, _boot_stack_top
+    add x5, x5, :lo12:_boot_stack_top
     mov sp, x5
 
-    adr x6, _bss_start
-    adr x7, _bss_end
+    adrp x6, _bss_start
+    add x6, x6, :lo12:_bss_start
+    adrp x7, _bss_end
+    add x7, x7, :lo12:_bss_end
 .Lclear_bss:
     cmp x6, x7
     b.hs .Lcall_c
