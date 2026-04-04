@@ -37,8 +37,11 @@
 #define DEFAULT_INIT_PATH "/bin/shell.elf"
 #define DEFAULT_GFX_MODE "vesa"
 #define MAX_KERNEL_VERSION 9999u
+#define URL_BUF_SIZE       256u
 #define URL_PATH_BUF_SIZE 192u
-#define HTTP_TIMEOUT_MS   5000u
+#define HTTP_TIMEOUT_MS   10000u
+#define HTTP_REDIRECT_LIMIT 4
+#define HTTP_REQUEST_RETRY_LIMIT 2
 
 #define MAX_STAGE_FILES 96
 #define FILE_POOL_BYTES (8u * 1024u * 1024u)
@@ -46,6 +49,13 @@
 
 #define FAT32_ATTR_ARCHIVE   0x20u
 #define FAT32_EOC            0x0FFFFFFFu
+
+#define NET_ERR_GENERIC        -1
+#define NET_ERR_UNAVAILABLE    -2
+#define NET_ERR_TIMEOUT        -3
+#define NET_ERR_NOT_CONFIGURED -4
+#define NET_ERR_INVALID        -5
+#define NET_ERR_CLOSED         -6
 
 /* Each staged file records the short FAT name and the payload location. */
 struct staged_file {
@@ -61,6 +71,8 @@ struct remote_kernel_url {
     uint8_t remote_ip[4];
     uint16_t remote_port;
     uint8_t secure;
+    uint8_t has_explicit_port;
+    uint8_t uses_host_update_port;
     char ip_text[16];
     char host[64];
     char path[URL_PATH_BUF_SIZE];
@@ -89,6 +101,7 @@ static uint8_t zero_buffer[BYTES_PER_CLUSTER];
 static uint8_t transfer_buffer[ATA_MAX_TRANSFER_SECTORS * BYTES_PER_SECTOR];
 
 static int append_char(char *buf, size_t cap, size_t *pos, char c);
+static int append_text(char *buf, size_t cap, size_t *pos, const char *text);
 static int write_file_bytes(const char *path, const char *data, size_t len);
 static int copy_file(const char *src_path, const char *dst_path);
 
@@ -302,6 +315,7 @@ static int parse_remote_kernel_url(const char *text, struct remote_kernel_url *o
         memcpy(port_text, colon + 1, port_len);
         port_text[port_len] = '\0';
         if (!parse_port_text(port_text, &out->remote_port)) return -1;
+        out->has_explicit_port = 1u;
     }
 
     if (*path == '\0') {
@@ -314,6 +328,17 @@ static int parse_remote_kernel_url(const char *text, struct remote_kernel_url *o
     }
     out->path[sizeof(out->path) - 1] = '\0';
 
+    if (!out->secure &&
+        !out->has_explicit_port &&
+        out->remote_ip[0] == 10u &&
+        out->remote_ip[1] == 0u &&
+        out->remote_ip[2] == 2u &&
+        out->remote_ip[3] == 2u &&
+        starts_with_text(out->path, "/downloads/")) {
+        out->remote_port = 8080u;
+        out->uses_host_update_port = 1u;
+    }
+
     strncpy(out->host, out->ip_text, sizeof(out->host) - 1);
     out->host[sizeof(out->host) - 1] = '\0';
     if (!is_default_remote_port(out)) {
@@ -325,6 +350,128 @@ static int parse_remote_kernel_url(const char *text, struct remote_kernel_url *o
     }
 
     return 0;
+}
+
+static int build_remote_url_text(const struct remote_kernel_url *url,
+                                 const char *path,
+                                 char *out,
+                                 size_t cap) {
+    size_t pos = 0;
+
+    if (!url || !path || !out || cap == 0 || path[0] != '/') return -1;
+    out[0] = '\0';
+
+    if (append_text(out, cap, &pos, url->secure ? "https://" : "http://") != 0) return -1;
+    if (append_text(out, cap, &pos, url->ip_text) != 0) return -1;
+    if (!is_default_remote_port(url)) {
+        if (append_char(out, cap, &pos, ':') != 0) return -1;
+        if (append_port_text(out, cap, &pos, url->remote_port) != 0) return -1;
+    }
+    if (append_text(out, cap, &pos, path) != 0) return -1;
+    return 0;
+}
+
+static int dirname_url_path(const char *path, char *out, size_t cap) {
+    size_t end = 0;
+    size_t last_slash = 0;
+
+    if (!path || !out || cap == 0) return -1;
+    while (path[end] && path[end] != '?' && path[end] != '#') {
+        if (path[end] == '/') last_slash = end;
+        end++;
+    }
+
+    if (end == 0 || path[0] != '/') {
+        if (cap < 2) return -1;
+        out[0] = '/';
+        out[1] = '\0';
+        return 0;
+    }
+
+    if (last_slash == 0) {
+        if (cap < 2) return -1;
+        out[0] = '/';
+        out[1] = '\0';
+        return 0;
+    }
+
+    if (last_slash + 2 > cap) return -1;
+    memcpy(out, path, last_slash + 1);
+    out[last_slash + 1] = '\0';
+    return 0;
+}
+
+static int path_without_query(const char *path, char *out, size_t cap) {
+    size_t len = 0;
+
+    if (!path || !out || cap == 0) return -1;
+    while (path[len] && path[len] != '?' && path[len] != '#') len++;
+    if (len == 0 || len >= cap) return -1;
+    memcpy(out, path, len);
+    out[len] = '\0';
+    return 0;
+}
+
+static int resolve_remote_redirect_location(const struct remote_kernel_url *base,
+                                            const char *location,
+                                            char *out,
+                                            size_t cap) {
+    char path[URL_PATH_BUF_SIZE];
+    size_t pos = 0;
+
+    if (!base || !location || !location[0] || !out || cap == 0) return -1;
+
+    if (is_http_url(location)) {
+        strncpy(out, location, cap - 1);
+        out[cap - 1] = '\0';
+        return location[strlen(out)] ? -1 : 0;
+    }
+
+    if (location[0] == '/') return build_remote_url_text(base, location, out, cap);
+
+    if (location[0] == '?') {
+        if (path_without_query(base->path, path, sizeof(path)) != 0) return -1;
+        pos = strlen(path);
+        if (pos + strlen(location) + 1 > sizeof(path)) return -1;
+        memcpy(path + pos, location, strlen(location) + 1);
+        return build_remote_url_text(base, path, out, cap);
+    }
+
+    if (dirname_url_path(base->path, path, sizeof(path)) != 0) return -1;
+    pos = strlen(path);
+    if (pos + strlen(location) + 1 > sizeof(path)) return -1;
+    memcpy(path + pos, location, strlen(location) + 1);
+    return build_remote_url_text(base, path, out, cap);
+}
+
+static void write_network_error_reason(int64_t rc) {
+    if (rc == NET_ERR_TIMEOUT) {
+        write_str("install: network request timed out\n");
+        return;
+    }
+    if (rc == NET_ERR_UNAVAILABLE) {
+        write_str("install: network driver is unavailable\n");
+        return;
+    }
+    if (rc == NET_ERR_NOT_CONFIGURED) {
+        write_str("install: network is not configured\n");
+        return;
+    }
+    if (rc == NET_ERR_INVALID) {
+        write_str("install: invalid network request\n");
+        return;
+    }
+    if (rc == NET_ERR_CLOSED) {
+        write_str("install: remote host closed the TCP connection\n");
+        return;
+    }
+    write_str("install: network request failed\n");
+}
+
+static int request_should_retry(int64_t rc) {
+    return rc == NET_ERR_TIMEOUT ||
+           rc == NET_ERR_GENERIC ||
+           rc == NET_ERR_CLOSED;
 }
 
 static int ensure_network_ready(void) {
@@ -345,47 +492,96 @@ static int ensure_network_ready(void) {
 static int fetch_remote_kernel_bytes(const char *url_text,
                                      const uint8_t **out_data,
                                      size_t *out_len) {
-    struct remote_kernel_url url;
-    struct numos_net_http_request request;
-    struct numos_net_http_result result;
-    int64_t rc;
+    char current[URL_BUF_SIZE];
+    char next[URL_BUF_SIZE];
 
     if (!url_text || !out_data || !out_len) return -1;
     if (ensure_network_ready() != 0) return -1;
-    if (parse_remote_kernel_url(url_text, &url) != 0) {
-        write_str("install: unsupported kernel URL\n");
+
+    strncpy(current, url_text, sizeof(current) - 1);
+    current[sizeof(current) - 1] = '\0';
+    if (url_text[strlen(current)] != '\0') {
+        write_str("install: kernel URL is too long\n");
         return -1;
     }
 
-    memset(&request, 0, sizeof(request));
-    memset(&result, 0, sizeof(result));
-    memcpy(request.remote_ip, url.remote_ip, sizeof(url.remote_ip));
-    request.remote_port = url.remote_port;
-    request.secure = url.secure;
-    request.flags = url.secure ? NUMOS_NET_FLAG_INSECURE : 0u;
-    request.timeout_ms = HTTP_TIMEOUT_MS;
-    strncpy(request.host, url.host, sizeof(request.host) - 1);
-    strncpy(request.path, url.path, sizeof(request.path) - 1);
+    for (int redirect = 0; redirect <= HTTP_REDIRECT_LIMIT; redirect++) {
+        struct remote_kernel_url url;
+        struct numos_net_http_request request;
+        struct numos_net_http_result result;
+        int64_t rc = 0;
 
-    rc = sys_net_http_get(&request, file_pool, sizeof(file_pool), &result);
-    if (rc < 0) {
-        write_str("install: kernel download failed\n");
-        return -1;
-    }
-    if (result.truncated || (size_t)rc > sizeof(file_pool)) {
-        write_str("install: kernel download is too large for staging memory\n");
-        return -1;
-    }
-    if (result.status_code < 200u || result.status_code >= 300u) {
+        if (parse_remote_kernel_url(current, &url) != 0) {
+            write_str("install: unsupported kernel URL\n");
+            return -1;
+        }
+        if (url.uses_host_update_port) {
+            write_str("install: using host update port 8080\n");
+        }
+
+        for (int attempt = 0; attempt <= HTTP_REQUEST_RETRY_LIMIT; attempt++) {
+            memset(&request, 0, sizeof(request));
+            memset(&result, 0, sizeof(result));
+            memcpy(request.remote_ip, url.remote_ip, sizeof(url.remote_ip));
+            request.remote_port = url.remote_port;
+            request.secure = url.secure;
+            request.flags = url.secure ? NUMOS_NET_FLAG_INSECURE : 0u;
+            request.timeout_ms = HTTP_TIMEOUT_MS;
+            strncpy(request.host, url.host, sizeof(request.host) - 1);
+            strncpy(request.path, url.path, sizeof(request.path) - 1);
+
+            rc = sys_net_http_get(&request, file_pool, sizeof(file_pool), &result);
+            if (rc >= 0) break;
+            if (attempt == HTTP_REQUEST_RETRY_LIMIT || !request_should_retry(rc)) {
+                write_network_error_reason(rc);
+                return -1;
+            }
+
+            write_str("install: kernel download retry ");
+            write_dec((uint64_t)(attempt + 2));
+            write_str("/");
+            write_dec((uint64_t)(HTTP_REQUEST_RETRY_LIMIT + 1));
+            write_str("\n");
+        }
+
+        if (result.truncated || (size_t)rc > sizeof(file_pool)) {
+            write_str("install: kernel download is too large for staging memory\n");
+            return -1;
+        }
+
+        if (result.status_code >= 200u && result.status_code < 300u) {
+            *out_data = file_pool;
+            *out_len = (size_t)rc;
+            return 0;
+        }
+
+        if (result.status_code >= 300u && result.status_code < 400u &&
+            result.location[0] != '\0') {
+            if (redirect == HTTP_REDIRECT_LIMIT) {
+                write_str("install: too many kernel URL redirects\n");
+                return -1;
+            }
+            if (resolve_remote_redirect_location(&url, result.location,
+                                                 next, sizeof(next)) != 0) {
+                write_str("install: bad kernel redirect target\n");
+                return -1;
+            }
+            write_str("install: following redirect to ");
+            write_str(next);
+            write_str("\n");
+            strncpy(current, next, sizeof(current) - 1);
+            current[sizeof(current) - 1] = '\0';
+            continue;
+        }
+
         write_str("install: HTTP status ");
         write_dec(result.status_code);
         write_str("\n");
         return -1;
     }
 
-    *out_data = file_pool;
-    *out_len = (size_t)rc;
-    return 0;
+    write_str("install: too many kernel URL redirects\n");
+    return -1;
 }
 
 static int stage_kernel_from_source(const char *src_path, const char *dst_path) {
@@ -773,21 +969,40 @@ static int build_kernel_path(unsigned version, char *out, size_t cap) {
     return 0;
 }
 
-static int find_highest_kernel_version(void) {
+static int select_kernel_install_path(char *out, size_t cap, int *reused_empty_slot) {
     struct fat32_dirent entries[64];
-    int highest = 0;
+    int reusable_version = 0;
+    int highest_version = 0;
     int64_t count = sys_listdir("/boot", entries, 64);
 
     if (count < 0) return -1;
 
     for (int i = 0; i < count; i++) {
         int version;
+
         if (entries[i].attr & FAT32_ATTR_DIRECTORY) continue;
         version = parse_kernel_version(entries[i].name);
-        if (version > highest) highest = version;
+        if (version <= 0) continue;
+
+        if (entries[i].size == 0) {
+            if (reusable_version == 0 || version < reusable_version) {
+                reusable_version = version;
+            }
+            continue;
+        }
+
+        if (version > highest_version) highest_version = version;
     }
 
-    return highest;
+    if (reused_empty_slot) *reused_empty_slot = 0;
+
+    if (reusable_version > 0) {
+        if (reused_empty_slot) *reused_empty_slot = 1;
+        return build_kernel_path((unsigned)reusable_version, out, cap);
+    }
+
+    if (highest_version >= (int)MAX_KERNEL_VERSION) return -1;
+    return build_kernel_path((unsigned)(highest_version + 1), out, cap);
 }
 
 static uint32_t sectors_for_bytes(uint32_t size) {
@@ -1085,8 +1300,7 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
     char fallback_gfx[16];
     char new_kernel_path[64];
     char fallback_kernel[64];
-    int highest_version;
-    int next_version;
+    int reused_empty_slot = 0;
 
     if (!src_path || src_path[0] == '\0') {
         write_str("install: missing kernel path\n");
@@ -1102,19 +1316,9 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
         return 1;
     }
 
-    highest_version = find_highest_kernel_version();
-    if (highest_version < 0) {
-        write_str("install: failed to scan /boot\n");
-        return 1;
-    }
-
-    next_version = highest_version + 1;
-    if (next_version <= 0 || next_version > (int)MAX_KERNEL_VERSION) {
-        write_str("install: kernel version space exhausted\n");
-        return 1;
-    }
-    if (build_kernel_path((unsigned)next_version, new_kernel_path, sizeof(new_kernel_path)) != 0) {
-        write_str("install: failed to build kernel path\n");
+    if (select_kernel_install_path(new_kernel_path, sizeof(new_kernel_path),
+                                   &reused_empty_slot) != 0) {
+        write_str("install: failed to choose kernel path in /boot\n");
         return 1;
     }
 
@@ -1154,6 +1358,9 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
     write_str(" -> ");
     write_str(new_kernel_path);
     write_str("\n");
+    if (reused_empty_slot) {
+        write_str("install: reusing empty kernel slot from an earlier failed download\n");
+    }
 
     if (stage_kernel_from_source(src_path, new_kernel_path) != 0) {
         write_str("install: failed to stage new kernel into /boot\n");

@@ -1304,10 +1304,15 @@ int net_tls_probe_ipv4(const uint8_t addr[NET_IPV4_ADDR_LEN],
 }
 
 static void tls_parse_http_headers(const uint8_t *data, size_t len, struct net_http_result *out) {
+    size_t header_end = 0;
+
+    if (!data || !out || len == 0) return;
+
     for (size_t i = 0; i + 3 < len; i++) {
         if (data[i] == '\r' && data[i + 1] == '\n' &&
             data[i + 2] == '\r' && data[i + 3] == '\n') {
             out->body_offset = (uint32_t)(i + 4);
+            header_end = i;
             break;
         }
     }
@@ -1315,13 +1320,85 @@ static void tls_parse_http_headers(const uint8_t *data, size_t len, struct net_h
 
     char status_line[32];
     size_t i = 0;
-    while (i < sizeof(status_line) - 1 && i < len && data[i] != '\r' && data[i] != '\n') {
+    while (i < sizeof(status_line) - 1 && i < header_end &&
+           data[i] != '\r' && data[i] != '\n') {
         status_line[i] = (char)data[i];
         i++;
     }
     status_line[i] = '\0';
     const char *space = strstr(status_line, " ");
     if (space) out->status_code = (uint16_t)tls_parse_status_code(space + 1);
+
+    size_t line_start = 0;
+    while (line_start < header_end && data[line_start] != '\n') line_start++;
+    if (line_start < header_end && data[line_start] == '\n') line_start++;
+
+    while (line_start < header_end) {
+        size_t line_end = line_start;
+        size_t colon = 0;
+        int have_colon = 0;
+
+        while (line_end < header_end && data[line_end] != '\r' && data[line_end] != '\n') {
+            if (!have_colon && data[line_end] == ':') {
+                colon = line_end;
+                have_colon = 1;
+            }
+            line_end++;
+        }
+
+        if (have_colon && colon > line_start) {
+            const uint8_t *value = data + colon + 1;
+            size_t value_len = line_end - colon - 1;
+            size_t start = 0;
+            size_t end = value_len;
+
+            while (start < value_len &&
+                   (value[start] == ' ' || value[start] == '\t')) {
+                start++;
+            }
+            while (end > start &&
+                   (value[end - 1] == ' ' || value[end - 1] == '\t')) {
+                end--;
+            }
+
+            if ((colon - line_start) == 8 &&
+                (data[line_start + 0] == 'L' || data[line_start + 0] == 'l') &&
+                (data[line_start + 1] == 'o' || data[line_start + 1] == 'O') &&
+                (data[line_start + 2] == 'c' || data[line_start + 2] == 'C') &&
+                (data[line_start + 3] == 'a' || data[line_start + 3] == 'A') &&
+                (data[line_start + 4] == 't' || data[line_start + 4] == 'T') &&
+                (data[line_start + 5] == 'i' || data[line_start + 5] == 'I') &&
+                (data[line_start + 6] == 'o' || data[line_start + 6] == 'O') &&
+                (data[line_start + 7] == 'n' || data[line_start + 7] == 'N')) {
+                size_t copy = end - start;
+                if (copy >= sizeof(out->location)) copy = sizeof(out->location) - 1;
+                memcpy(out->location, value + start, copy);
+                out->location[copy] = '\0';
+            } else if ((colon - line_start) == 12 &&
+                       (data[line_start + 0] == 'C' || data[line_start + 0] == 'c') &&
+                       (data[line_start + 1] == 'o' || data[line_start + 1] == 'O') &&
+                       (data[line_start + 2] == 'n' || data[line_start + 2] == 'N') &&
+                       (data[line_start + 3] == 't' || data[line_start + 3] == 'T') &&
+                       (data[line_start + 4] == 'e' || data[line_start + 4] == 'E') &&
+                       (data[line_start + 5] == 'n' || data[line_start + 5] == 'N') &&
+                       (data[line_start + 6] == 't' || data[line_start + 6] == 'T') &&
+                       data[line_start + 7] == '-' &&
+                       (data[line_start + 8] == 'T' || data[line_start + 8] == 't') &&
+                       (data[line_start + 9] == 'y' || data[line_start + 9] == 'Y') &&
+                       (data[line_start + 10] == 'p' || data[line_start + 10] == 'P') &&
+                       (data[line_start + 11] == 'e' || data[line_start + 11] == 'E')) {
+                size_t copy = end - start;
+                if (copy >= sizeof(out->content_type)) copy = sizeof(out->content_type) - 1;
+                memcpy(out->content_type, value + start, copy);
+                out->content_type[copy] = '\0';
+            }
+        }
+
+        while (line_end < header_end && (data[line_end] == '\r' || data[line_end] == '\n')) {
+            line_end++;
+        }
+        line_start = line_end;
+    }
 }
 
 ssize_t net_http_get_ipv4(const struct net_http_request *request,

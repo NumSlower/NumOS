@@ -96,15 +96,9 @@ void vga_set_output_hook(vga_output_hook_t hook) {
  */
 uint8_t vga_entry_color(vga_color_t fg, vga_color_t bg) {
     if (bg == VGA_COLOR_BLACK) {
-        if (fg == VGA_COLOR_WHITE) {
-            return (uint8_t)((uint8_t)fg | ((uint8_t)bg << 4));
-        }
-        bg = VGA_COLOR_WHITE;
-        if (fg == VGA_COLOR_WHITE ||
-            fg == VGA_COLOR_LIGHT_GREY ||
-            fg == VGA_COLOR_DARK_GREY) {
-            fg = VGA_COLOR_BLACK;
-        }
+        fg = VGA_COLOR_WHITE;
+    } else if (bg == VGA_COLOR_WHITE) {
+        fg = VGA_COLOR_BLACK;
     }
     return (uint8_t)((uint8_t)fg | ((uint8_t)bg << 4));
 }
@@ -156,7 +150,7 @@ void vga_disable_blink(void) {
 void vga_init(void) {
     vga_row    = 0;
     vga_column = 0;
-    vga_text_color = vga_entry_color(VGA_COLOR_BLACK, VGA_COLOR_WHITE);
+    vga_text_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
     vga_buffer = (uint16_t *)VGA_MEMORY;
     scrollback_current_line = 0;
     scroll_offset      = 0;
@@ -392,7 +386,7 @@ static void vga_redraw_from_scrollback(void) {
     /* Render position indicator in the top-right when scrolled back */
     if (scroll_offset > 0) {
         uint8_t indicator_color =
-            vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+            vga_entry_color(VGA_COLOR_BLACK, VGA_COLOR_WHITE);
 
         /* Build " SCROLL <line> " string */
         char   indicator[24];
@@ -497,7 +491,7 @@ void vga_enter_scroll_mode(void) {
     keyboard_flush_buffer();
  
     /* Draw help bar at the bottom */
-    uint8_t    help_color = vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+    uint8_t    help_color = vga_entry_color(VGA_COLOR_BLACK, VGA_COLOR_WHITE);
     const char *help_text = " UP/DOWN Arrows or W/S: Scroll | Q: Quit ";
     size_t      help_len  = strlen(help_text);
     size_t      start_x   = (VGA_WIDTH > help_len) ? (VGA_WIDTH - help_len) / 2 : 0;

@@ -18,7 +18,7 @@
 #define FB_TRANSPARENT  0xFFFFFFFFU
 
 #define FB_COLOR(r,g,b) (((uint32_t)(r)<<16)|((uint32_t)(g)<<8)|(uint32_t)(b))
-#define FB_BLACK        FB_COLOR(  0,  0,  0)
+#define FB_BLACK        FB_COLOR(0,0,0)
 #define FB_WHITE        FB_COLOR(255,255,255)
 #define FB_RED          FB_COLOR(220, 50, 50)
 #define FB_GREEN        FB_COLOR( 50,210, 80)
@@ -27,23 +27,23 @@
 #define FB_YELLOW       FB_COLOR(230,210, 50)
 #define FB_GREY         FB_COLOR(120,130,150)
 
-#define FB_TERM_BG      FB_WHITE
-#define FB_TERM_FG      FB_BLACK
-#define FB_TERM_DIM     FB_COLOR( 90, 90, 90)
-#define FB_TERM_ACCENT  FB_COLOR( 20, 70,180)
-#define FB_TERM_SUCCESS FB_COLOR( 20,140, 50)
-#define FB_TERM_WARN    FB_COLOR(160,110, 20)
-#define FB_TERM_ERR     FB_COLOR(180, 30, 30)
-#define FB_HDR_BG       FB_BLACK
+#define FB_TERM_BG      FB_BLACK
+#define FB_TERM_FG      FB_WHITE
+#define FB_TERM_DIM     FB_GREY
+#define FB_TERM_ACCENT  FB_WHITE
+#define FB_TERM_SUCCESS FB_WHITE
+#define FB_TERM_WARN    FB_WHITE
+#define FB_TERM_ERR     FB_WHITE
+#define FB_HDR_BG       FB_WHITE
 
-#define FB_PANEL    FB_COLOR( 18, 20, 36)
-#define FB_BORDER   FB_COLOR( 40, 50, 90)
-#define FB_TASKBAR  FB_COLOR( 14, 16, 32)
-#define FB_DIM      FB_COLOR( 80, 90,110)
-#define FB_ACCENT   FB_COLOR( 80,140,255)
-#define FB_SUCCESS  FB_COLOR( 60,210,100)
-#define FB_TEXT     FB_COLOR(200,215,235)
-#define FB_TITLE_BG FB_COLOR( 20, 40, 80)
+#define FB_PANEL    FB_BLACK
+#define FB_BORDER   FB_GREY
+#define FB_TASKBAR  FB_BLACK
+#define FB_DIM      FB_GREY
+#define FB_ACCENT   FB_WHITE
+#define FB_SUCCESS  FB_WHITE
+#define FB_TEXT     FB_WHITE
+#define FB_TITLE_BG FB_BLACK
 
 #define FB_SCALE_1      1
 #define FB_SCALE_2      2

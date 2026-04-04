@@ -687,6 +687,7 @@ static struct fat32_dir_entry *find_entry(const char *path,
     if (comp_len > 0) {
         component[comp_len] = '\0';
         if (fat32_format_name(component, formatted_name) != 0) return NULL;
+        if (parent_cluster) *parent_cluster = current_cluster;
         return find_entry_in_cluster(current_cluster, formatted_name, entry_index);
     }
 
