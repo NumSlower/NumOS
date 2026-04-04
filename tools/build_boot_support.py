@@ -8,6 +8,7 @@ Outputs under the stage root:
 - boot/kern0001.bin: initial immutable kernel artifact
 - boot/boot.cfg: default and fallback kernel selection
 - boot/status.cfg: pending or success boot state
+- boot/grub/grub.cfg: the normal-mode GRUB boot script
 - boot/grub/grubenv: GRUB environment block for one-shot pending boots
 """
 
@@ -27,6 +28,7 @@ DEFAULT_PARTITION_START_LBA = 2048
 DEFAULT_KERNEL_BASENAME = "kern0001.bin"
 DEFAULT_BOOT_CFG_NAME = "boot.cfg"
 DEFAULT_STATUS_CFG_NAME = "status.cfg"
+DEFAULT_GRUB_CFG_NAME = "grub.cfg"
 DEFAULT_GRUBENV_NAME = "grubenv"
 DEFAULT_INIT_PATH = "/bin/shell.elf"
 DEFAULT_GFX_MODE = "vesa"
@@ -35,8 +37,19 @@ GRUB_MODULES = [
     "biosdisk",
     "part_msdos",
     "fat",
+    # NumOS keeps the real boot logic in /boot/grub/grub.cfg, so every
+    # command used there must live in the core image.
+    "normal",
+    "configfile",
+    "test",
+    "echo",
     "loadenv",
     "multiboot2",
+    "all_video",
+    "vbe",
+    "vga",
+    "gfxterm",
+    "font",
 ]
 
 
@@ -68,7 +81,17 @@ def write_text_file(path: str, text: str) -> None:
 def write_embedded_config(path: str) -> None:
     script = """set timeout=0
 set default=0
-set root=(hd0,msdos1)
+set root=hd0,msdos1
+set prefix=($root)/boot/grub
+terminal_output console
+configfile $prefix/grub.cfg
+"""
+    write_text_file(path, script)
+
+
+def write_runtime_grub_cfg(path: str) -> None:
+    script = """set timeout=0
+set default=0
 terminal_output console
 
 set numos_default_kernel="/boot/kern0001.bin"
@@ -199,12 +222,14 @@ def main() -> int:
     kernel_out = os.path.join(boot_dir, DEFAULT_KERNEL_BASENAME)
     boot_cfg_out = os.path.join(boot_dir, DEFAULT_BOOT_CFG_NAME)
     status_cfg_out = os.path.join(boot_dir, DEFAULT_STATUS_CFG_NAME)
+    grub_cfg_out = os.path.join(grub_dir, DEFAULT_GRUB_CFG_NAME)
     grubenv_out = os.path.join(grub_dir, DEFAULT_GRUBENV_NAME)
 
     shutil.copyfile(args.boot_img, grub_boot_out)
     shutil.copyfile(args.kernel, kernel_out)
     write_boot_cfg(boot_cfg_out)
     write_status_cfg(status_cfg_out)
+    write_runtime_grub_cfg(grub_cfg_out)
     create_grubenv(grubenv_out)
 
     with tempfile.TemporaryDirectory(prefix="numos-grub-") as tmpdir:
@@ -241,6 +266,7 @@ def main() -> int:
     print(f"[BOOT] {DEFAULT_KERNEL_BASENAME}: {os.path.getsize(kernel_out)} bytes")
     print(f"[BOOT] {DEFAULT_BOOT_CFG_NAME}: {os.path.getsize(boot_cfg_out)} bytes")
     print(f"[BOOT] {DEFAULT_STATUS_CFG_NAME}: {os.path.getsize(status_cfg_out)} bytes")
+    print(f"[BOOT] {DEFAULT_GRUB_CFG_NAME}: {os.path.getsize(grub_cfg_out)} bytes")
     print(f"[BOOT] {DEFAULT_GRUBENV_NAME}: {os.path.getsize(grubenv_out)} bytes")
     return 0
 

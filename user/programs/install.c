@@ -1274,6 +1274,12 @@ static int install_to_primary_disk(void) {
         return 1;
     }
 
+    if (find_staged_file(boot_grub_files, boot_grub_count, "GRUB.CFG") < 0 &&
+        find_staged_file(boot_grub_files, boot_grub_count, "grub.cfg") < 0) {
+        write_str("install: missing /boot/grub/grub.cfg\n");
+        return 1;
+    }
+
     grub_core_sectors = sectors_for_bytes(run_files[core_idx].size);
     if (grub_core_sectors >= PARTITION_START_LBA) {
         write_str("install: GRUB core image does not fit before partition 1\n");
@@ -1408,23 +1414,6 @@ static int install_to_primary_disk(void) {
     if (next_cluster > ROOT_CLUSTER + ((FS_TOTAL_SECTORS - DATA_START_SECTOR) / SECTORS_PER_CLUSTER)) {
         write_str("install: filesystem layout overflow\n");
         return 1;
-    }
-
-    {
-        uint64_t data_end_lba = partition_lba + DATA_START_SECTOR +
-                                ((uint64_t)(next_cluster - 2u) * SECTORS_PER_CLUSTER);
-        uint64_t partition_end_lba = partition_lba + FS_TOTAL_SECTORS;
-        write_str("install: clearing remaining free space\n");
-        while (data_end_lba < partition_end_lba) {
-            uint32_t chunk = (partition_end_lba - data_end_lba > ATA_MAX_TRANSFER_SECTORS)
-                           ? ATA_MAX_TRANSFER_SECTORS
-                           : (uint32_t)(partition_end_lba - data_end_lba);
-            if (sys_disk_write(data_end_lba, transfer_buffer, chunk) < 0) {
-                write_str("install: failed to clear trailing sectors\n");
-                return 1;
-            }
-            data_end_lba += chunk;
-        }
     }
 
     write_str("install: done\n");

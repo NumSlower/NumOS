@@ -897,20 +897,33 @@ static int tls_recv_record(struct tls_session *session,
     uint8_t *iv = buf;
     uint8_t *cipher = buf + TLS_AES_BLOCK_LEN;
     size_t cipher_len = *len - TLS_AES_BLOCK_LEN;
-    uint8_t mac_input[13 + TLS_MAX_RECORD_LEN];
+    uint8_t *mac_input = (uint8_t *)kmalloc(13u + TLS_MAX_RECORD_LEN);
     uint8_t mac[TLS_SHA256_LEN];
 
-    if ((cipher_len % TLS_AES_BLOCK_LEN) != 0) return 0;
+    if (!mac_input) return 0;
+    if ((cipher_len % TLS_AES_BLOCK_LEN) != 0) {
+        kfree(mac_input);
+        return 0;
+    }
     tls_aes_cbc_decrypt(&session->server_aes, iv, cipher, cipher_len);
 
     uint8_t pad_byte = cipher[cipher_len - 1];
     size_t padding = (size_t)pad_byte + 1u;
-    if (padding > cipher_len) return 0;
+    if (padding > cipher_len) {
+        kfree(mac_input);
+        return 0;
+    }
     for (size_t i = 0; i < padding; i++) {
-        if (cipher[cipher_len - 1u - i] != pad_byte) return 0;
+        if (cipher[cipher_len - 1u - i] != pad_byte) {
+            kfree(mac_input);
+            return 0;
+        }
     }
     cipher_len -= padding;
-    if (cipher_len < TLS_SHA256_LEN) return 0;
+    if (cipher_len < TLS_SHA256_LEN) {
+        kfree(mac_input);
+        return 0;
+    }
 
     size_t plain_len = cipher_len - TLS_SHA256_LEN;
     tls_write_be64(mac_input, session->read_seq);
@@ -920,11 +933,15 @@ static int tls_recv_record(struct tls_session *session,
     memcpy(mac_input + 13, cipher, plain_len);
     tls_hmac_sha256(session->server_mac_key, TLS_MAC_KEY_LEN,
                     mac_input, 13 + plain_len, mac);
-    if (memcmp(mac, cipher + plain_len, TLS_SHA256_LEN) != 0) return 0;
+    if (memcmp(mac, cipher + plain_len, TLS_SHA256_LEN) != 0) {
+        kfree(mac_input);
+        return 0;
+    }
 
     session->read_seq++;
     memmove(buf, cipher, plain_len);
     *len = plain_len;
+    kfree(mac_input);
     return 1;
 }
 
@@ -1036,7 +1053,7 @@ static int tls_setup_keys(struct tls_session *session, const uint8_t premaster[T
 static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     uint8_t *transcript = (uint8_t *)kmalloc(TLS_MAX_TRANSCRIPT_LEN);
     uint8_t *cert_copy = (uint8_t *)kmalloc(TLS_MAX_CERT_LEN);
-    uint8_t record_buf[TLS_MAX_RECORD_LEN];
+    uint8_t *record_buf = (uint8_t *)kmalloc(TLS_MAX_RECORD_LEN);
     uint8_t client_hello[320];
     uint8_t premaster[TLS_MASTER_SECRET_LEN];
     uint8_t encrypted_premaster[256];
@@ -1051,9 +1068,10 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     size_t modulus_len = sizeof(modulus);
     uint32_t exponent = 0;
 
-    if (!transcript || !cert_copy) {
+    if (!transcript || !cert_copy || !record_buf) {
         if (transcript) kfree(transcript);
         if (cert_copy) kfree(cert_copy);
+        if (record_buf) kfree(record_buf);
         return NET_ERR_GENERIC;
     }
 
@@ -1064,6 +1082,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     if (hello_len == 0 || !tls_send_plain_record(session, TLS_RECORD_HANDSHAKE, client_hello, hello_len, timeout_ms)) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
     memcpy(transcript, client_hello, hello_len);
@@ -1072,10 +1091,11 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     while (!done) {
         uint8_t type = 0;
         size_t record_len = 0;
-        if (!tls_recv_record(session, &type, record_buf, &record_len, sizeof(record_buf), timeout_ms, 0) ||
+        if (!tls_recv_record(session, &type, record_buf, &record_len, TLS_MAX_RECORD_LEN, timeout_ms, 0) ||
             type != TLS_RECORD_HANDSHAKE) {
             kfree(transcript);
             kfree(cert_copy);
+            kfree(record_buf);
             return NET_ERR_GENERIC;
         }
 
@@ -1086,6 +1106,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
             if (off + 4u + hs_len > record_len || transcript_len + 4u + hs_len > TLS_MAX_TRANSCRIPT_LEN) {
                 kfree(transcript);
                 kfree(cert_copy);
+                kfree(record_buf);
                 return NET_ERR_GENERIC;
             }
 
@@ -1096,6 +1117,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
                 if (hs_len < 38u) {
                     kfree(transcript);
                     kfree(cert_copy);
+                    kfree(record_buf);
                     return NET_ERR_GENERIC;
                 }
                 session->protocol_version = tls_read_be16(record_buf + off + 4);
@@ -1104,12 +1126,14 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
                 if (39u + sid_len + 3u > hs_len) {
                     kfree(transcript);
                     kfree(cert_copy);
+                    kfree(record_buf);
                     return NET_ERR_GENERIC;
                 }
                 session->cipher_suite = tls_read_be16(record_buf + off + 39u + sid_len);
                 if (session->cipher_suite != TLS_CIPHER_RSA_AES128_SHA256) {
                     kfree(transcript);
                     kfree(cert_copy);
+                    kfree(record_buf);
                     return NET_ERR_GENERIC;
                 }
                 saw_server_hello = 1;
@@ -1118,12 +1142,14 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
                 if (chain_len + 3u > hs_len || chain_len < 3u) {
                     kfree(transcript);
                     kfree(cert_copy);
+                    kfree(record_buf);
                     return NET_ERR_GENERIC;
                 }
                 cert_len = tls_read_be24(record_buf + off + 7);
                 if (cert_len == 0 || cert_len > TLS_MAX_CERT_LEN || cert_len + 6u > hs_len) {
                     kfree(transcript);
                     kfree(cert_copy);
+                    kfree(record_buf);
                     return NET_ERR_GENERIC;
                 }
                 memcpy(cert_copy, record_buf + off + 10, cert_len);
@@ -1139,6 +1165,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
         !tls_extract_rsa_pubkey(cert_copy, cert_len, modulus, &modulus_len, &exponent)) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
 
@@ -1148,6 +1175,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
         !tls_rsa_encrypt_premaster(modulus, modulus_len, exponent, premaster, encrypted_premaster)) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
 
@@ -1156,6 +1184,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     if (ckx_len == 0 || transcript_len + ckx_len > TLS_MAX_TRANSCRIPT_LEN) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
     memcpy(transcript + transcript_len, client_key_exchange, ckx_len);
@@ -1163,6 +1192,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     if (!tls_send_plain_record(session, TLS_RECORD_HANDSHAKE, client_key_exchange, ckx_len, timeout_ms)) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
 
@@ -1171,6 +1201,7 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
         if (!tls_send_plain_record(session, TLS_RECORD_CHANGE_CIPHER, &ccs, 1, timeout_ms)) {
             kfree(transcript);
             kfree(cert_copy);
+            kfree(record_buf);
             return NET_ERR_GENERIC;
         }
     }
@@ -1181,11 +1212,13 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
         !tls_send_encrypted_record(session, TLS_RECORD_HANDSHAKE, finished_msg, finished_len, timeout_ms)) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
     if (transcript_len + finished_len > TLS_MAX_TRANSCRIPT_LEN) {
         kfree(transcript);
         kfree(cert_copy);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
     memcpy(transcript + transcript_len, finished_msg, finished_len);
@@ -1194,10 +1227,11 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
     {
         uint8_t type = 0;
         size_t len = 0;
-        if (!tls_recv_record(session, &type, record_buf, &len, sizeof(record_buf), timeout_ms, 0) ||
+        if (!tls_recv_record(session, &type, record_buf, &len, TLS_MAX_RECORD_LEN, timeout_ms, 0) ||
             type != TLS_RECORD_CHANGE_CIPHER || len != 1 || record_buf[0] != 1) {
             kfree(transcript);
             kfree(cert_copy);
+            kfree(record_buf);
             return NET_ERR_GENERIC;
         }
     }
@@ -1206,24 +1240,27 @@ static int tls_handshake(struct tls_session *session, uint32_t timeout_ms) {
         uint8_t type = 0;
         size_t len = 0;
         uint8_t expected[TLS_VERIFY_DATA_LEN];
-        if (!tls_recv_record(session, &type, record_buf, &len, sizeof(record_buf), timeout_ms, 1) ||
+        if (!tls_recv_record(session, &type, record_buf, &len, TLS_MAX_RECORD_LEN, timeout_ms, 1) ||
             type != TLS_RECORD_HANDSHAKE || len < 4u + TLS_VERIFY_DATA_LEN ||
             record_buf[0] != TLS_HANDSHAKE_FINISHED ||
             tls_read_be24(record_buf + 1) != TLS_VERIFY_DATA_LEN) {
             kfree(transcript);
             kfree(cert_copy);
+            kfree(record_buf);
             return NET_ERR_GENERIC;
         }
         tls_compute_finished(session, "server finished", transcript, transcript_len, expected);
         if (memcmp(expected, record_buf + 4, TLS_VERIFY_DATA_LEN) != 0) {
             kfree(transcript);
             kfree(cert_copy);
+            kfree(record_buf);
             return NET_ERR_GENERIC;
         }
     }
 
     kfree(transcript);
     kfree(cert_copy);
+    kfree(record_buf);
     return NET_OK;
 }
 
@@ -1293,7 +1330,7 @@ ssize_t net_http_get_ipv4(const struct net_http_request *request,
                           struct net_http_result *out) {
     struct tls_session session;
     uint8_t request_buf[512];
-    uint8_t record_buf[TLS_MAX_RECORD_LEN];
+    uint8_t *record_buf = (uint8_t *)kmalloc(TLS_MAX_RECORD_LEN);
     size_t request_len = 0;
     size_t total = 0;
     uint8_t *dst = (uint8_t *)buf;
@@ -1301,6 +1338,7 @@ ssize_t net_http_get_ipv4(const struct net_http_request *request,
     int secure;
 
     if (!request || !buf || !out || request->remote_port == 0) return NET_ERR_INVALID;
+    if (!record_buf) return NET_ERR_GENERIC;
     secure = request->secure ? 1 : 0;
     timeout_ms = request->timeout_ms ? request->timeout_ms : 5000u;
     memset(&session, 0, sizeof(session));
@@ -1328,21 +1366,27 @@ ssize_t net_http_get_ipv4(const struct net_http_request *request,
     }
 
     session.tcp_handle = net_tcp_connect_ipv4(request->remote_ip, request->remote_port, timeout_ms);
-    if (session.tcp_handle < 0) return session.tcp_handle;
+    if (session.tcp_handle < 0) {
+        kfree(record_buf);
+        return session.tcp_handle;
+    }
 
     if (secure) {
         int rc = tls_handshake(&session, timeout_ms);
         if (rc != NET_OK) {
             (void)net_tcp_close(session.tcp_handle, timeout_ms);
+            kfree(record_buf);
             return rc;
         }
         if (!tls_send_encrypted_record(&session, TLS_RECORD_APPLICATION, request_buf, request_len, timeout_ms)) {
             tls_send_close_notify(&session, timeout_ms);
             (void)net_tcp_close(session.tcp_handle, timeout_ms);
+            kfree(record_buf);
             return NET_ERR_GENERIC;
         }
     } else if (net_tcp_send(session.tcp_handle, request_buf, request_len, timeout_ms) != (ssize_t)request_len) {
         (void)net_tcp_close(session.tcp_handle, timeout_ms);
+        kfree(record_buf);
         return NET_ERR_GENERIC;
     }
 
@@ -1389,6 +1433,7 @@ ssize_t net_http_get_ipv4(const struct net_http_request *request,
     }
 
     (void)net_tcp_close(session.tcp_handle, timeout_ms);
+    kfree(record_buf);
     out->bytes_received = (uint32_t)total;
     tls_parse_http_headers(dst, total, out);
 

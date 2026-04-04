@@ -489,7 +489,7 @@ static void con_draw_scroll_help_bar(void) {
     int ch = font_char_height() * con_scale;
     int y  = con_y0 + (con_rows - 1) * ch;
 
-    uint32_t bar_bg = FB_COLOR(0, 0, 80);
+    uint32_t bar_bg = FB_BLACK;
     uint32_t bar_fg = FB_WHITE;
 
     fb_fill_rect(con_x0, y, con_w, ch, bar_bg);

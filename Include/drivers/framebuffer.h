@@ -27,14 +27,14 @@
 #define FB_YELLOW       FB_COLOR(230,210, 50)
 #define FB_GREY         FB_COLOR(120,130,150)
 
-#define FB_TERM_BG      FB_BLACK
-#define FB_TERM_FG      FB_WHITE
-#define FB_TERM_DIM     FB_COLOR(100,110,135)
-#define FB_TERM_ACCENT  FB_COLOR( 80,140,255)
-#define FB_TERM_SUCCESS FB_COLOR( 60,210,100)
-#define FB_TERM_WARN    FB_COLOR(230,180, 50)
-#define FB_TERM_ERR     FB_COLOR(230, 70, 70)
-#define FB_HDR_BG       FB_COLOR( 20, 20, 36)
+#define FB_TERM_BG      FB_WHITE
+#define FB_TERM_FG      FB_BLACK
+#define FB_TERM_DIM     FB_COLOR( 90, 90, 90)
+#define FB_TERM_ACCENT  FB_COLOR( 20, 70,180)
+#define FB_TERM_SUCCESS FB_COLOR( 20,140, 50)
+#define FB_TERM_WARN    FB_COLOR(160,110, 20)
+#define FB_TERM_ERR     FB_COLOR(180, 30, 30)
+#define FB_HDR_BG       FB_BLACK
 
 #define FB_PANEL    FB_COLOR( 18, 20, 36)
 #define FB_BORDER   FB_COLOR( 40, 50, 90)
