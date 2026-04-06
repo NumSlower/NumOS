@@ -26,7 +26,7 @@ struct elf_load_result;
 /* ---- Process limits ------------------------------------------------------ */
 #define MAX_PROCESSES       16      /* Maximum concurrent processes           */
 #define KERNEL_STACK_SIZE   16384   /* 16 KB kernel stack per process         */
-#define USER_STACK_SIZE     65536   /* 64 KB user stack                       */
+#define USER_STACK_INITIAL_COMMIT_SIZE 4096 /* Map one stack page up front    */
 #define PROCESS_NAME_LEN    32      /* Max process name length                */
 #define PROCESS_CMDLINE_LEN 128     /* Max command line length                */
 
@@ -107,7 +107,7 @@ struct process {
     uint64_t user_arg1;                    /* Initial RSI on first entry      */
     uint64_t user_arg2;                    /* Initial RDX on first entry      */
     uint64_t user_stack_top;              /* Top of user stack (virtual)      */
-    uint64_t user_stack_bottom;           /* Bottom of user stack (for unmap) */
+    uint64_t user_stack_bottom;           /* Reserved bottom of user stack    */
     uint64_t user_tls_bottom;             /* Lowest mapped TLS page           */
     uint64_t user_fs_base;                /* FS base / thread pointer         */
     uint64_t load_base;                   /* Lowest mapped virtual address    */
@@ -143,7 +143,7 @@ void scheduler_init(void);
 
 /* Create a user-mode process from a loaded ELF image.
  * entry    – virtual address of _start
- * stack    – virtual address of top of user stack (already mapped)
+ * stack    – virtual address of top of reserved user stack
  * Returns the new process, or NULL on failure.                             */
 struct process *process_create_user(const char *name,
                                     uint64_t entry,
@@ -191,6 +191,7 @@ void schedule(void);
 
 /* Return the currently running process (NULL before scheduler_init)       */
 struct process *scheduler_current(void);
+int scheduler_handle_user_page_fault(uint64_t fault_addr);
 
 /* Return the idle (kernel) process                                         */
 struct process *scheduler_get_idle(void);

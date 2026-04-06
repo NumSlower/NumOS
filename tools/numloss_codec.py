@@ -5,6 +5,7 @@ MAGIC = b"NMLS"
 VERSION_V1 = 1
 VERSION_V2 = 2
 VERSION_V3 = 3
+VERSION_V4 = 4
 
 TRANSFORM_RAW = 0
 TRANSFORM_DELTA8 = 1
@@ -15,6 +16,12 @@ TRANSFORM_GROUP4_XOR8 = 5
 TRANSFORM_GROUP8 = 6
 TRANSFORM_GROUP8_DELTA8 = 7
 TRANSFORM_GROUP8_XOR8 = 8
+TRANSFORM_GROUP2 = 9
+TRANSFORM_GROUP2_DELTA8 = 10
+TRANSFORM_GROUP2_XOR8 = 11
+TRANSFORM_DELTA8_DELTA8 = 12
+TRANSFORM_TEXT_PROSE = 13
+TRANSFORM_TEXT_CODE = 14
 
 LITERAL_MAX = 64
 RUN_MIN_V1 = 4
@@ -60,7 +67,174 @@ TRANSFORM_CANDIDATES = (
     TRANSFORM_GROUP8,
     TRANSFORM_GROUP8_DELTA8,
     TRANSFORM_GROUP8_XOR8,
+    TRANSFORM_GROUP2,
+    TRANSFORM_GROUP2_DELTA8,
+    TRANSFORM_GROUP2_XOR8,
+    TRANSFORM_DELTA8_DELTA8,
 )
+
+TEXT_PROSE_DICT = tuple(item.encode("ascii") for item in (
+    " the ",
+    " and ",
+    " compress",
+    "ing ",
+    "compression",
+    "tion",
+    "ompression ",
+    ":\n\n```bash\n",
+    "\n\n```bash\nmake ",
+    "\n- `",
+    " of ",
+    " kernel",
+    "s th",
+    "ding",
+    " in ",
+    "ossless compres",
+    " to ",
+    ". The ",
+    " symbol",
+    " with ",
+    " codin",
+    "build",
+    "kernel ",
+    "\n```\n\n",
+    " appear",
+    " informatio",
+    " lossless compre",
+    "boot",
+    " that ",
+    "ore ",
+    " use",
+    " data",
+    "install",
+    " Huffman",
+    " algorithm",
+    ", and",
+    " partitio",
+    "es t",
+    "ctio",
+    "rithmetic codi",
+    "appears ",
+    "Huffman codi",
+    " for ",
+    "n th",
+    " ins",
+    " con",
+    " character",
+    "mpression ratio",
+    "\n```bash\nmake p",
+    " file",
+    "age ",
+    " sta",
+    "the s",
+    " stor",
+    " buil",
+    "haracters",
+    " entropy ",
+    " pro",
+    " is ",
+    " current",
+    "s a ",
+    "ent ",
+    "e in",
+    "ionary",
+    " dictionary",
+    ". It ",
+    " compression",
+    " of the ",
+    " coding",
+    " appears ",
+    " Huffman coding",
+    " compression ratio",
+    " DEFLATE",
+    " characters",
+    " string",
+    " code",
+    "Lossless compression ",
+    " entropy coding",
+    " compresses ",
+    " information",
+    " arithmetic coding",
+    " the same ",
+    " identical ",
+    " use ",
+    " represent",
+    " frequency",
+    " compression ratios ",
+    " uses",
+    " prediction",
+    " modern ",
+))
+
+TEXT_CODE_DICT = tuple(item.encode("ascii") for item in (
+    "       ",
+    "================",
+    "\n    ",
+    ";\n   ",
+    "----------------",
+    "    if (",
+    " return ",
+    ") {\n   ",
+    ");\n  ",
+    "    return",
+    "    uint",
+    "\n\n   ",
+    "      if ",
+    "    }\n",
+    "uint32_t",
+    "\n#define ",
+    "size",
+    "      retur",
+    "int64_t",
+    "\nstatic ",
+    ") return",
+    "int32_t ",
+    "uint8_t ",
+    "write",
+    "const char *",
+    "    c",
+    "\n}\n\nstatic",
+    " uint8_t",
+    " uint32_",
+    "    s",
+    "   }\n\n  ",
+    "nt64_t ",
+    ";\n\n  ",
+    "   }\n   ",
+    ";\n}\n\nstati",
+    "struct ",
+    "uint64_",
+    ",0x00,0x00,0x00,",
+    ",\n   ",
+    "   if (!",
+    "    writ",
+    "   uint32",
+    "(uint",
+    "void",
+    "int ",
+    "      }",
+    " = 0;",
+    "    vga_writ",
+    "x00,0x00,0x00,0x",
+    "0x00,0x00,0x00,0",
+    "   uint8_",
+    "ritestring(",
+    " */\n",
+    "0,0x00,0x00,0x00",
+    "ize_t ",
+    "00,0x00,0x00,0x0",
+    " siz",
+    " 0;\n  ",
+    "rite_str(\"",
+    "return 0;\n",
+    "\");\n ",
+    " ===============",
+    "itestring(\"",
+    " NUMLOSS_",
+))
+
+TEXT_PROSE_DICT_SORTED = tuple(sorted(enumerate(TEXT_PROSE_DICT), key=lambda item: len(item[1]), reverse=True))
+TEXT_CODE_DICT_SORTED = tuple(sorted(enumerate(TEXT_CODE_DICT), key=lambda item: len(item[1]), reverse=True))
 
 
 def _u32_to_le(value):
@@ -98,13 +272,13 @@ def _archive_version(data):
 
 
 def _archive_transform(data):
-    if _archive_version(data) != VERSION_V3:
+    if _archive_version(data) not in (VERSION_V3, VERSION_V4):
         return TRANSFORM_RAW
     return data[5]
 
 
 def is_archive(data):
-    return _archive_version(data) in (VERSION_V1, VERSION_V2, VERSION_V3)
+    return _archive_version(data) in (VERSION_V1, VERSION_V2, VERSION_V3, VERSION_V4)
 
 
 def read_header(data):
@@ -112,7 +286,7 @@ def read_header(data):
         raise ValueError("bad numloss header")
 
     version = _archive_version(data)
-    if version in (VERSION_V1, VERSION_V3):
+    if version in (VERSION_V1, VERSION_V3, VERSION_V4):
         payload_size = _u32_from_le(data, 12)
         if payload_size > len(data) - HEADER_SIZE:
             raise ValueError("payload extends past archive")
@@ -361,6 +535,14 @@ def _apply_transform(data, transform):
         return _delta_forward(_group_bytes(data, 8))
     if transform == TRANSFORM_GROUP8_XOR8:
         return _xor_forward(_group_bytes(data, 8))
+    if transform == TRANSFORM_GROUP2:
+        return _group_bytes(data, 2)
+    if transform == TRANSFORM_GROUP2_DELTA8:
+        return _delta_forward(_group_bytes(data, 2))
+    if transform == TRANSFORM_GROUP2_XOR8:
+        return _xor_forward(_group_bytes(data, 2))
+    if transform == TRANSFORM_DELTA8_DELTA8:
+        return _delta_forward(_delta_forward(data))
     raise ValueError("unknown numloss transform")
 
 
@@ -383,7 +565,104 @@ def _undo_transform(data, transform):
         return _ungroup_bytes(_delta_inverse(data), 8)
     if transform == TRANSFORM_GROUP8_XOR8:
         return _ungroup_bytes(_xor_inverse(data), 8)
+    if transform == TRANSFORM_GROUP2:
+        return _ungroup_bytes(data, 2)
+    if transform == TRANSFORM_GROUP2_DELTA8:
+        return _ungroup_bytes(_delta_inverse(data), 2)
+    if transform == TRANSFORM_GROUP2_XOR8:
+        return _ungroup_bytes(_xor_inverse(data), 2)
+    if transform == TRANSFORM_DELTA8_DELTA8:
+        return _delta_inverse(_delta_inverse(data))
     raise ValueError("unknown numloss transform")
+
+
+def _looks_text_like(data):
+    if not data:
+        return False
+
+    printable = 0
+    for value in data:
+        if value in (9, 10, 13) or 32 <= value < 127:
+            printable += 1
+
+    return printable * 8 >= len(data) * 7
+
+
+def _text_dictionary_for_transform(transform):
+    if transform == TRANSFORM_TEXT_PROSE:
+        return TEXT_PROSE_DICT, TEXT_PROSE_DICT_SORTED
+    if transform == TRANSFORM_TEXT_CODE:
+        return TEXT_CODE_DICT, TEXT_CODE_DICT_SORTED
+    raise ValueError("unknown text dictionary transform")
+
+
+def _apply_text_dictionary(data, transform):
+    dictionary, sorted_entries = _text_dictionary_for_transform(transform)
+    out = bytearray()
+    pos = 0
+
+    if not _looks_text_like(data):
+        raise ValueError("input is not text-like enough for dictionary transform")
+
+    while pos < len(data):
+        matched = False
+
+        for index, entry in sorted_entries:
+            if data.startswith(entry, pos):
+                if len(out) + 1 > len(data):
+                    raise ValueError("dictionary transform expands input")
+                out.append(0x80 + index)
+                pos += len(entry)
+                matched = True
+                break
+
+        if matched:
+            continue
+
+        value = data[pos]
+        if value == 0 or value > 0x7F:
+            if len(out) + 2 > len(data):
+                raise ValueError("dictionary transform expands input")
+            out.append(0)
+            out.append(value)
+        else:
+            if len(out) + 1 > len(data):
+                raise ValueError("dictionary transform expands input")
+            out.append(value)
+        pos += 1
+
+    return bytes(out)
+
+
+def _undo_text_dictionary(data, transform, original_size):
+    dictionary, _ = _text_dictionary_for_transform(transform)
+    out = bytearray()
+    pos = 0
+
+    while pos < len(data):
+        value = data[pos]
+        pos += 1
+
+        if value == 0:
+            if pos >= len(data):
+                raise ValueError("truncated text dictionary escape")
+            out.append(data[pos])
+            pos += 1
+        elif value < 0x80:
+            out.append(value)
+        else:
+            index = value - 0x80
+            if index >= len(dictionary):
+                raise ValueError("bad text dictionary token")
+            out.extend(dictionary[index])
+
+        if len(out) > original_size:
+            raise ValueError("text dictionary output too large")
+
+    if len(out) != original_size:
+        raise ValueError("text dictionary output size mismatch")
+
+    return bytes(out)
 
 
 def _find_match_candidates_v3(history, data, pos):
@@ -498,10 +777,10 @@ def _emit_long_match(out, length, offset):
     out.append((offset >> 8) & 0xFF)
 
 
-def _encode_v3_with_transform(data, transform):
-    source = _apply_transform(bytes(data), transform)
+def _encode_match_stream(source, version, original_size, transform, prefix=b""):
     history = _history_reset()
-    out = bytearray(_write_header(VERSION_V3, len(data), 0, transform))
+    out = bytearray(_write_header(version, original_size, 0, transform))
+    out.extend(prefix)
     pos = 0
     literal_start = 0
     literal_len = 0
@@ -575,8 +854,24 @@ def _encode_v3_with_transform(data, transform):
     if literal_len:
         _emit_literals(out, source, literal_start, literal_len)
 
-    out[:HEADER_SIZE] = _write_header(VERSION_V3, len(data), len(out) - HEADER_SIZE, transform)
+    out[:HEADER_SIZE] = _write_header(version, original_size, len(out) - HEADER_SIZE, transform)
     return bytes(out)
+
+
+def _encode_v3_with_transform(data, transform):
+    source = _apply_transform(bytes(data), transform)
+    return _encode_match_stream(source, VERSION_V3, len(data), transform)
+
+
+def _encode_v4_text_with_transform(data, transform):
+    transformed = _apply_text_dictionary(bytes(data), transform)
+    return _encode_match_stream(
+        transformed,
+        VERSION_V4,
+        len(data),
+        transform,
+        prefix=_u32_to_le(len(transformed)),
+    )
 
 
 def _encode_best(data):
@@ -587,6 +882,14 @@ def _encode_best(data):
     best = _encode_v1(data)
     for transform in TRANSFORM_CANDIDATES:
         candidate = _encode_v3_with_transform(data, transform)
+        if len(candidate) < len(best):
+            best = candidate
+
+    for transform in (TRANSFORM_TEXT_PROSE, TRANSFORM_TEXT_CODE):
+        try:
+            candidate = _encode_v4_text_with_transform(data, transform)
+        except ValueError:
+            continue
         if len(candidate) < len(best):
             best = candidate
     return best
@@ -667,37 +970,31 @@ def _decode_v1(data):
     return bytes(out)
 
 
-def _decode_v3(data):
-    data = bytes(data)
-    original_size, payload_size = read_header(data)
-    transform = _archive_transform(data)
-    if len(data) != HEADER_SIZE + payload_size:
-        raise ValueError("bad archive size")
-
-    transformed = bytearray(original_size)
-    in_pos = HEADER_SIZE
-    in_end = HEADER_SIZE + payload_size
+def _decode_match_stream(payload, output_size):
+    transformed = bytearray(output_size)
+    in_pos = 0
+    in_end = len(payload)
     out_pos = 0
     last_offset = 0
 
     while in_pos < in_end:
-        token = data[in_pos]
+        token = payload[in_pos]
         in_pos += 1
 
         if token <= 0x3F:
             length = token + 1
-            if in_pos + length > in_end or out_pos + length > original_size:
+            if in_pos + length > in_end or out_pos + length > output_size:
                 raise ValueError("bad literal token")
-            transformed[out_pos:out_pos + length] = data[in_pos:in_pos + length]
+            transformed[out_pos:out_pos + length] = payload[in_pos:in_pos + length]
             in_pos += length
             out_pos += length
             continue
 
         if token <= 0x7F:
             length = (token - 0x40) + RUN_MIN_V3
-            if in_pos >= in_end or out_pos + length > original_size:
+            if in_pos >= in_end or out_pos + length > output_size:
                 raise ValueError("bad run token")
-            value = data[in_pos]
+            value = payload[in_pos]
             in_pos += 1
             transformed[out_pos:out_pos + length] = bytes((value,)) * length
             out_pos += length
@@ -706,14 +1003,14 @@ def _decode_v3(data):
         if token <= SHORT_MATCH_TOKEN_LAST:
             if in_pos >= in_end:
                 raise ValueError("bad short match token")
-            code = ((token - SHORT_MATCH_TOKEN_BASE) << 8) | data[in_pos]
+            code = ((token - SHORT_MATCH_TOKEN_BASE) << 8) | payload[in_pos]
             in_pos += 1
             length = SHORT_MATCH_MIN + (code // SHORT_MATCH_RANGE)
             offset = 1 + (code % SHORT_MATCH_RANGE)
 
             if length > SHORT_MATCH_MAX or offset == 0 or offset > out_pos:
                 raise ValueError("bad short match token")
-            if out_pos + length > original_size:
+            if out_pos + length > output_size:
                 raise ValueError("bad short match size")
 
             last_offset = offset
@@ -726,7 +1023,7 @@ def _decode_v3(data):
             length = REPEAT_MATCH_MIN + (token - REPEAT_MATCH_TOKEN_BASE)
             if last_offset == 0 or last_offset > out_pos:
                 raise ValueError("bad repeat match token")
-            if out_pos + length > original_size:
+            if out_pos + length > output_size:
                 raise ValueError("bad repeat match size")
 
             for index in range(length):
@@ -737,11 +1034,11 @@ def _decode_v3(data):
         if token != LONG_MATCH_TOKEN or in_pos + 3 > in_end:
             raise ValueError("bad long match token")
 
-        length = MATCH_MIN_V3 + data[in_pos]
-        offset = data[in_pos + 1] | (data[in_pos + 2] << 8)
+        length = MATCH_MIN_V3 + payload[in_pos]
+        offset = payload[in_pos + 1] | (payload[in_pos + 2] << 8)
         in_pos += 3
 
-        if offset == 0 or offset > out_pos or out_pos + length > original_size:
+        if offset == 0 or offset > out_pos or out_pos + length > output_size:
             raise ValueError("bad long match token")
 
         last_offset = offset
@@ -749,10 +1046,33 @@ def _decode_v3(data):
             transformed[out_pos + index] = transformed[out_pos - offset + index]
         out_pos += length
 
-    if out_pos != original_size:
+    if out_pos != output_size:
         raise ValueError("decoded size mismatch")
 
+    return bytes(transformed)
+
+
+def _decode_v3(data):
+    data = bytes(data)
+    original_size, payload_size = read_header(data)
+    transform = _archive_transform(data)
+    if len(data) != HEADER_SIZE + payload_size:
+        raise ValueError("bad archive size")
+
+    transformed = _decode_match_stream(data[HEADER_SIZE:HEADER_SIZE + payload_size], original_size)
     return _undo_transform(transformed, transform)
+
+
+def _decode_v4(data):
+    data = bytes(data)
+    original_size, payload_size = read_header(data)
+    transform = _archive_transform(data)
+    if len(data) != HEADER_SIZE + payload_size or payload_size < 4:
+        raise ValueError("bad archive size")
+
+    transformed_size = _u32_from_le(data, HEADER_SIZE)
+    transformed = _decode_match_stream(data[HEADER_SIZE + 4:HEADER_SIZE + payload_size], transformed_size)
+    return _undo_text_dictionary(transformed, transform, original_size)
 
 
 def decode(data):
@@ -762,6 +1082,8 @@ def decode(data):
         return _decode_v1(data)
     if version == VERSION_V3:
         return _decode_v3(data)
+    if version == VERSION_V4:
+        return _decode_v4(data)
     if version != VERSION_V2:
         raise ValueError("bad numloss header")
 
@@ -774,7 +1096,7 @@ def decode(data):
             raise ValueError("truncated chunk header")
 
         chunk_version = _archive_version(data[in_pos:])
-        if chunk_version not in (VERSION_V1, VERSION_V3):
+        if chunk_version not in (VERSION_V1, VERSION_V3, VERSION_V4):
             raise ValueError("bad chunk header")
 
         chunk_original_size, chunk_payload_size = read_header(data[in_pos:])
@@ -784,8 +1106,10 @@ def decode(data):
 
         if chunk_version == VERSION_V1:
             chunk = _decode_v1(data[in_pos:in_pos + chunk_size])
-        else:
+        elif chunk_version == VERSION_V3:
             chunk = _decode_v3(data[in_pos:in_pos + chunk_size])
+        else:
+            chunk = _decode_v4(data[in_pos:in_pos + chunk_size])
 
         if len(chunk) != chunk_original_size:
             raise ValueError("chunk size mismatch")

@@ -65,6 +65,8 @@ static void            retain_vm_space(struct process_vm_space *vm);
 static int             release_vm_space(struct process *proc);
 static int             map_zeroed_user_range(uint64_t start, uint64_t end,
                                              uint64_t flags);
+static uint64_t        choose_stack_reserve(uint64_t lower_limit,
+                                            uint64_t stack_top);
 static int             map_main_thread_tls(struct process *proc);
 static int             alloc_user_thread_region(struct process *proc);
 static void            write_fs_base(uint64_t value);
@@ -336,6 +338,22 @@ static int map_zeroed_user_range(uint64_t start, uint64_t end, uint64_t flags) {
     return 0;
 }
 
+static uint64_t choose_stack_reserve(uint64_t lower_limit, uint64_t stack_top) {
+    lower_limit = paging_align_up(lower_limit, PAGE_SIZE);
+    stack_top = paging_align_down(stack_top, PAGE_SIZE);
+    if (stack_top <= lower_limit) return 0;
+
+    uint64_t available = stack_top - lower_limit;
+    if (available < USER_STACK_INITIAL_COMMIT_SIZE) return 0;
+
+    uint64_t reserve =
+        paging_align_down(available / MAX_PROCESSES, PAGE_SIZE);
+    if (reserve < USER_STACK_INITIAL_COMMIT_SIZE) {
+        reserve = USER_STACK_INITIAL_COMMIT_SIZE;
+    }
+    return reserve;
+}
+
 static void write_fs_base(uint64_t value) {
     __asm__ volatile("wrmsr" :: "c"(IA32_FS_BASE_MSR),
                                 "a"((uint32_t)value),
@@ -385,10 +403,14 @@ static int alloc_user_thread_region(struct process *proc) {
 
     struct process_vm_space *vm = proc->vm_space;
     uint64_t stack_top_page = vm->stack_cursor;
-    uint64_t stack_bottom = stack_top_page - USER_STACK_SIZE;
+    uint64_t reserve_size = choose_stack_reserve(vm->load_end, stack_top_page);
+    if (reserve_size == 0) return -1;
+
+    uint64_t stack_bottom = stack_top_page - reserve_size;
     if (stack_bottom <= vm->load_end) return -1;
 
-    if (map_zeroed_user_range(stack_bottom, stack_top_page,
+    if (map_zeroed_user_range(stack_top_page - USER_STACK_INITIAL_COMMIT_SIZE,
+                              stack_top_page,
                               PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
         return -1;
     }
@@ -925,6 +947,28 @@ void scheduler_tick(void) {
  * ======================================================================= */
 
 struct process *scheduler_current(void)   { return current_proc; }
+int scheduler_handle_user_page_fault(uint64_t fault_addr) {
+    struct process *proc = current_proc;
+    if (!proc || proc->user_entry == 0) return 0;
+
+    uint64_t page_addr = paging_align_down(fault_addr, PAGE_SIZE);
+    uint64_t stack_top_page = paging_align_up(proc->user_stack_top + 8, PAGE_SIZE);
+    if (page_addr < proc->user_stack_bottom || page_addr >= stack_top_page) {
+        return 0;
+    }
+
+    uint64_t phys = pmm_alloc_frame();
+    if (!phys) return 0;
+
+    if (paging_map_page(page_addr, phys,
+                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER) != 0) {
+        pmm_free_frame(phys);
+        return 0;
+    }
+
+    memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
+    return 1;
+}
 struct process *scheduler_get_idle(void)  { return idle_proc;    }
 void scheduler_get_stats(struct sched_stats *out) {
     if (!out) return;

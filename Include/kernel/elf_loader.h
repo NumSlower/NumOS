@@ -167,8 +167,8 @@ struct elf_load_result {
     uint64_t load_base;     /* Lowest virtual address mapped                  */
     uint64_t load_end;      /* Highest virtual address mapped (page-aligned)  */
     uint64_t load_bias;     /* Base added to ET_DYN virtual addresses         */
-    uint64_t stack_top;     /* Top of freshly-allocated user stack            */
-    uint64_t stack_bottom;  /* Bottom of user stack (for cleanup/unmap)       */
+    uint64_t stack_top;     /* Top of user stack reservation                  */
+    uint64_t stack_bottom;  /* Reserved stack floor (for cleanup/unmap)       */
     uint64_t tls_image_start; /* Mapped TLS init image virtual address        */
     uint64_t tls_filesz;    /* Bytes of TLS initialiser image                 */
     uint64_t tls_memsz;     /* Total TLS bytes per thread                     */
@@ -197,7 +197,8 @@ struct elf_load_result {
  *
  *   Opens the file at `path` on the FAT32 volume, validates the ELF header,
  *   maps every PT_LOAD segment into user virtual memory with the correct
- *   page permissions, allocates and maps a user stack, and fills in `result`.
+ *   page permissions, reserves a growable user stack, maps its top page, and
+ *   fills in `result`.
  *
  *   Returns ELF_OK (0) on success, a negative ELF_ERR_* code on failure.
  *   On failure result->error contains a descriptive message.

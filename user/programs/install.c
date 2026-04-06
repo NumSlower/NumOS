@@ -37,11 +37,18 @@
 #define DEFAULT_INIT_PATH "/bin/shell.elf"
 #define DEFAULT_GFX_MODE "vesa"
 #define MAX_KERNEL_VERSION 9999u
+#define MULTIBOOT2_HEADER_MAGIC 0xE85250D6u
+#define MULTIBOOT2_TAG_END 0u
+#define MULTIBOOT2_TAG_FRAMEBUFFER 5u
+#define MULTIBOOT2_SEARCH_LIMIT 32768u
 #define URL_BUF_SIZE       256u
 #define URL_PATH_BUF_SIZE 192u
 #define HTTP_TIMEOUT_MS   10000u
 #define HTTP_REDIRECT_LIMIT 4
 #define HTTP_REQUEST_RETRY_LIMIT 2
+#define HTTP_STREAM_RECV_BYTES 2048u
+#define HTTP_STREAM_HEADER_BYTES 4096u
+#define DOWNLOAD_PROGRESS_WIDTH 24u
 
 #define MAX_STAGE_FILES 96
 #define FILE_POOL_BYTES (8u * 1024u * 1024u)
@@ -99,6 +106,8 @@ static uint8_t fat_buffer[FAT_SIZE_SECTORS * BYTES_PER_SECTOR];
 static uint8_t cluster_buffer[BYTES_PER_CLUSTER];
 static uint8_t zero_buffer[BYTES_PER_CLUSTER];
 static uint8_t transfer_buffer[ATA_MAX_TRANSFER_SECTORS * BYTES_PER_SECTOR];
+static uint8_t http_stream_recv_buffer[HTTP_STREAM_RECV_BYTES];
+static char http_stream_header_buffer[HTTP_STREAM_HEADER_BYTES + 1u];
 
 static int append_char(char *buf, size_t cap, size_t *pos, char c);
 static int append_text(char *buf, size_t cap, size_t *pos, const char *text);
@@ -182,6 +191,21 @@ static int is_space(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
+static uint16_t load_u16_le(const uint8_t *src) {
+    return (uint16_t)src[0] | ((uint16_t)src[1] << 8);
+}
+
+static uint32_t load_u32_le(const uint8_t *src) {
+    return (uint32_t)src[0] |
+           ((uint32_t)src[1] << 8) |
+           ((uint32_t)src[2] << 16) |
+           ((uint32_t)src[3] << 24);
+}
+
+static size_t align_up_size(size_t value, size_t align) {
+    return (value + align - 1u) & ~(align - 1u);
+}
+
 static int starts_with_text(const char *text, const char *prefix) {
     if (!text || !prefix) return 0;
     while (*prefix) {
@@ -261,6 +285,129 @@ static int append_port_text(char *buf, size_t cap, size_t *pos, uint16_t port) {
         if (append_char(buf, cap, pos, tmp[--t]) != 0) return -1;
     }
     return 0;
+}
+
+static int parse_uint32_text(const char *text, uint32_t *out) {
+    uint64_t value = 0;
+
+    if (!text || !out || !*text) return 0;
+    while (*text) {
+        if (!is_digit(*text)) return 0;
+        value = (value * 10u) + (uint64_t)(*text - '0');
+        if (value > 0xFFFFFFFFu) return 0;
+        text++;
+    }
+
+    *out = (uint32_t)value;
+    return 1;
+}
+
+static int parse_header_value(const char *headers,
+                              const char *name,
+                              char *out,
+                              size_t cap) {
+    const char *line = headers;
+    size_t name_len;
+
+    if (!headers || !name || !out || cap == 0) return -1;
+    name_len = strlen(name);
+    out[0] = '\0';
+
+    while (*line) {
+        const char *line_end = line;
+        const char *colon = 0;
+        size_t pos = 0;
+
+        while (*line_end && *line_end != '\n') {
+            if (!colon && *line_end == ':') colon = line_end;
+            line_end++;
+        }
+
+        if (colon && (size_t)(colon - line) == name_len &&
+            strncmp(line, name, name_len) == 0) {
+            const char *value = colon + 1;
+            while (*value == ' ' || *value == '\t') value++;
+            while (value < line_end && *value != '\r' && pos + 1 < cap) {
+                out[pos++] = *value++;
+            }
+            out[pos] = '\0';
+            return 0;
+        }
+
+        if (*line_end == '\n') line = line_end + 1;
+        else break;
+    }
+
+    return -1;
+}
+
+static int parse_http_status_code_text(const char *headers, uint16_t *out_status) {
+    const char *cursor;
+    uint32_t status = 0;
+
+    if (!headers || !out_status) return -1;
+    cursor = headers;
+    while (*cursor && *cursor != ' ') cursor++;
+    while (*cursor == ' ') cursor++;
+    if (!is_digit(cursor[0]) || !is_digit(cursor[1]) || !is_digit(cursor[2])) return -1;
+
+    status = (uint32_t)(cursor[0] - '0') * 100u +
+             (uint32_t)(cursor[1] - '0') * 10u +
+             (uint32_t)(cursor[2] - '0');
+    *out_status = (uint16_t)status;
+    return 0;
+}
+
+static size_t find_http_header_end(const char *buf, size_t len) {
+    if (!buf || len < 4) return 0;
+    for (size_t i = 3; i < len; i++) {
+        if (buf[i - 3] == '\r' && buf[i - 2] == '\n' &&
+            buf[i - 1] == '\r' && buf[i] == '\n') {
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
+static int tcp_send_all(int handle, const void *buf, size_t len, uint32_t timeout_ms) {
+    const uint8_t *cursor = (const uint8_t *)buf;
+    size_t sent = 0;
+
+    while (sent < len) {
+        int64_t rc = sys_net_tcp_send(handle, cursor + sent, len - sent, timeout_ms);
+        if (rc <= 0) return -1;
+        sent += (size_t)rc;
+    }
+    return 0;
+}
+
+static void write_download_progress(uint32_t done, uint32_t total, int finish_line) {
+    uint32_t filled = 0;
+
+    write_str("\rinstall: download [");
+    if (total != 0) {
+        filled = (done >= total) ? DOWNLOAD_PROGRESS_WIDTH
+                                 : (uint32_t)(((uint64_t)done * DOWNLOAD_PROGRESS_WIDTH) / total);
+    }
+
+    for (uint32_t i = 0; i < DOWNLOAD_PROGRESS_WIDTH; i++) {
+        write_str(i < filled ? "#" : ".");
+    }
+
+    write_str("] ");
+    if (total != 0) {
+        uint32_t percent = (done >= total) ? 100u
+                                           : (uint32_t)(((uint64_t)done * 100u) / total);
+        write_dec(percent);
+        write_str("% ");
+    }
+    write_dec(done);
+    if (total != 0) {
+        write_str("/");
+        write_dec(total);
+    }
+    write_str(" bytes");
+    if (finish_line) write_str("\n");
 }
 
 static int parse_remote_kernel_url(const char *text, struct remote_kernel_url *out) {
@@ -489,6 +636,236 @@ static int ensure_network_ready(void) {
     return 0;
 }
 
+static int stream_remote_kernel_to_file(const char *url_text, const char *dst_path) {
+    char current[URL_BUF_SIZE];
+    char next[URL_BUF_SIZE];
+    char location[URL_BUF_SIZE];
+    char content_length_text[32];
+
+    if (!url_text || !dst_path) return -1;
+    if (ensure_network_ready() != 0) return -1;
+
+    strncpy(current, url_text, sizeof(current) - 1);
+    current[sizeof(current) - 1] = '\0';
+    if (url_text[strlen(current)] != '\0') {
+        write_str("install: kernel URL is too long\n");
+        return -1;
+    }
+
+    for (int redirect = 0; redirect <= HTTP_REDIRECT_LIMIT; redirect++) {
+        struct remote_kernel_url url;
+        int follow_redirect = 0;
+
+        if (parse_remote_kernel_url(current, &url) != 0 || url.secure) {
+            write_str("install: unsupported kernel URL\n");
+            return -1;
+        }
+        if (url.uses_host_update_port) {
+            write_str("install: using host update port 8080\n");
+        }
+
+        for (int attempt = 0; attempt <= HTTP_REQUEST_RETRY_LIMIT; attempt++) {
+            int handle = -1;
+            int dst = -1;
+            int64_t recv_rc = 0;
+            size_t header_len = 0;
+            size_t header_end = 0;
+            uint16_t status_code = 0;
+            uint32_t expected_bytes = 0;
+            uint32_t total_written = 0;
+            int have_length = 0;
+            int progress_started = 0;
+            size_t req_pos = 0;
+            char request_buf[512];
+
+            request_buf[0] = '\0';
+            if (append_text(request_buf, sizeof(request_buf), &req_pos, "GET ") != 0 ||
+                append_text(request_buf, sizeof(request_buf), &req_pos,
+                            url.path[0] ? url.path : "/") != 0 ||
+                append_text(request_buf, sizeof(request_buf), &req_pos,
+                            " HTTP/1.1\r\nHost: ") != 0 ||
+                append_text(request_buf, sizeof(request_buf), &req_pos, url.host) != 0 ||
+                append_text(request_buf, sizeof(request_buf), &req_pos,
+                            "\r\nConnection: close\r\nUser-Agent: NumOS-Install\r\n\r\n") != 0) {
+                write_str("install: request is too large\n");
+                return -1;
+            }
+
+            handle = (int)sys_net_tcp_connect(url.remote_ip, url.remote_port, HTTP_TIMEOUT_MS);
+            if (handle < 0) {
+                recv_rc = handle;
+                goto stream_attempt_fail;
+            }
+            if (tcp_send_all(handle, request_buf, req_pos, HTTP_TIMEOUT_MS) != 0) {
+                recv_rc = NET_ERR_GENERIC;
+                goto stream_attempt_fail;
+            }
+
+            for (;;) {
+                recv_rc = sys_net_tcp_recv(handle,
+                                           http_stream_recv_buffer,
+                                           sizeof(http_stream_recv_buffer),
+                                           HTTP_TIMEOUT_MS);
+                if (recv_rc <= 0) break;
+
+                if (header_end == 0) {
+                    if (header_len + (size_t)recv_rc > HTTP_STREAM_HEADER_BYTES) {
+                        write_str("install: HTTP headers are too large\n");
+                        recv_rc = NET_ERR_INVALID;
+                        goto stream_attempt_fail;
+                    }
+                    memcpy(http_stream_header_buffer + header_len,
+                           http_stream_recv_buffer,
+                           (size_t)recv_rc);
+                    header_len += (size_t)recv_rc;
+                    http_stream_header_buffer[header_len] = '\0';
+                    header_end = find_http_header_end(http_stream_header_buffer, header_len);
+                    if (header_end == 0) continue;
+
+                    if (parse_http_status_code_text(http_stream_header_buffer, &status_code) != 0) {
+                        write_str("install: invalid HTTP response\n");
+                        recv_rc = NET_ERR_INVALID;
+                        goto stream_attempt_fail;
+                    }
+
+                    if (status_code >= 300u && status_code < 400u) {
+                        if (parse_header_value(http_stream_header_buffer, "Location",
+                                               location, sizeof(location)) != 0 ||
+                            resolve_remote_redirect_location(&url, location,
+                                                             next, sizeof(next)) != 0) {
+                            write_str("install: bad kernel redirect target\n");
+                            return -1;
+                        }
+                        follow_redirect = 1;
+                        break;
+                    }
+
+                    if (status_code < 200u || status_code >= 300u) {
+                        write_str("install: HTTP status ");
+                        write_dec(status_code);
+                        write_str("\n");
+                        return -1;
+                    }
+
+                    if (parse_header_value(http_stream_header_buffer, "Content-Length",
+                                           content_length_text,
+                                           sizeof(content_length_text)) == 0 &&
+                        parse_uint32_text(content_length_text, &expected_bytes)) {
+                        have_length = 1;
+                    }
+
+                    dst = (int)sys_open(dst_path,
+                                        FAT32_O_WRONLY | FAT32_O_CREAT | FAT32_O_TRUNC,
+                                        0);
+                    if (dst < 0) {
+                        write_str("install: failed to create staged kernel file\n");
+                        return -1;
+                    }
+
+                    if (have_length) {
+                        write_download_progress(0, expected_bytes, 0);
+                        progress_started = 1;
+                    }
+
+                    if (header_len > header_end) {
+                        size_t body_bytes = header_len - header_end;
+                        if (sys_write(dst,
+                                      http_stream_header_buffer + header_end,
+                                      body_bytes) != (int64_t)body_bytes) {
+                            write_str("install: failed while staging kernel bytes\n");
+                            recv_rc = NET_ERR_GENERIC;
+                            goto stream_attempt_fail;
+                        }
+                        total_written += (uint32_t)body_bytes;
+                        if (have_length) write_download_progress(total_written, expected_bytes, 0);
+                    }
+                    continue;
+                }
+
+                if (dst < 0) {
+                    write_str("install: missing staged kernel destination\n");
+                    recv_rc = NET_ERR_INVALID;
+                    goto stream_attempt_fail;
+                }
+                if (sys_write(dst, http_stream_recv_buffer, (size_t)recv_rc) != recv_rc) {
+                    write_str("install: failed while staging kernel bytes\n");
+                    recv_rc = NET_ERR_GENERIC;
+                    goto stream_attempt_fail;
+                }
+                total_written += (uint32_t)recv_rc;
+                if (have_length) write_download_progress(total_written, expected_bytes, 0);
+            }
+
+            if (handle >= 0) {
+                sys_net_tcp_close(handle, HTTP_TIMEOUT_MS);
+                handle = -1;
+            }
+
+            if (follow_redirect) {
+                if (dst >= 0) sys_close(dst);
+                write_str("install: following redirect to ");
+                write_str(next);
+                write_str("\n");
+                strncpy(current, next, sizeof(current) - 1);
+                current[sizeof(current) - 1] = '\0';
+                break;
+            }
+
+            if (dst >= 0) {
+                sys_close(dst);
+                dst = -1;
+            }
+
+            if (recv_rc < 0) goto stream_attempt_fail;
+            if (header_end == 0) {
+                write_str("install: incomplete HTTP response\n");
+                return -1;
+            }
+            if (have_length && total_written != expected_bytes) {
+                write_str("install: kernel download ended early\n");
+                return -1;
+            }
+            if (total_written == 0) {
+                write_str("install: downloaded kernel is empty\n");
+                return -1;
+            }
+
+            if (progress_started) write_download_progress(total_written, expected_bytes, 1);
+            else {
+                write_str("install: downloaded ");
+                write_dec(total_written);
+                write_str(" bytes\n");
+            }
+            return 0;
+
+stream_attempt_fail:
+            if (handle >= 0) sys_net_tcp_close(handle, HTTP_TIMEOUT_MS);
+            if (dst >= 0) sys_close(dst);
+            write_file_bytes(dst_path, "", 0);
+
+            if (attempt == HTTP_REQUEST_RETRY_LIMIT || !request_should_retry(recv_rc)) {
+                write_network_error_reason(recv_rc);
+                return -1;
+            }
+
+            write_str("install: kernel download retry ");
+            write_dec((uint64_t)(attempt + 2));
+            write_str("/");
+            write_dec((uint64_t)(HTTP_REQUEST_RETRY_LIMIT + 1));
+            write_str("\n");
+        }
+
+        if (!follow_redirect) break;
+        if (redirect == HTTP_REDIRECT_LIMIT) {
+            write_str("install: too many kernel URL redirects\n");
+            return -1;
+        }
+    }
+
+    write_str("install: too many kernel URL redirects\n");
+    return -1;
+}
+
 static int fetch_remote_kernel_bytes(const char *url_text,
                                      const uint8_t **out_data,
                                      size_t *out_len) {
@@ -588,12 +965,16 @@ static int stage_kernel_from_source(const char *src_path, const char *dst_path) 
     if (!src_path || !dst_path) return -1;
 
     if (is_http_url(src_path)) {
-        const uint8_t *downloaded = 0;
-        size_t downloaded_len = 0;
-
         write_str("install: downloading kernel from ");
         write_str(src_path);
         write_str("\n");
+
+        if (starts_with_text(src_path, "http://")) {
+            return stream_remote_kernel_to_file(src_path, dst_path);
+        }
+
+        const uint8_t *downloaded = 0;
+        size_t downloaded_len = 0;
 
         if (fetch_remote_kernel_bytes(src_path, &downloaded, &downloaded_len) != 0) {
             return -1;
@@ -649,6 +1030,29 @@ static int write_file_bytes(const char *path, const char *data, size_t len) {
     }
 
     sys_close(fd);
+    return 0;
+}
+
+static int read_file_prefix(const char *path, uint8_t *buf, size_t cap, size_t *out_len) {
+    int fd;
+    size_t total = 0;
+
+    if (!path || !buf || cap == 0 || !out_len) return -1;
+    fd = (int)sys_open(path, FAT32_O_RDONLY, 0);
+    if (fd < 0) return -1;
+
+    while (total < cap) {
+        int64_t got = sys_read(fd, buf + total, cap - total);
+        if (got < 0) {
+            sys_close(fd);
+            return -1;
+        }
+        if (got == 0) break;
+        total += (size_t)got;
+    }
+
+    sys_close(fd);
+    *out_len = total;
     return 0;
 }
 
@@ -887,6 +1291,113 @@ static int parse_boot_cfg_value(const char *text, const char *key, char *out, si
     }
 
     return -1;
+}
+
+static int parse_cmdline_value(const char *text, const char *key, char *out, size_t cap) {
+    size_t key_len;
+    const char *cursor;
+
+    if (!text || !key || !out || cap == 0) return -1;
+    key_len = strlen(key);
+    cursor = text;
+
+    while (*cursor) {
+        size_t pos = 0;
+        const char *token;
+
+        while (*cursor && is_space(*cursor)) cursor++;
+        if (!*cursor) break;
+
+        token = cursor;
+        while (*cursor && !is_space(*cursor)) cursor++;
+        if ((size_t)(cursor - token) <= key_len) continue;
+        if (strncmp(token, key, key_len) != 0) continue;
+
+        token += key_len;
+        while (token < cursor && pos + 1 < cap) {
+            out[pos++] = *token++;
+        }
+        out[pos] = '\0';
+        return 0;
+    }
+
+    return -1;
+}
+
+static int normalize_gfx_mode(const char *value, char *out, size_t cap) {
+    if (!value || !out || cap == 0) return -1;
+    if (ascii_casecmp(value, "vga") == 0) {
+        strncpy(out, "vga", cap - 1);
+        out[cap - 1] = '\0';
+        return 0;
+    }
+    if (ascii_casecmp(value, "vesa") == 0) {
+        strncpy(out, "vesa", cap - 1);
+        out[cap - 1] = '\0';
+        return 0;
+    }
+    if (ascii_casecmp(value, "bga") == 0) {
+        strncpy(out, "bga", cap - 1);
+        out[cap - 1] = '\0';
+        return 0;
+    }
+    if (ascii_casecmp(value, "auto") == 0) {
+        strncpy(out, "auto", cap - 1);
+        out[cap - 1] = '\0';
+        return 0;
+    }
+    return -1;
+}
+
+static int resolve_running_gfx_mode(char *out, size_t cap) {
+    char cmdline[256];
+    char value[16];
+
+    if (!out || cap == 0) return -1;
+    if (sys_get_cmdline(cmdline, sizeof(cmdline)) < 0 || cmdline[0] == '\0') return -1;
+    if (parse_cmdline_value(cmdline, "gfx=", value, sizeof(value)) != 0) return -1;
+    return normalize_gfx_mode(value, out, cap);
+}
+
+static int kernel_has_multiboot_framebuffer_tag(const uint8_t *data, size_t len) {
+    size_t limit;
+
+    if (!data || len < 16) return 0;
+    limit = len;
+    if (limit > MULTIBOOT2_SEARCH_LIMIT) limit = MULTIBOOT2_SEARCH_LIMIT;
+
+    for (size_t off = 0; off + 16 <= limit; off += 4) {
+        size_t tags_off;
+        size_t header_end;
+
+        if (load_u32_le(data + off) != MULTIBOOT2_HEADER_MAGIC) continue;
+
+        header_end = off + (size_t)load_u32_le(data + off + 8);
+        if (header_end > limit || header_end < off + 16) continue;
+
+        tags_off = off + 16;
+        while (tags_off + 8 <= header_end) {
+            uint16_t type = load_u16_le(data + tags_off);
+            uint32_t size = load_u32_le(data + tags_off + 4);
+
+            if (size < 8) break;
+            if (type == MULTIBOOT2_TAG_FRAMEBUFFER) return 1;
+            if (type == MULTIBOOT2_TAG_END) break;
+
+            tags_off += align_up_size((size_t)size, 8);
+        }
+    }
+
+    return 0;
+}
+
+static int staged_kernel_supports_vesa(const char *path) {
+    uint8_t header[MULTIBOOT2_SEARCH_LIMIT];
+    size_t header_len = 0;
+
+    if (!path) return 0;
+    if (read_file_prefix(path, header, sizeof(header), &header_len) != 0) return 0;
+    return kernel_has_multiboot_framebuffer_tag(header, header_len);
 }
 
 static int write_boot_cfg(const char *default_kernel, const char *fallback_kernel,
@@ -1298,9 +1809,11 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
     char current_fallback[64];
     char default_gfx[16];
     char fallback_gfx[16];
+    char running_gfx[16];
     char new_kernel_path[64];
     char fallback_kernel[64];
     int reused_empty_slot = 0;
+    int have_running_gfx = 0;
 
     if (!src_path || src_path[0] == '\0') {
         write_str("install: missing kernel path\n");
@@ -1342,6 +1855,14 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
                              fallback_gfx, sizeof(fallback_gfx));
     }
 
+    if (resolve_running_gfx_mode(running_gfx, sizeof(running_gfx)) == 0) {
+        have_running_gfx = 1;
+        strncpy(default_gfx, running_gfx, sizeof(default_gfx) - 1);
+        default_gfx[sizeof(default_gfx) - 1] = '\0';
+        strncpy(fallback_gfx, running_gfx, sizeof(fallback_gfx) - 1);
+        fallback_gfx[sizeof(fallback_gfx) - 1] = '\0';
+    }
+
     strncpy(fallback_kernel, current_default, sizeof(fallback_kernel) - 1);
     fallback_kernel[sizeof(fallback_kernel) - 1] = '\0';
     if (fallback_kernel[0] == '\0') {
@@ -1365,6 +1886,20 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
     if (stage_kernel_from_source(src_path, new_kernel_path) != 0) {
         write_str("install: failed to stage new kernel into /boot\n");
         return 1;
+    }
+
+    if (ascii_casecmp(default_gfx, "vesa") == 0 &&
+        !staged_kernel_supports_vesa(new_kernel_path)) {
+        write_file_bytes(new_kernel_path, "", 0);
+        write_str("install: staged kernel does not support VESA boot\n");
+        write_str("install: use a kernel image built with the framebuffer tag\n");
+        return 1;
+    }
+
+    if (have_running_gfx) {
+        write_str("install: preserving gfx mode ");
+        write_str(default_gfx);
+        write_str("\n");
     }
 
     if (write_boot_cfg(new_kernel_path, fallback_kernel, default_gfx, fallback_gfx) != 0) {

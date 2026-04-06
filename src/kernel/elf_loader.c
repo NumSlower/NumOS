@@ -21,6 +21,7 @@
 #include "kernel/elf_loader.h"
 #include "kernel/kernel.h"
 #include "kernel/numloss.h"
+#include "kernel/scheduler.h"
 #include "drivers/graphices/vga.h"
 #include "cpu/paging.h"
 #include "fs/fat32.h"
@@ -301,23 +302,40 @@ static int map_segment(const uint8_t        *data,
  * Stack allocation
  * ======================================================================= */
 
-/* Number of 4 KB pages to allocate for the user stack */
-#define USER_STACK_PAGES  16   /* 64 KB */
+static uint64_t choose_stack_reserve(uint64_t lower_limit, uint64_t stack_top) {
+    lower_limit = paging_align_up(lower_limit, PAGE_SIZE);
+    stack_top = paging_align_down(stack_top, PAGE_SIZE);
+    if (stack_top <= lower_limit) return 0;
+
+    uint64_t available = stack_top - lower_limit;
+    if (available < USER_STACK_INITIAL_COMMIT_SIZE) return 0;
+
+    uint64_t reserve =
+        paging_align_down(available / MAX_PROCESSES, PAGE_SIZE);
+    if (reserve < USER_STACK_INITIAL_COMMIT_SIZE) {
+        reserve = USER_STACK_INITIAL_COMMIT_SIZE;
+    }
+    return reserve;
+}
 
 /*
- * allocate_user_stack - map USER_STACK_PAGES pages immediately below
- * stack_top_virt as PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER.
+ * allocate_user_stack - reserve a stack range immediately below stack_top_virt
+ * and map only the top page up front. Lower pages fault in on demand.
  *
  * Returns the aligned RSP value (stack_top_virt - 8, 16-byte aligned) on
  * success, or 0 on failure.  Sets *stack_bottom_out to the lowest mapped
  * virtual address.
  */
 static uint64_t allocate_user_stack(uint64_t  stack_top_virt,
+                                    uint64_t  reserve_size,
                                     uint64_t *stack_bottom_out) {
-    uint64_t stack_bottom = stack_top_virt - (USER_STACK_PAGES * PAGE_SIZE);
+    if (reserve_size < USER_STACK_INITIAL_COMMIT_SIZE) return 0;
+
+    uint64_t stack_bottom = stack_top_virt - reserve_size;
+    uint64_t commit_bottom = stack_top_virt - USER_STACK_INITIAL_COMMIT_SIZE;
     uint64_t pflags       = PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
 
-    for (uint64_t virt = stack_bottom; virt < stack_top_virt; virt += PAGE_SIZE) {
+    for (uint64_t virt = commit_bottom; virt < stack_top_virt; virt += PAGE_SIZE) {
 #if defined(__aarch64__)
         uint64_t phys = virt;
 #else
@@ -439,7 +457,9 @@ int elf_load_from_memory(const void *elf_data,
 
     /* Allocate the user stack below USER_STACK_TOP */
     uint64_t stack_bottom = 0;
-    uint64_t stack_top    = allocate_user_stack(USER_STACK_TOP, &stack_bottom);
+    uint64_t stack_reserve = choose_stack_reserve(load_end, USER_STACK_TOP);
+    uint64_t stack_top =
+        allocate_user_stack(USER_STACK_TOP, stack_reserve, &stack_bottom);
     if (!stack_top) {
         return elf_err(result, ELF_ERR_STACK,
                        "User stack allocation failed");

@@ -14,6 +14,7 @@
 
 #include "cpu/paging.h"
 #include "kernel/kernel.h"
+#include "kernel/scheduler.h"
 #include "drivers/graphices/vga.h"
 #include "cpu/heap.h"
 
@@ -566,10 +567,17 @@ uint64_t paging_align_down(uint64_t addr, uint64_t alignment) {
 /*
  * page_fault_handler - called from the IDT exception handler for vector 14.
  * Attempts demand-paging if the faulting address is inside a known VM region.
+ * User stack growth also stays active during syscalls, because the kernel may
+ * touch a user buffer before that stack page has been committed.
  * Halts the kernel for unhandled faults.
  */
 void page_fault_handler(uint64_t error_code, uint64_t fault_addr) {
     paging_stats.page_faults++;
+
+    if (!(error_code & 1) &&
+        scheduler_handle_user_page_fault(fault_addr)) {
+        return;
+    }
 
     struct vm_region *region = paging_find_vm_region(fault_addr);
 

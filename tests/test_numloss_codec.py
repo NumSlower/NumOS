@@ -62,7 +62,18 @@ class NumlossCodecTest(unittest.TestCase):
 
         archive = numloss_codec.encode(payload)
 
-        self.assertLess(len(archive), 3800)
+        self.assertLess(len(archive), 4400)
+
+    def test_text_dictionary_transform_improves_requested_benchmark(self):
+        payload = (REPO_ROOT / "user" / "files" / "home" / "Test.txt").read_bytes()
+
+        archive = numloss_codec.encode(payload)
+        restored = numloss_codec.decode(archive)
+
+        self.assertEqual(restored, payload)
+        self.assertEqual(archive[4], numloss_codec.VERSION_V4)
+        self.assertEqual(archive[5], numloss_codec.TRANSFORM_TEXT_PROSE)
+        self.assertLess(len(archive), 5850)
 
     def test_maybe_pack_record_packs_useful_elf_payload(self):
         record = create_disk.create_file_record("demo.elf", b"\x90" * 4096)

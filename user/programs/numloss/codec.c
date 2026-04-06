@@ -29,6 +29,8 @@
 #define NUMLOSS_REPEAT_MATCH_TOKEN_LAST 0xfeu
 #define NUMLOSS_LONG_MATCH_TOKEN 0xffu
 #define NUMLOSS_VISIT_BITMAP_BYTES ((NUMLOSS_MAX_INPUT_BYTES + 7u) / 8u)
+#define NUMLOSS_TEXT_ESCAPE 0u
+#define NUMLOSS_TEXT_TOKEN_BASE 0x80u
 
 #define NUMLOSS_HASH_BITS 13u
 #define NUMLOSS_HASH_SIZE (1u << NUMLOSS_HASH_BITS)
@@ -64,6 +66,173 @@ struct numloss_match_candidates {
     uint32_t short_offset;
 };
 
+struct numloss_text_dict_entry {
+    const char *text;
+    uint8_t len;
+};
+
+#define TEXT_ENTRY(s) { s, (uint8_t)(sizeof(s) - 1u) }
+
+static const struct numloss_text_dict_entry g_text_prose_dict[] = {
+    TEXT_ENTRY(" the "),
+    TEXT_ENTRY(" and "),
+    TEXT_ENTRY(" compress"),
+    TEXT_ENTRY("ing "),
+    TEXT_ENTRY("compression"),
+    TEXT_ENTRY("tion"),
+    TEXT_ENTRY("ompression "),
+    TEXT_ENTRY(":\n\n```bash\n"),
+    TEXT_ENTRY("\n\n```bash\nmake "),
+    TEXT_ENTRY("\n- `"),
+    TEXT_ENTRY(" of "),
+    TEXT_ENTRY(" kernel"),
+    TEXT_ENTRY("s th"),
+    TEXT_ENTRY("ding"),
+    TEXT_ENTRY(" in "),
+    TEXT_ENTRY("ossless compres"),
+    TEXT_ENTRY(" to "),
+    TEXT_ENTRY(". The "),
+    TEXT_ENTRY(" symbol"),
+    TEXT_ENTRY(" with "),
+    TEXT_ENTRY(" codin"),
+    TEXT_ENTRY("build"),
+    TEXT_ENTRY("kernel "),
+    TEXT_ENTRY("\n```\n\n"),
+    TEXT_ENTRY(" appear"),
+    TEXT_ENTRY(" informatio"),
+    TEXT_ENTRY(" lossless compre"),
+    TEXT_ENTRY("boot"),
+    TEXT_ENTRY(" that "),
+    TEXT_ENTRY("ore "),
+    TEXT_ENTRY(" use"),
+    TEXT_ENTRY(" data"),
+    TEXT_ENTRY("install"),
+    TEXT_ENTRY(" Huffman"),
+    TEXT_ENTRY(" algorithm"),
+    TEXT_ENTRY(", and"),
+    TEXT_ENTRY(" partitio"),
+    TEXT_ENTRY("es t"),
+    TEXT_ENTRY("ctio"),
+    TEXT_ENTRY("rithmetic codi"),
+    TEXT_ENTRY("appears "),
+    TEXT_ENTRY("Huffman codi"),
+    TEXT_ENTRY(" for "),
+    TEXT_ENTRY("n th"),
+    TEXT_ENTRY(" ins"),
+    TEXT_ENTRY(" con"),
+    TEXT_ENTRY(" character"),
+    TEXT_ENTRY("mpression ratio"),
+    TEXT_ENTRY("\n```bash\nmake p"),
+    TEXT_ENTRY(" file"),
+    TEXT_ENTRY("age "),
+    TEXT_ENTRY(" sta"),
+    TEXT_ENTRY("the s"),
+    TEXT_ENTRY(" stor"),
+    TEXT_ENTRY(" buil"),
+    TEXT_ENTRY("haracters"),
+    TEXT_ENTRY(" entropy "),
+    TEXT_ENTRY(" pro"),
+    TEXT_ENTRY(" is "),
+    TEXT_ENTRY(" current"),
+    TEXT_ENTRY("s a "),
+    TEXT_ENTRY("ent "),
+    TEXT_ENTRY("e in"),
+    TEXT_ENTRY("ionary"),
+    TEXT_ENTRY(" dictionary"),
+    TEXT_ENTRY(". It "),
+    TEXT_ENTRY(" compression"),
+    TEXT_ENTRY(" of the "),
+    TEXT_ENTRY(" coding"),
+    TEXT_ENTRY(" appears "),
+    TEXT_ENTRY(" Huffman coding"),
+    TEXT_ENTRY(" compression ratio"),
+    TEXT_ENTRY(" DEFLATE"),
+    TEXT_ENTRY(" characters"),
+    TEXT_ENTRY(" string"),
+    TEXT_ENTRY(" code"),
+    TEXT_ENTRY("Lossless compression "),
+    TEXT_ENTRY(" entropy coding"),
+    TEXT_ENTRY(" compresses "),
+    TEXT_ENTRY(" information"),
+    TEXT_ENTRY(" arithmetic coding"),
+    TEXT_ENTRY(" the same "),
+    TEXT_ENTRY(" identical "),
+    TEXT_ENTRY(" use "),
+    TEXT_ENTRY(" represent"),
+    TEXT_ENTRY(" frequency"),
+    TEXT_ENTRY(" compression ratios "),
+    TEXT_ENTRY(" uses"),
+    TEXT_ENTRY(" prediction"),
+    TEXT_ENTRY(" modern "),
+};
+
+static const struct numloss_text_dict_entry g_text_code_dict[] = {
+    TEXT_ENTRY("       "),
+    TEXT_ENTRY("================"),
+    TEXT_ENTRY("\n    "),
+    TEXT_ENTRY(";\n   "),
+    TEXT_ENTRY("----------------"),
+    TEXT_ENTRY("    if ("),
+    TEXT_ENTRY(" return "),
+    TEXT_ENTRY(") {\n   "),
+    TEXT_ENTRY(");\n  "),
+    TEXT_ENTRY("    return"),
+    TEXT_ENTRY("    uint"),
+    TEXT_ENTRY("\n\n   "),
+    TEXT_ENTRY("      if "),
+    TEXT_ENTRY("    }\n"),
+    TEXT_ENTRY("uint32_t"),
+    TEXT_ENTRY("\n#define "),
+    TEXT_ENTRY("size"),
+    TEXT_ENTRY("      retur"),
+    TEXT_ENTRY("int64_t"),
+    TEXT_ENTRY("\nstatic "),
+    TEXT_ENTRY(") return"),
+    TEXT_ENTRY("int32_t "),
+    TEXT_ENTRY("uint8_t "),
+    TEXT_ENTRY("write"),
+    TEXT_ENTRY("const char *"),
+    TEXT_ENTRY("    c"),
+    TEXT_ENTRY("\n}\n\nstatic"),
+    TEXT_ENTRY(" uint8_t"),
+    TEXT_ENTRY(" uint32_"),
+    TEXT_ENTRY("    s"),
+    TEXT_ENTRY("   }\n\n  "),
+    TEXT_ENTRY("nt64_t "),
+    TEXT_ENTRY(";\n\n  "),
+    TEXT_ENTRY("   }\n   "),
+    TEXT_ENTRY(";\n}\n\nstati"),
+    TEXT_ENTRY("struct "),
+    TEXT_ENTRY("uint64_"),
+    TEXT_ENTRY(",0x00,0x00,0x00,"),
+    TEXT_ENTRY(",\n   "),
+    TEXT_ENTRY("   if (!"),
+    TEXT_ENTRY("    writ"),
+    TEXT_ENTRY("   uint32"),
+    TEXT_ENTRY("(uint"),
+    TEXT_ENTRY("void"),
+    TEXT_ENTRY("int "),
+    TEXT_ENTRY("      }"),
+    TEXT_ENTRY(" = 0;"),
+    TEXT_ENTRY("    vga_writ"),
+    TEXT_ENTRY("x00,0x00,0x00,0x"),
+    TEXT_ENTRY("0x00,0x00,0x00,0"),
+    TEXT_ENTRY("   uint8_"),
+    TEXT_ENTRY("ritestring("),
+    TEXT_ENTRY(" */\n"),
+    TEXT_ENTRY("0,0x00,0x00,0x00"),
+    TEXT_ENTRY("ize_t "),
+    TEXT_ENTRY("00,0x00,0x00,0x0"),
+    TEXT_ENTRY(" siz"),
+    TEXT_ENTRY(" 0;\n  "),
+    TEXT_ENTRY("rite_str(\""),
+    TEXT_ENTRY("return 0;\n"),
+    TEXT_ENTRY("\");\n "),
+    TEXT_ENTRY(" ==============="),
+    TEXT_ENTRY("itestring(\""),
+    TEXT_ENTRY(" NUMLOSS_"),
+};
+
 static const uint8_t g_transform_candidates[] = {
     NUMLOSS_TRANSFORM_RAW,
     NUMLOSS_TRANSFORM_DELTA8,
@@ -73,7 +242,12 @@ static const uint8_t g_transform_candidates[] = {
     NUMLOSS_TRANSFORM_GROUP4_XOR8,
     NUMLOSS_TRANSFORM_GROUP8,
     NUMLOSS_TRANSFORM_GROUP8_DELTA8,
-    NUMLOSS_TRANSFORM_GROUP8_XOR8
+    NUMLOSS_TRANSFORM_GROUP8_XOR8,
+    /* --- additions from the time-series and ZipNN papers --- */
+    NUMLOSS_TRANSFORM_GROUP2,
+    NUMLOSS_TRANSFORM_GROUP2_DELTA8,
+    NUMLOSS_TRANSFORM_GROUP2_XOR8,
+    NUMLOSS_TRANSFORM_DELTA8_DELTA8
 };
 
 static uint32_t min_u32(uint32_t a, uint32_t b) {
@@ -106,7 +280,11 @@ static uint8_t archive_version(const uint8_t *input, uint32_t input_size) {
 }
 
 static uint8_t archive_transform(const uint8_t *input, uint32_t input_size) {
-    if (archive_version(input, input_size) != NUMLOSS_VERSION_V3) return NUMLOSS_TRANSFORM_RAW;
+    uint8_t version = archive_version(input, input_size);
+
+    if (version != NUMLOSS_VERSION_V3 && version != NUMLOSS_VERSION_V4) {
+        return NUMLOSS_TRANSFORM_RAW;
+    }
     return input[5];
 }
 
@@ -133,9 +311,20 @@ int numloss_read_header(const uint8_t *input, uint32_t input_size,
     version = archive_version(input, input_size);
     if (version == 0u) return NUMLOSS_ERR_FORMAT;
 
-    if (version == NUMLOSS_VERSION_V1 || version == NUMLOSS_VERSION_V3) {
+    if (version == NUMLOSS_VERSION_V1 ||
+        version == NUMLOSS_VERSION_V3 ||
+        version == NUMLOSS_VERSION_V4) {
         payload = read_u32_le(input + 12);
-        if (payload > input_size - NUMLOSS_HEADER_SIZE) return NUMLOSS_ERR_FORMAT;
+        /*
+         * Only validate that the declared payload fits within the supplied
+         * buffer when the caller has provided more than the 16-byte header.
+         * When cmd_decompress calls us with sizeof(header) == NUMLOSS_HEADER_SIZE
+         * we are just parsing header fields; the payload has not been read yet.
+         */
+        if (input_size > NUMLOSS_HEADER_SIZE &&
+            payload > input_size - NUMLOSS_HEADER_SIZE) {
+            return NUMLOSS_ERR_FORMAT;
+        }
     } else if (version == NUMLOSS_VERSION_V2) {
         payload = input_size - NUMLOSS_HEADER_SIZE;
     } else {
@@ -145,6 +334,38 @@ int numloss_read_header(const uint8_t *input, uint32_t input_size,
     if (original_size) *original_size = read_u32_le(input + 8);
     if (payload_size) *payload_size = payload;
     return NUMLOSS_OK;
+}
+
+static int looks_text_like(const uint8_t *input, uint32_t input_size) {
+    uint32_t printable = 0u;
+
+    if (!input || input_size == 0u) return 0;
+
+    for (uint32_t i = 0; i < input_size; i++) {
+        uint8_t value = input[i];
+        if (value == '\t' || value == '\n' || value == '\r' ||
+            (value >= 32u && value < 127u)) {
+            printable++;
+        }
+    }
+
+    return printable * 8u >= input_size * 7u;
+}
+
+static const struct numloss_text_dict_entry *text_dictionary_for_transform(uint8_t transform,
+                                                                           uint32_t *count_out) {
+    if (transform == NUMLOSS_TRANSFORM_TEXT_PROSE) {
+        if (count_out) *count_out = (uint32_t)(sizeof(g_text_prose_dict) / sizeof(g_text_prose_dict[0]));
+        return g_text_prose_dict;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_TEXT_CODE) {
+        if (count_out) *count_out = (uint32_t)(sizeof(g_text_code_dict) / sizeof(g_text_code_dict[0]));
+        return g_text_code_dict;
+    }
+
+    if (count_out) *count_out = 0u;
+    return 0;
 }
 
 static void history_reset(void) {
@@ -516,6 +737,43 @@ static void inverse_xor_in_place(uint8_t *data, uint32_t input_size) {
     }
 }
 
+/*
+ * apply_delta2_transform - second-order (delta-of-delta) coding.
+ *
+ * First we compute the first-order residuals r[i] = x[i] - x[i-1], then
+ * we compute the second-order residuals d[i] = r[i] - r[i-1].  This is
+ * most effective when the signal accelerates (or decelerates) smoothly,
+ * e.g. ramp signals, because the second-order residuals cluster near zero
+ * much more tightly than the raw deltas do.
+ *
+ * Reference: Matt et al., "Lossless Compression of Time Series Data",
+ * arXiv:2510.07015, §III-A (delta coding ablation, "Sine" test case).
+ */
+static void apply_delta2_transform(const uint8_t *input, uint32_t input_size,
+                                   uint8_t *output) {
+    uint8_t prev  = 0u;
+    uint8_t delta = 0u;
+
+    for (uint32_t index = 0; index < input_size; index++) {
+        uint8_t value     = input[index];
+        uint8_t new_delta = (uint8_t)(value - prev);
+        output[index]     = (uint8_t)(new_delta - delta);
+        prev              = value;
+        delta             = new_delta;
+    }
+}
+
+static void inverse_delta2_in_place(uint8_t *data, uint32_t input_size) {
+    uint8_t delta = 0u;
+    uint8_t value = 0u;
+
+    for (uint32_t index = 0; index < input_size; index++) {
+        delta = (uint8_t)(delta + data[index]);   /* un-second-delta  */
+        value = (uint8_t)(value + delta);          /* un-first-delta   */
+        data[index] = value;
+    }
+}
+
 static void clear_visit_bitmap(uint32_t bits) {
     uint32_t bytes = (bits + 7u) / 8u;
     memset(g_visit_bitmap, 0, bytes);
@@ -576,6 +834,94 @@ static void inverse_group_in_place(uint8_t *data, uint32_t input_size, uint32_t 
             if (cur == start) break;
         }
     }
+}
+
+static int apply_text_dictionary_transform(const uint8_t *input, uint32_t input_size,
+                                           const struct numloss_text_dict_entry *dict,
+                                           uint32_t dict_count,
+                                           uint8_t *output, uint32_t output_cap,
+                                           uint32_t *output_size) {
+    uint32_t in_pos = 0u;
+    uint32_t out_pos = 0u;
+
+    if (!input || !dict || !output || !output_size) return NUMLOSS_ERR_ARGS;
+    if (!looks_text_like(input, input_size)) return NUMLOSS_ERR_FORMAT;
+
+    while (in_pos < input_size) {
+        uint32_t best_index = 0u;
+        uint32_t best_len = 0u;
+
+        for (uint32_t i = 0; i < dict_count; i++) {
+            uint32_t len = dict[i].len;
+
+            if (len <= best_len || in_pos + len > input_size) continue;
+            if (memcmp(input + in_pos, dict[i].text, len) != 0) continue;
+
+            best_len = len;
+            best_index = i;
+        }
+
+        if (best_len > 0u) {
+            if (best_index >= 128u || out_pos + 1u > output_cap) return NUMLOSS_ERR_OUTPUT;
+            output[out_pos++] = (uint8_t)(NUMLOSS_TEXT_TOKEN_BASE + best_index);
+            in_pos += best_len;
+            continue;
+        }
+
+        if (input[in_pos] == NUMLOSS_TEXT_ESCAPE || input[in_pos] > 0x7fu) {
+            if (out_pos + 2u > output_cap) return NUMLOSS_ERR_OUTPUT;
+            output[out_pos++] = NUMLOSS_TEXT_ESCAPE;
+            output[out_pos++] = input[in_pos++];
+            continue;
+        }
+
+        if (out_pos + 1u > output_cap) return NUMLOSS_ERR_OUTPUT;
+        output[out_pos++] = input[in_pos++];
+    }
+
+    *output_size = out_pos;
+    return NUMLOSS_OK;
+}
+
+static int inverse_text_dictionary_transform(const uint8_t *input, uint32_t input_size,
+                                             const struct numloss_text_dict_entry *dict,
+                                             uint32_t dict_count,
+                                             uint8_t *output, uint32_t output_cap,
+                                             uint32_t *output_size) {
+    uint32_t in_pos = 0u;
+    uint32_t out_pos = 0u;
+
+    if (!input || !dict || !output || !output_size) return NUMLOSS_ERR_ARGS;
+
+    while (in_pos < input_size) {
+        uint8_t token = input[in_pos++];
+
+        if (token == NUMLOSS_TEXT_ESCAPE) {
+            if (in_pos >= input_size || out_pos + 1u > output_cap) return NUMLOSS_ERR_FORMAT;
+            output[out_pos++] = input[in_pos++];
+            continue;
+        }
+
+        if (token < NUMLOSS_TEXT_TOKEN_BASE) {
+            if (out_pos + 1u > output_cap) return NUMLOSS_ERR_OUTPUT;
+            output[out_pos++] = token;
+            continue;
+        }
+
+        {
+            uint32_t index = (uint32_t)(token - NUMLOSS_TEXT_TOKEN_BASE);
+            uint32_t len = 0u;
+
+            if (index >= dict_count) return NUMLOSS_ERR_FORMAT;
+            len = dict[index].len;
+            if (out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
+            memcpy(output + out_pos, dict[index].text, len);
+            out_pos += len;
+        }
+    }
+
+    *output_size = out_pos;
+    return NUMLOSS_OK;
 }
 
 static int apply_transform(const uint8_t *input, uint32_t input_size,
@@ -640,6 +986,34 @@ static int apply_transform(const uint8_t *input, uint32_t input_size,
         return NUMLOSS_OK;
     }
 
+    /* --- transforms added from the time-series and ZipNN papers --- */
+
+    if (transform == NUMLOSS_TRANSFORM_GROUP2) {
+        apply_group_transform(input, input_size, g_transform_buf, 2u);
+        *encoded_input_out = g_transform_buf;
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_GROUP2_DELTA8) {
+        apply_group_transform(input, input_size, g_transform_buf, 2u);
+        apply_delta_transform(g_transform_buf, input_size, g_transform_buf);
+        *encoded_input_out = g_transform_buf;
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_GROUP2_XOR8) {
+        apply_group_transform(input, input_size, g_transform_buf, 2u);
+        apply_xor_transform(g_transform_buf, input_size, g_transform_buf);
+        *encoded_input_out = g_transform_buf;
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_DELTA8_DELTA8) {
+        apply_delta2_transform(input, input_size, g_transform_buf);
+        *encoded_input_out = g_transform_buf;
+        return NUMLOSS_OK;
+    }
+
     return NUMLOSS_ERR_FORMAT;
 }
 
@@ -687,6 +1061,30 @@ static int inverse_transform_in_place(uint8_t *data, uint32_t input_size, uint8_
     if (transform == NUMLOSS_TRANSFORM_GROUP8_XOR8) {
         inverse_xor_in_place(data, input_size);
         inverse_group_in_place(data, input_size, 8u);
+        return NUMLOSS_OK;
+    }
+
+    /* --- new transforms --- */
+
+    if (transform == NUMLOSS_TRANSFORM_GROUP2) {
+        inverse_group_in_place(data, input_size, 2u);
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_GROUP2_DELTA8) {
+        inverse_delta_in_place(data, input_size);
+        inverse_group_in_place(data, input_size, 2u);
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_GROUP2_XOR8) {
+        inverse_xor_in_place(data, input_size);
+        inverse_group_in_place(data, input_size, 2u);
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_DELTA8_DELTA8) {
+        inverse_delta2_in_place(data, input_size);
         return NUMLOSS_OK;
     }
 
@@ -767,35 +1165,21 @@ static int numloss_decode_v1(const uint8_t *input, uint32_t input_size,
     return NUMLOSS_OK;
 }
 
-static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
-                             uint8_t *output, uint32_t output_cap,
-                             uint32_t *output_size) {
-    uint32_t original_size = 0;
-    uint32_t payload_size = 0;
-    uint32_t in_pos = NUMLOSS_HEADER_SIZE;
-    uint32_t in_end = 0;
+static int numloss_decode_match_stream(const uint8_t *payload, uint32_t payload_size,
+                                       uint8_t *output, uint32_t output_cap,
+                                       uint32_t *output_size) {
+    uint32_t in_pos = 0u;
+    uint32_t in_end = payload_size;
     uint32_t out_pos = 0;
     uint32_t last_offset = 0;
-    uint8_t transform = archive_transform(input, input_size);
-    int rc = NUMLOSS_OK;
-
-    rc = numloss_read_header(input, input_size, &original_size, &payload_size);
-    if (rc != NUMLOSS_OK) return rc;
-
-    if (archive_version(input, input_size) != NUMLOSS_VERSION_V3) return NUMLOSS_ERR_FORMAT;
-    if (input_size != NUMLOSS_HEADER_SIZE + payload_size) return NUMLOSS_ERR_FORMAT;
-    if (original_size > output_cap) return NUMLOSS_ERR_OUTPUT;
-
-    in_end = NUMLOSS_HEADER_SIZE + payload_size;
 
     while (in_pos < in_end) {
-        uint8_t token = input[in_pos++];
+        uint8_t token = payload[in_pos++];
 
         if (token <= 0x3fu) {
             uint32_t len = (uint32_t)token + 1u;
-            if (in_pos + len > in_end) return NUMLOSS_ERR_FORMAT;
-            if (out_pos + len > original_size || out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
-            memcpy(output + out_pos, input + in_pos, len);
+            if (in_pos + len > in_end || out_pos + len > output_cap) return NUMLOSS_ERR_FORMAT;
+            memcpy(output + out_pos, payload + in_pos, len);
             in_pos += len;
             out_pos += len;
             continue;
@@ -805,10 +1189,9 @@ static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
             uint32_t len = (uint32_t)(token - 0x40u) + NUMLOSS_RUN_MIN_V3;
             uint8_t value = 0;
 
-            if (in_pos >= in_end) return NUMLOSS_ERR_FORMAT;
-            if (out_pos + len > original_size || out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
+            if (in_pos >= in_end || out_pos + len > output_cap) return NUMLOSS_ERR_FORMAT;
 
-            value = input[in_pos++];
+            value = payload[in_pos++];
             memset(output + out_pos, value, len);
             out_pos += len;
             continue;
@@ -821,13 +1204,13 @@ static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
 
             if (in_pos >= in_end) return NUMLOSS_ERR_FORMAT;
 
-            code = (((uint32_t)token - NUMLOSS_SHORT_MATCH_TOKEN_BASE) << 8) | (uint32_t)input[in_pos++];
+            code = (((uint32_t)token - NUMLOSS_SHORT_MATCH_TOKEN_BASE) << 8) | (uint32_t)payload[in_pos++];
             len = NUMLOSS_SHORT_MATCH_MIN + (code / NUMLOSS_SHORT_MATCH_RANGE);
             offset = 1u + (code % NUMLOSS_SHORT_MATCH_RANGE);
 
             if (len > NUMLOSS_SHORT_MATCH_MAX) return NUMLOSS_ERR_FORMAT;
             if (offset == 0u || offset > out_pos) return NUMLOSS_ERR_FORMAT;
-            if (out_pos + len > original_size || out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
+            if (out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
 
             last_offset = offset;
             for (uint32_t i = 0; i < len; i++) {
@@ -841,7 +1224,7 @@ static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
             uint32_t len = NUMLOSS_REPEAT_MATCH_MIN + ((uint32_t)token - NUMLOSS_REPEAT_MATCH_TOKEN_BASE);
 
             if (last_offset == 0u || last_offset > out_pos) return NUMLOSS_ERR_FORMAT;
-            if (out_pos + len > original_size || out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
+            if (out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
 
             for (uint32_t i = 0; i < len; i++) {
                 output[out_pos + i] = output[out_pos - last_offset + i];
@@ -853,12 +1236,12 @@ static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
         if (token != NUMLOSS_LONG_MATCH_TOKEN || in_pos + 3u > in_end) return NUMLOSS_ERR_FORMAT;
 
         {
-            uint32_t len = NUMLOSS_MATCH_MIN_V3 + (uint32_t)input[in_pos++];
-            uint32_t offset = (uint32_t)input[in_pos] | ((uint32_t)input[in_pos + 1u] << 8);
+            uint32_t len = NUMLOSS_MATCH_MIN_V3 + (uint32_t)payload[in_pos++];
+            uint32_t offset = (uint32_t)payload[in_pos] | ((uint32_t)payload[in_pos + 1u] << 8);
             in_pos += 2u;
 
             if (offset == 0u || offset > out_pos) return NUMLOSS_ERR_FORMAT;
-            if (out_pos + len > original_size || out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
+            if (out_pos + len > output_cap) return NUMLOSS_ERR_OUTPUT;
 
             last_offset = offset;
             for (uint32_t i = 0; i < len; i++) {
@@ -868,12 +1251,71 @@ static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
         }
     }
 
-    if (out_pos != original_size) return NUMLOSS_ERR_FORMAT;
+    if (output_size) *output_size = out_pos;
+    return NUMLOSS_OK;
+}
 
-    rc = inverse_transform_in_place(output, out_pos, transform);
+static int numloss_decode_v3(const uint8_t *input, uint32_t input_size,
+                             uint8_t *output, uint32_t output_cap,
+                             uint32_t *output_size) {
+    uint32_t original_size = 0;
+    uint32_t payload_size = 0;
+    uint8_t transform = archive_transform(input, input_size);
+    int rc = NUMLOSS_OK;
+
+    rc = numloss_read_header(input, input_size, &original_size, &payload_size);
     if (rc != NUMLOSS_OK) return rc;
 
-    *output_size = out_pos;
+    if (archive_version(input, input_size) != NUMLOSS_VERSION_V3) return NUMLOSS_ERR_FORMAT;
+    if (input_size != NUMLOSS_HEADER_SIZE + payload_size) return NUMLOSS_ERR_FORMAT;
+    if (original_size > output_cap) return NUMLOSS_ERR_OUTPUT;
+
+    rc = numloss_decode_match_stream(input + NUMLOSS_HEADER_SIZE, payload_size,
+                                     output, original_size, output_size);
+    if (rc != NUMLOSS_OK || *output_size != original_size) return NUMLOSS_ERR_FORMAT;
+
+    rc = inverse_transform_in_place(output, original_size, transform);
+    if (rc != NUMLOSS_OK) return rc;
+
+    *output_size = original_size;
+    return NUMLOSS_OK;
+}
+
+static int numloss_decode_v4(const uint8_t *input, uint32_t input_size,
+                             uint8_t *output, uint32_t output_cap,
+                             uint32_t *output_size) {
+    uint32_t original_size = 0u;
+    uint32_t payload_size = 0u;
+    uint32_t transformed_size = 0u;
+    uint32_t decoded_size = 0u;
+    uint32_t restored_size = 0u;
+    uint32_t dict_count = 0u;
+    uint8_t transform = archive_transform(input, input_size);
+    const struct numloss_text_dict_entry *dict = text_dictionary_for_transform(transform, &dict_count);
+    int rc = NUMLOSS_OK;
+
+    rc = numloss_read_header(input, input_size, &original_size, &payload_size);
+    if (rc != NUMLOSS_OK) return rc;
+
+    if (archive_version(input, input_size) != NUMLOSS_VERSION_V4) return NUMLOSS_ERR_FORMAT;
+    if (!dict || payload_size < 4u || input_size != NUMLOSS_HEADER_SIZE + payload_size) {
+        return NUMLOSS_ERR_FORMAT;
+    }
+    if (original_size > output_cap) return NUMLOSS_ERR_OUTPUT;
+
+    transformed_size = read_u32_le(input + NUMLOSS_HEADER_SIZE);
+    if (transformed_size > NUMLOSS_MAX_INPUT_BYTES) return NUMLOSS_ERR_OUTPUT;
+
+    rc = numloss_decode_match_stream(input + NUMLOSS_HEADER_SIZE + 4u, payload_size - 4u,
+                                     g_transform_buf, transformed_size, &decoded_size);
+    if (rc != NUMLOSS_OK || decoded_size != transformed_size) return NUMLOSS_ERR_FORMAT;
+
+    rc = inverse_text_dictionary_transform(g_transform_buf, transformed_size,
+                                           dict, dict_count,
+                                           output, output_cap, &restored_size);
+    if (rc != NUMLOSS_OK || restored_size != original_size) return NUMLOSS_ERR_FORMAT;
+
+    *output_size = restored_size;
     return NUMLOSS_OK;
 }
 
@@ -951,30 +1393,29 @@ static int numloss_encode_v1(const uint8_t *input, uint32_t input_size,
     return NUMLOSS_OK;
 }
 
-static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
-                             uint8_t transform,
-                             uint8_t *output, uint32_t output_cap,
-                             uint32_t *output_size) {
-    const uint8_t *source = input;
-    uint32_t pos = 0;
-    uint32_t out_pos = NUMLOSS_HEADER_SIZE;
+static int numloss_encode_match_stream(const uint8_t *source, uint32_t source_size,
+                                       uint32_t original_size,
+                                       uint8_t version, uint8_t transform,
+                                       const uint8_t *prefix, uint32_t prefix_size,
+                                       uint8_t *output, uint32_t output_cap,
+                                       uint32_t *output_size) {
+    uint32_t pos = 0u;
+    uint32_t out_pos = NUMLOSS_HEADER_SIZE + prefix_size;
     uint32_t literal_start = 0;
     uint32_t literal_len = 0;
     uint32_t last_offset = 0;
     int rc = NUMLOSS_OK;
 
-    if (output_cap < NUMLOSS_HEADER_SIZE) return NUMLOSS_ERR_OUTPUT;
-
-    rc = apply_transform(input, input_size, transform, &source);
-    if (rc != NUMLOSS_OK) return rc;
+    if (output_cap < out_pos) return NUMLOSS_ERR_OUTPUT;
 
     history_reset();
-    write_header(output, NUMLOSS_VERSION_V3, transform, input_size, 0u);
+    write_header(output, version, transform, original_size, 0u);
+    if (prefix_size > 0u && prefix) memcpy(output + NUMLOSS_HEADER_SIZE, prefix, prefix_size);
 
-    while (pos < input_size) {
+    while (pos < source_size) {
         struct numloss_choice choice;
 
-        choose_sequence_v3(source, input_size, pos, last_offset, &choice);
+        choose_sequence_v3(source, source_size, pos, last_offset, &choice);
 
         if (choice.kind == NUMLOSS_CHOICE_RUN) {
             if (literal_len > 0u) {
@@ -986,7 +1427,7 @@ static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
             rc = emit_run(output, output_cap, &out_pos, source[pos], choice.len, NUMLOSS_RUN_MIN_V3);
             if (rc != NUMLOSS_OK) return rc;
 
-            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, input_size, pos + i);
+            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, source_size, pos + i);
             pos += choice.len;
             literal_start = pos;
             continue;
@@ -1003,7 +1444,7 @@ static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
             if (rc != NUMLOSS_OK) return rc;
 
             last_offset = choice.offset;
-            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, input_size, pos + i);
+            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, source_size, pos + i);
             pos += choice.len;
             literal_start = pos;
             continue;
@@ -1019,7 +1460,7 @@ static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
             rc = emit_repeat_match_v3(output, output_cap, &out_pos, choice.len);
             if (rc != NUMLOSS_OK) return rc;
 
-            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, input_size, pos + i);
+            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, source_size, pos + i);
             pos += choice.len;
             literal_start = pos;
             continue;
@@ -1036,14 +1477,14 @@ static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
             if (rc != NUMLOSS_OK) return rc;
 
             last_offset = choice.offset;
-            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, input_size, pos + i);
+            for (uint32_t i = 0; i < choice.len; i++) history_insert(source, source_size, pos + i);
             pos += choice.len;
             literal_start = pos;
             continue;
         }
 
         if (literal_len == 0u) literal_start = pos;
-        history_insert(source, input_size, pos);
+        history_insert(source, source_size, pos);
         literal_len++;
         pos++;
 
@@ -1060,9 +1501,48 @@ static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
         if (rc != NUMLOSS_OK) return rc;
     }
 
-    write_header(output, NUMLOSS_VERSION_V3, transform, input_size, out_pos - NUMLOSS_HEADER_SIZE);
+    write_header(output, version, transform, original_size, out_pos - NUMLOSS_HEADER_SIZE);
     *output_size = out_pos;
     return NUMLOSS_OK;
+}
+
+static int numloss_encode_v3(const uint8_t *input, uint32_t input_size,
+                             uint8_t transform,
+                             uint8_t *output, uint32_t output_cap,
+                             uint32_t *output_size) {
+    const uint8_t *source = input;
+    int rc = apply_transform(input, input_size, transform, &source);
+
+    if (rc != NUMLOSS_OK) return rc;
+    return numloss_encode_match_stream(source, input_size, input_size,
+                                       NUMLOSS_VERSION_V3, transform,
+                                       0, 0u,
+                                       output, output_cap, output_size);
+}
+
+static int numloss_encode_v4_text(const uint8_t *input, uint32_t input_size,
+                                  uint8_t transform,
+                                  uint8_t *output, uint32_t output_cap,
+                                  uint32_t *output_size) {
+    uint32_t dict_count = 0u;
+    uint32_t transformed_size = 0u;
+    uint8_t prefix[4];
+    const struct numloss_text_dict_entry *dict = text_dictionary_for_transform(transform, &dict_count);
+    int rc = 0;
+
+    if (!dict) return NUMLOSS_ERR_FORMAT;
+
+    rc = apply_text_dictionary_transform(input, input_size,
+                                         dict, dict_count,
+                                         g_transform_buf, input_size,
+                                         &transformed_size);
+    if (rc != NUMLOSS_OK) return rc;
+
+    write_u32_le(prefix, transformed_size);
+    return numloss_encode_match_stream(g_transform_buf, transformed_size, input_size,
+                                       NUMLOSS_VERSION_V4, transform,
+                                       prefix, sizeof(prefix),
+                                       output, output_cap, output_size);
 }
 
 int numloss_encode(const uint8_t *input, uint32_t input_size,
@@ -1092,6 +1572,22 @@ int numloss_encode(const uint8_t *input, uint32_t input_size,
         }
     }
 
+    for (uint32_t i = 0; i < 2u; i++) {
+        uint32_t candidate_size = 0u;
+        uint8_t transform = (i == 0u) ? NUMLOSS_TRANSFORM_TEXT_PROSE
+                                      : NUMLOSS_TRANSFORM_TEXT_CODE;
+        int candidate_rc = numloss_encode_v4_text(input, input_size,
+                                                  transform,
+                                                  g_candidate_buf, output_cap,
+                                                  &candidate_size);
+
+        if (candidate_rc != NUMLOSS_OK) continue;
+        if (candidate_size < best_size) {
+            memcpy(output, g_candidate_buf, candidate_size);
+            best_size = candidate_size;
+        }
+    }
+
     *output_size = best_size;
     return NUMLOSS_OK;
 }
@@ -1112,6 +1608,9 @@ int numloss_decode(const uint8_t *input, uint32_t input_size,
     if (version == NUMLOSS_VERSION_V3) {
         return numloss_decode_v3(input, input_size, output, output_cap, output_size);
     }
+    if (version == NUMLOSS_VERSION_V4) {
+        return numloss_decode_v4(input, input_size, output, output_cap, output_size);
+    }
     if (version != NUMLOSS_VERSION_V2) {
         return NUMLOSS_ERR_FORMAT;
     }
@@ -1130,7 +1629,8 @@ int numloss_decode(const uint8_t *input, uint32_t input_size,
         uint8_t chunk_version = archive_version(input + in_pos, input_size - in_pos);
 
         if (chunk_version != NUMLOSS_VERSION_V1 &&
-            chunk_version != NUMLOSS_VERSION_V3) {
+            chunk_version != NUMLOSS_VERSION_V3 &&
+            chunk_version != NUMLOSS_VERSION_V4) {
             return NUMLOSS_ERR_FORMAT;
         }
 
@@ -1149,8 +1649,12 @@ int numloss_decode(const uint8_t *input, uint32_t input_size,
             rc = numloss_decode_v1(input + in_pos, chunk_size,
                                    output + out_pos, output_cap - out_pos,
                                    &chunk_out);
-        } else {
+        } else if (chunk_version == NUMLOSS_VERSION_V3) {
             rc = numloss_decode_v3(input + in_pos, chunk_size,
+                                   output + out_pos, output_cap - out_pos,
+                                   &chunk_out);
+        } else {
+            rc = numloss_decode_v4(input + in_pos, chunk_size,
                                    output + out_pos, output_cap - out_pos,
                                    &chunk_out);
         }

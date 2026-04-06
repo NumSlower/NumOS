@@ -2,6 +2,8 @@
 
 #define NUMLOSS_CMDLINE_CAP 256
 #define NUMLOSS_ARG_CAP 4
+#define NUMLOSS_TOOL_VERSION "v0.9.0"
+
 static uint8_t g_input_buf[NUMLOSS_MAX_ARCHIVE_BYTES];
 static uint8_t g_output_buf[NUMLOSS_MAX_ARCHIVE_BYTES];
 
@@ -84,15 +86,21 @@ static uint8_t archive_version(const uint8_t *header, uint32_t size) {
 }
 
 static const char *transform_name(uint8_t transform) {
-    if (transform == NUMLOSS_TRANSFORM_RAW) return "raw";
-    if (transform == NUMLOSS_TRANSFORM_DELTA8) return "delta8";
-    if (transform == NUMLOSS_TRANSFORM_XOR8) return "xor8";
-    if (transform == NUMLOSS_TRANSFORM_GROUP4) return "group4";
-    if (transform == NUMLOSS_TRANSFORM_GROUP4_DELTA8) return "group4+delta8";
-    if (transform == NUMLOSS_TRANSFORM_GROUP4_XOR8) return "group4+xor8";
-    if (transform == NUMLOSS_TRANSFORM_GROUP8) return "group8";
-    if (transform == NUMLOSS_TRANSFORM_GROUP8_DELTA8) return "group8+delta8";
-    if (transform == NUMLOSS_TRANSFORM_GROUP8_XOR8) return "group8+xor8";
+    if (transform == NUMLOSS_TRANSFORM_RAW)              return "raw";
+    if (transform == NUMLOSS_TRANSFORM_DELTA8)           return "delta8";
+    if (transform == NUMLOSS_TRANSFORM_XOR8)             return "xor8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP4)           return "group4";
+    if (transform == NUMLOSS_TRANSFORM_GROUP4_DELTA8)    return "group4+delta8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP4_XOR8)      return "group4+xor8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP8)           return "group8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP8_DELTA8)    return "group8+delta8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP8_XOR8)      return "group8+xor8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP2)           return "group2";
+    if (transform == NUMLOSS_TRANSFORM_GROUP2_DELTA8)    return "group2+delta8";
+    if (transform == NUMLOSS_TRANSFORM_GROUP2_XOR8)      return "group2+xor8";
+    if (transform == NUMLOSS_TRANSFORM_DELTA8_DELTA8)    return "delta8+delta8";
+    if (transform == NUMLOSS_TRANSFORM_TEXT_PROSE)       return "text-prose";
+    if (transform == NUMLOSS_TRANSFORM_TEXT_CODE)        return "text-code";
     return "unknown";
 }
 
@@ -205,9 +213,15 @@ static void print_usage(void) {
     write_str("numloss c <input> <output>\n");
     write_str("numloss d <input> <output>\n");
     write_str("numloss i <archive>\n");
+    write_str("numloss --version\n");
     write_str("one input writes <name>.nls\n");
     write_str("compressed ELF files still run through the kernel loader\n");
     write_str("large inputs stream automatically\n");
+}
+
+static void print_version(void) {
+    write_str(NUMLOSS_TOOL_VERSION);
+    write_ch('\n');
 }
 
 static int write_all_fd(int fd, const uint8_t *buf, uint32_t size) {
@@ -350,6 +364,15 @@ static void print_encode_stats(uint32_t input_size, uint32_t archive_size) {
     write_str("archive ratio: ");
     write_percent_tenths(archive_size, input_size);
     write_str("%\n");
+    if (archive_size < input_size) {
+        write_str("saved ratio: ");
+        write_percent_tenths(input_size - archive_size, input_size);
+        write_str("%\n");
+    } else if (archive_size > input_size) {
+        write_str("overhead ratio: ");
+        write_percent_tenths(archive_size - input_size, input_size);
+        write_str("%\n");
+    }
 
     if (archive_size < input_size) {
         write_str("saved: ");
@@ -551,7 +574,9 @@ static int cmd_decompress(const char *input_path, const char *output_path) {
         return 1;
     }
 
-    if (version == NUMLOSS_VERSION_V1 || version == NUMLOSS_VERSION_V3) {
+    if (version == NUMLOSS_VERSION_V1 ||
+        version == NUMLOSS_VERSION_V3 ||
+        version == NUMLOSS_VERSION_V4) {
         uint32_t original_size = 0;
         uint32_t payload_size = 0;
         uint8_t extra = 0;
@@ -607,7 +632,9 @@ static int cmd_decompress(const char *input_path, const char *output_path) {
             if (read_rc == 1) break;
             chunk_version = archive_version(header, sizeof(header));
             if (read_rc != 0 ||
-                (chunk_version != NUMLOSS_VERSION_V1 && chunk_version != NUMLOSS_VERSION_V3)) {
+                (chunk_version != NUMLOSS_VERSION_V1 &&
+                 chunk_version != NUMLOSS_VERSION_V3 &&
+                 chunk_version != NUMLOSS_VERSION_V4)) {
                 sys_close(out_fd);
                 sys_close(in_fd);
                 write_str("numloss: invalid numloss stream\n");
@@ -713,11 +740,17 @@ static int cmd_info(const char *input_path) {
         write_str("archive ratio: ");
         write_percent_tenths(NUMLOSS_HEADER_SIZE + payload_size, original_size);
         write_str("%\n");
+        if (NUMLOSS_HEADER_SIZE + payload_size < original_size) {
+            write_str("saved ratio: ");
+            write_percent_tenths(original_size - (NUMLOSS_HEADER_SIZE + payload_size),
+                                 original_size);
+            write_str("%\n");
+        }
         sys_close(fd);
         return 0;
     }
 
-    if (version == NUMLOSS_VERSION_V3) {
+    if (version == NUMLOSS_VERSION_V3 || version == NUMLOSS_VERSION_V4) {
         uint32_t original_size = read_u32_le(header + 8);
         uint32_t payload_size = read_u32_le(header + 12);
         uint32_t actual_payload = 0;
@@ -728,7 +761,8 @@ static int cmd_info(const char *input_path) {
             return 1;
         }
 
-        write_str("format: NMLS v3\n");
+        write_str(version == NUMLOSS_VERSION_V4 ? "format: NMLS v4\n"
+                                                : "format: NMLS v3\n");
         write_str("transform: ");
         write_str(transform_name(header[5]));
         write_str("\n");
@@ -744,6 +778,12 @@ static int cmd_info(const char *input_path) {
         write_str("archive ratio: ");
         write_percent_tenths(NUMLOSS_HEADER_SIZE + payload_size, original_size);
         write_str("%\n");
+        if (NUMLOSS_HEADER_SIZE + payload_size < original_size) {
+            write_str("saved ratio: ");
+            write_percent_tenths(original_size - (NUMLOSS_HEADER_SIZE + payload_size),
+                                 original_size);
+            write_str("%\n");
+        }
         sys_close(fd);
         return 0;
     }
@@ -756,6 +796,7 @@ static int cmd_info(const char *input_path) {
         uint32_t total_original = 0;
         uint32_t v1_chunks = 0;
         uint32_t v3_chunks = 0;
+        uint32_t v4_chunks = 0;
 
         for (;;) {
             uint32_t got = 0;
@@ -767,7 +808,9 @@ static int cmd_info(const char *input_path) {
             if (read_rc == 1) break;
             chunk_version = archive_version(header, sizeof(header));
             if (read_rc != 0 ||
-                (chunk_version != NUMLOSS_VERSION_V1 && chunk_version != NUMLOSS_VERSION_V3)) {
+                (chunk_version != NUMLOSS_VERSION_V1 &&
+                 chunk_version != NUMLOSS_VERSION_V3 &&
+                 chunk_version != NUMLOSS_VERSION_V4)) {
                 sys_close(fd);
                 write_str("numloss: invalid numloss stream\n");
                 return 1;
@@ -786,6 +829,7 @@ static int cmd_info(const char *input_path) {
             total_chunks++;
             if (chunk_version == NUMLOSS_VERSION_V1) v1_chunks++;
             if (chunk_version == NUMLOSS_VERSION_V3) v3_chunks++;
+            if (chunk_version == NUMLOSS_VERSION_V4) v4_chunks++;
         }
 
         if (total_original != original_size) {
@@ -811,6 +855,8 @@ static int cmd_info(const char *input_path) {
         write_dec(v1_chunks);
         write_str(", v3=");
         write_dec(v3_chunks);
+        write_str(", v4=");
+        write_dec(v4_chunks);
         write_str("\n");
         write_str("chunk size: ");
         write_dec(chunk_size);
@@ -818,6 +864,12 @@ static int cmd_info(const char *input_path) {
         write_str("archive ratio: ");
         write_percent_tenths(NUMLOSS_HEADER_SIZE + payload_size, original_size);
         write_str("%\n");
+        if (NUMLOSS_HEADER_SIZE + payload_size < original_size) {
+            write_str("saved ratio: ");
+            write_percent_tenths(original_size - (NUMLOSS_HEADER_SIZE + payload_size),
+                                 original_size);
+            write_str("%\n");
+        }
         sys_close(fd);
         return 0;
     }
@@ -858,6 +910,11 @@ int main(void) {
     argc = split_args(cmdline, argv, NUMLOSS_ARG_CAP);
     if (argc == 0) {
         print_usage();
+        return 0;
+    }
+
+    if (argc == 1 && strcmp(argv[0], "--version") == 0) {
+        print_version();
         return 0;
     }
 
