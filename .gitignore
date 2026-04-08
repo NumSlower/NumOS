@@ -28,4 +28,4 @@ tests/__pycache__
 
 /New_Update/*
 !/New_Update/serve_update_site.py
-/third_party/*
+/third_party/
