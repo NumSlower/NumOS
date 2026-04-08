@@ -443,7 +443,7 @@ static void print_help(void) {
     write_str("  install ata  write a bootable NumOS system to the primary ATA disk\n");
     write_str("  pkg kernel <path|URL> [reboot]  stage a new /boot kernel with fallback\n");
     write_str("  run          list or run programs in /bin/\n");
-    write_str("  ls           list directory entries\n");
+    write_str("  list         list directory entries\n");
     write_str("\nbundled tools:\n");
     write_str("  mk           run targets from /home/BUILD.MK or another build file\n");
     write_str("  numloss      compress or decompress files with NMLS archives\n");
@@ -538,8 +538,8 @@ static int handle_command(const char *line) {
         return 0;
     }
 
-    /* ---- Built-in: ls / dir ---- */
-    if (str_eq(cmd, "ls") || str_eq(cmd, "dir")) {
+    /* ---- Built-in: list / dir ---- */
+    if (str_eq(cmd, "list") || str_eq(cmd, "dir")) {
         list_directory_cmd(args);
         return 0;
     }
