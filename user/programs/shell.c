@@ -29,6 +29,7 @@
  */
 
 #include "syscalls.h"
+#include "program_version.h"
 #include <stddef.h>
 
 /* =========================================================================
@@ -82,6 +83,8 @@ static int has_char(const char *s, char ch) {
     while (*s) { if (*s == ch) return 1; s++; }
     return 0;
 }
+
+static struct fat32_dirent shell_dir_entries[64];
 
 static char ascii_upper(char c) {
     if (c >= 'a' && c <= 'z') return (char)(c - 'a' + 'A');
@@ -372,10 +375,9 @@ static int is_system_dir_name(const char *path) {
 }
 
 static void list_directory_cmd(const char *path) {
-    struct fat32_dirent entries[64];
     const char *use_path = (path && path[0]) ? path : "";
     char norm_path[64];
-    int64_t count = sys_listdir(use_path, entries, 64);
+    int64_t count = sys_listdir(use_path, shell_dir_entries, 64);
     char abs_path[64];
 
     if (use_path[0]) {
@@ -385,7 +387,7 @@ static void list_directory_cmd(const char *path) {
             for (size_t i = 0; i < len; i++) norm_path[i] = use_path[i];
             norm_path[len] = '\0';
             use_path = norm_path;
-            count = sys_listdir(use_path, entries, 64);
+            count = sys_listdir(use_path, shell_dir_entries, 64);
         }
     }
 
@@ -397,7 +399,7 @@ static void list_directory_cmd(const char *path) {
             abs_path[pos++] = use_path[i++];
         }
         abs_path[pos] = '\0';
-        count = sys_listdir(abs_path, entries, 64);
+        count = sys_listdir(abs_path, shell_dir_entries, 64);
     }
 
     if (count < 0) {
@@ -406,15 +408,15 @@ static void list_directory_cmd(const char *path) {
     }
 
     for (int i = 0; i < count; i++) {
-        if (entries[i].attr & FAT32_ATTR_DIRECTORY) {
+        if (shell_dir_entries[i].attr & FAT32_ATTR_DIRECTORY) {
             write_str("[DIR]  ");
         } else {
             write_str("[FILE] ");
         }
-        write_str(entries[i].name);
-        if (!(entries[i].attr & FAT32_ATTR_DIRECTORY)) {
+        write_str(shell_dir_entries[i].name);
+        if (!(shell_dir_entries[i].attr & FAT32_ATTR_DIRECTORY)) {
             write_str(" ");
-            write_dec(entries[i].size);
+            write_dec(shell_dir_entries[i].size);
             write_str(" bytes");
         }
         write_str("\n");
@@ -439,14 +441,14 @@ static void print_help(void) {
     write_str("  help         show this help\n");
     write_str("  lang         show interpreter rule\n");
     write_str("  install ata  write a bootable NumOS system to the primary ATA disk\n");
-    write_str("  install kernel <path|URL> [reboot]  stage a new /boot kernel with fallback\n");
+    write_str("  pkg kernel <path|URL> [reboot]  stage a new /boot kernel with fallback\n");
     write_str("  run          list or run programs in /bin/\n");
     write_str("  ls           list directory entries\n");
     write_str("\nbundled tools:\n");
     write_str("  mk           run targets from /home/BUILD.MK or another build file\n");
     write_str("  numloss      compress or decompress files with NMLS archives\n");
     write_str("  empty        print text files safely\n");
-    write_str("  pkg          install packages staged in /run/\n");
+    write_str("  pkg          install packages and stage kernels\n");
     write_str("  connect      inspect networking, TCP, HTTP, TLS, and HTTPS\n");
     write_str("  tcp          legacy IPv4 TCP and HTTP tool\n");
     write_str("  see          send ICMP echo requests to an IPv4 host\n");
@@ -573,9 +575,14 @@ static int handle_command(const char *line) {
 
 #define IBUF_SIZE 256
 
-int main(void) {
+int main(int argc, char **argv) {
     char   buf[IBUF_SIZE];
     size_t len = 0;
+
+    if (argc >= 2 && numos_is_version_flag(argv[1])) {
+        numos_print_program_version("shell");
+        return 0;
+    }
 
     write_str("\n");
     prompt();

@@ -187,7 +187,9 @@ static void boot_banner(void) {
     vga_setcolor(vga_entry_color(VGA_COLOR_BLUE,          VGA_COLOR_BLACK)); vga_putchar('O');
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK)); vga_putchar('S');
     vga_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
-    vga_writestring("  v0.8.0-beta   64-bit x86 Kernel   MIT License        |\n");
+    vga_writestring("  ");
+    vga_writestring(NUMOS_VERSION_STRING);
+    vga_writestring("   64-bit Kernel   MIT License                  |\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
     vga_writestring("  +=======================================================+\n");
     vga_setcolor(vga_entry_color(VGA_COLOR_DARK_GREY, VGA_COLOR_BLACK));

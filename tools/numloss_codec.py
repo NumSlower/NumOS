@@ -22,6 +22,7 @@ TRANSFORM_GROUP2_XOR8 = 11
 TRANSFORM_DELTA8_DELTA8 = 12
 TRANSFORM_TEXT_PROSE = 13
 TRANSFORM_TEXT_CODE = 14
+TRANSFORM_DELTA32LE = 15
 
 LITERAL_MAX = 64
 RUN_MIN_V1 = 4
@@ -71,6 +72,7 @@ TRANSFORM_CANDIDATES = (
     TRANSFORM_GROUP2_DELTA8,
     TRANSFORM_GROUP2_XOR8,
     TRANSFORM_DELTA8_DELTA8,
+    TRANSFORM_DELTA32LE,
 )
 
 TEXT_PROSE_DICT = tuple(item.encode("ascii") for item in (
@@ -164,6 +166,14 @@ TEXT_PROSE_DICT = tuple(item.encode("ascii") for item in (
     " uses",
     " prediction",
     " modern ",
+    " lossless compression",
+    " repeated strings",
+    " compression algorithm",
+    " compression formats",
+    " compressor ",
+    " probabilities ",
+    " bandwidth ",
+    " storage ",
 ))
 
 TEXT_CODE_DICT = tuple(item.encode("ascii") for item in (
@@ -516,6 +526,33 @@ def _xor_inverse(data):
     return bytes(out)
 
 
+def _delta32le_forward(data):
+    out = bytearray(data)
+    prev = 0
+    full_words = len(data) // 4
+
+    for index in range(full_words):
+        offset = index * 4
+        value = _u32_from_le(data, offset)
+        diff = (value - prev) & 0xFFFFFFFF
+        out[offset:offset + 4] = _u32_to_le(diff)
+        prev = value
+    return bytes(out)
+
+
+def _delta32le_inverse(data):
+    out = bytearray(data)
+    prev = 0
+    full_words = len(data) // 4
+
+    for index in range(full_words):
+        offset = index * 4
+        delta = _u32_from_le(data, offset)
+        prev = (prev + delta) & 0xFFFFFFFF
+        out[offset:offset + 4] = _u32_to_le(prev)
+    return bytes(out)
+
+
 def _apply_transform(data, transform):
     if transform == TRANSFORM_RAW:
         return bytes(data)
@@ -543,6 +580,8 @@ def _apply_transform(data, transform):
         return _xor_forward(_group_bytes(data, 2))
     if transform == TRANSFORM_DELTA8_DELTA8:
         return _delta_forward(_delta_forward(data))
+    if transform == TRANSFORM_DELTA32LE:
+        return _delta32le_forward(data)
     raise ValueError("unknown numloss transform")
 
 
@@ -573,6 +612,8 @@ def _undo_transform(data, transform):
         return _ungroup_bytes(_xor_inverse(data), 2)
     if transform == TRANSFORM_DELTA8_DELTA8:
         return _delta_inverse(_delta_inverse(data))
+    if transform == TRANSFORM_DELTA32LE:
+        return _delta32le_inverse(data)
     raise ValueError("unknown numloss transform")
 
 

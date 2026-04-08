@@ -1,4 +1,5 @@
 #include "syscalls.h"
+#include "program_version.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Constants
@@ -811,6 +812,7 @@ int main(void) {
     const char *s = skip_spaces(cmdline);
     if (s[0] != '\0') {
         read_token(s, path, sizeof(path));
+        if (numos_is_version_flag(path)) { numos_print_program_version("edit"); return 0; }
         if (str_eq(path,"-h") || str_eq(path,"-help")) { print_help(); return 0; }
     } else {
         /* Interactive filename prompt */

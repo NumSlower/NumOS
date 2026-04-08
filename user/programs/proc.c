@@ -1,4 +1,5 @@
 #include "syscalls.h"
+#include "program_version.h"
 
 #define MAX_PROCS 32
 #define MAX_PID   128
@@ -229,7 +230,7 @@ static void write_traffic_line(const char *label,
     write_ch('\n');
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     struct hwinfo info;
     struct proc_info procs[MAX_PROCS];
     struct numos_net_info net;
@@ -238,6 +239,11 @@ int main(void) {
     uint64_t last_rx_bytes = 0;
     uint64_t last_tx_bytes = 0;
     int net_seen = 0;
+
+    if (argc >= 2 && numos_is_version_flag(argv[1])) {
+        numos_print_program_version("proc");
+        return 0;
+    }
 
     for (int i = 0; i < MAX_PID; i++) last_ticks[i] = 0;
 

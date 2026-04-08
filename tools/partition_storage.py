@@ -13,6 +13,12 @@ import subprocess
 import sys
 from typing import List, Optional
 
+TOOLS_DIR = os.path.dirname(__file__)
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+from numos_version import read_numos_version
+
 
 SUPPORTED_TABLES = ("gpt", "msdos")
 SUPPORTED_FILESYSTEMS = ("fat32", "ext4", "none")
@@ -324,6 +330,12 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the command-line interface."""
     parser = argparse.ArgumentParser(
         description="Partition a block device or .img file for NumOS."
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"{os.path.basename(__file__)} {read_numos_version(__file__)}",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 

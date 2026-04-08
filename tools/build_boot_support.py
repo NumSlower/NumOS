@@ -22,6 +22,12 @@ import subprocess
 import sys
 import tempfile
 
+TOOLS_DIR = os.path.dirname(__file__)
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+from numos_version import read_numos_version
+
 
 DEFAULT_BOOT_IMG = "/usr/lib/grub/i386-pc/boot.img"
 DEFAULT_PARTITION_START_LBA = 2048
@@ -55,6 +61,12 @@ GRUB_MODULES = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"{os.path.basename(__file__)} {read_numos_version(__file__)}",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--kernel", required=True)
     parser.add_argument("--boot-img", default=DEFAULT_BOOT_IMG)

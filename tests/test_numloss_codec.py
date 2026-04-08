@@ -51,10 +51,20 @@ class NumlossCodecTest(unittest.TestCase):
 
         archive = numloss_codec.encode(payload)
         restored = numloss_codec.decode(archive)
+        word_delta_archive = numloss_codec._encode_v3_with_transform(
+            payload,
+            numloss_codec.TRANSFORM_DELTA32LE,
+        )
+        group_delta_archive = numloss_codec._encode_v3_with_transform(
+            payload,
+            numloss_codec.TRANSFORM_GROUP4_DELTA8,
+        )
 
         self.assertEqual(restored, payload)
         self.assertEqual(archive[4], numloss_codec.VERSION_V3)
-        self.assertNotEqual(archive[5], numloss_codec.TRANSFORM_RAW)
+        self.assertEqual(archive[5], numloss_codec.TRANSFORM_DELTA32LE)
+        self.assertLess(len(word_delta_archive), len(group_delta_archive))
+        self.assertEqual(len(archive), len(word_delta_archive))
         self.assertLess(len(archive), len(payload) // 10)
 
     def test_new_match_format_beats_legacy_ratio_on_repo_text(self):
@@ -73,7 +83,7 @@ class NumlossCodecTest(unittest.TestCase):
         self.assertEqual(restored, payload)
         self.assertEqual(archive[4], numloss_codec.VERSION_V4)
         self.assertEqual(archive[5], numloss_codec.TRANSFORM_TEXT_PROSE)
-        self.assertLess(len(archive), 5850)
+        self.assertLess(len(archive), 5820)
 
     def test_maybe_pack_record_packs_useful_elf_payload(self):
         record = create_disk.create_file_record("demo.elf", b"\x90" * 4096)

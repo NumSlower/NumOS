@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+NUMOS_VERSION="$(tr -d '\r\n' < "$REPO_ROOT/VERSION" 2>/dev/null || echo "v0.0.0")"
+
 # Versions
 BINUTILS_VERSION=2.41
 GCC_VERSION=13.2.0
@@ -34,8 +38,11 @@ usage() {
     echo "  -a, --arch ARCH     Target architecture, default: detected host arch"
     echo "  -t, --target TARGET Full target triple (overrides --arch)"
     echo "  -p, --prefix PATH   Installation prefix (default: \$HOME/opt/cross)"
+    echo "  -s, --source-dir DIR Source and archive directory (default: \$HOME/src)"
     echo "  -j, --jobs N        Parallel jobs (default: nproc)"
+    echo "      --fetch-only    Download source archives and stop"
     echo "  --list-archs        List supported architecture shortcuts"
+    echo "  -v, --version       Show script version"
     echo "  -h, --help          Show this help"
     echo ""
     echo "Supported arch shortcuts:"
@@ -82,7 +89,9 @@ detect_default_arch() {
 ARCH="$(detect_default_arch)"
 TARGET=""
 PREFIX="$HOME/opt/cross"
-NPROC="$(nproc)"
+SOURCE_DIR="$HOME/src"
+FETCH_ONLY=0
+NPROC="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -99,12 +108,24 @@ while [[ $# -gt 0 ]]; do
             PREFIX="$2"
             shift 2
             ;;
+        -s|--source-dir)
+            SOURCE_DIR="$2"
+            shift 2
+            ;;
         -j|--jobs)
             NPROC="$2"
             shift 2
             ;;
+        --fetch-only)
+            FETCH_ONLY=1
+            shift
+            ;;
         --list-archs)
             list_archs
+            ;;
+        -v|--version)
+            echo "build-cross-compiler.sh $NUMOS_VERSION"
+            exit 0
             ;;
         -h|--help)
             usage
@@ -193,14 +214,15 @@ if [[ "$TARGET" == arm* ]] && ! gcc -dumpmachine 2>/dev/null | grep -q arm; then
 fi
 
 # Setup
-mkdir -p "$HOME/src"
-cd "$HOME/src"
+mkdir -p "$SOURCE_DIR"
+cd "$SOURCE_DIR"
 
 echo "=== Building $TARGET cross-compiler ==="
 echo "This will take 30-60 minutes depending on your system"
 echo ""
 echo "Detected host arch:     $(uname -m 2>/dev/null || echo unknown)"
 echo "Installation directory: $PREFIX"
+echo "Source directory:       $SOURCE_DIR"
 echo "Target:                 $TARGET"
 echo "Languages:              $LANGUAGES"
 echo "Parallel jobs:          $NPROC"
@@ -213,6 +235,14 @@ download_archive \
 download_archive \
     "https://ftp.gnu.org/gnu/gcc/gcc-$GCC_VERSION/gcc-$GCC_VERSION.tar.xz" \
     "gcc-$GCC_VERSION.tar.xz"
+
+if [[ "$FETCH_ONLY" == "1" ]]; then
+    echo ""
+    echo "=== Source download complete ==="
+    echo "binutils archive: $SOURCE_DIR/binutils-$BINUTILS_VERSION.tar.xz"
+    echo "gcc archive:      $SOURCE_DIR/gcc-$GCC_VERSION.tar.xz"
+    exit 0
+fi
 
 # Build binutils
 echo ""

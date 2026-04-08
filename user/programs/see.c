@@ -1,4 +1,5 @@
 #include "libc.h"
+#include "program_version.h"
 #include "syscalls.h"
 
 static void write_str(const char *s) {
@@ -99,6 +100,11 @@ int main(void) {
     if (sys_get_cmdline(cmdline, sizeof(cmdline)) < 0 || cmdline[0] == '\0') {
         print_help();
         return 1;
+    }
+
+    if (numos_is_version_flag(cmdline)) {
+        numos_print_program_version("see");
+        return 0;
     }
 
     if (strncmp(cmdline, "-c ", 3) == 0) {

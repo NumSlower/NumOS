@@ -122,6 +122,14 @@ static const struct numloss_text_dict_entry g_text_prose_dict[] = {
     TEXT_ENTRY(" uses"),
     TEXT_ENTRY(" prediction"),
     TEXT_ENTRY(" modern "),
+    TEXT_ENTRY(" lossless compression"),
+    TEXT_ENTRY(" repeated strings"),
+    TEXT_ENTRY(" compression algorithm"),
+    TEXT_ENTRY(" compression formats"),
+    TEXT_ENTRY(" compressor "),
+    TEXT_ENTRY(" probabilities "),
+    TEXT_ENTRY(" bandwidth "),
+    TEXT_ENTRY(" storage "),
 };
 
 static const struct numloss_text_dict_entry g_text_code_dict[] = {
@@ -195,6 +203,13 @@ static uint32_t read_u32_le(const uint8_t *in) {
            ((uint32_t)in[1] << 8) |
            ((uint32_t)in[2] << 16) |
            ((uint32_t)in[3] << 24);
+}
+
+static void write_u32_le(uint8_t *out, uint32_t value) {
+    out[0] = (uint8_t)(value & 0xffu);
+    out[1] = (uint8_t)((value >> 8) & 0xffu);
+    out[2] = (uint8_t)((value >> 16) & 0xffu);
+    out[3] = (uint8_t)((value >> 24) & 0xffu);
 }
 
 static uint8_t archive_version(const uint8_t *input, uint32_t input_size) {
@@ -286,6 +301,19 @@ static void inverse_delta2_in_place(uint8_t *data, uint32_t input_size) {
         delta = (uint8_t)(delta + data[index]);
         value = (uint8_t)(value + delta);
         data[index] = value;
+    }
+}
+
+static void inverse_delta32le_in_place(uint8_t *data, uint32_t input_size) {
+    uint32_t prev = 0u;
+    uint32_t full_words = input_size / 4u;
+
+    for (uint32_t index = 0u; index < full_words; index++) {
+        uint32_t offset = index * 4u;
+        uint32_t delta = read_u32_le(data + offset);
+
+        prev += delta;
+        write_u32_le(data + offset, prev);
     }
 }
 
@@ -456,6 +484,11 @@ static int inverse_transform_in_place(uint8_t *data, uint32_t input_size, uint8_
 
     if (transform == NUMLOSS_TRANSFORM_DELTA8_DELTA8) {
         inverse_delta2_in_place(data, input_size);
+        return NUMLOSS_OK;
+    }
+
+    if (transform == NUMLOSS_TRANSFORM_DELTA32LE) {
+        inverse_delta32le_in_place(data, input_size);
         return NUMLOSS_OK;
     }
 

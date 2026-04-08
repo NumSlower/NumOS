@@ -11,6 +11,14 @@ else
     OS_TYPE := windows
 endif
 
+NUMOS_VERSION_FILE ?= VERSION
+NUMOS_VERSION ?= $(shell tr -d '\r\n' < $(NUMOS_VERSION_FILE) 2>/dev/null || echo v0.0.0)
+NUMOS_DEBUG ?= 1
+NUMOS_DEBUG_PORT ?= 1234
+NUMOS_DEBUG_CFLAGS := $(if $(filter 1,$(NUMOS_DEBUG)),-g3 -ggdb -fno-omit-frame-pointer,)
+NUMOS_AS_DEBUG_FLAGS = $(if $(filter 1,$(NUMOS_DEBUG)),$(if $(filter yasm,$(notdir $(NUMOS_AS))),-g dwarf2,-g -F dwarf),)
+NUMOS_GDB ?= $(or $(shell command -v gdb-multiarch 2>/dev/null),$(shell command -v gdb 2>/dev/null),gdb)
+
 HOST_CPU_COUNT := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 NUMOS_BUILD_JOBS ?= $(HOST_CPU_COUNT)
 NUMOS_OPT_LEVEL ?= 3
@@ -55,7 +63,7 @@ ifeq ($(NUMOS_ARCH),x86_64)
     NUMOS_CPU_MODE_NAME := Long
     NUMOS_BOOT_PROTOCOL_NAME := Multiboot2
     NUMOS_CPU_DIR := x86
-    ASFLAGS := -f elf64
+    ASFLAGS := -f elf64 $(NUMOS_AS_DEBUG_FLAGS)
     KERNEL_ARCH_CFLAGS := -m64 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone -mcmodel=kernel
     LDFLAGS := -T linker/kernel.ld -nostdlib --nmagic -z noexecstack
 else ifeq ($(NUMOS_ARCH),arm64)
@@ -96,6 +104,9 @@ ISO_DIR      := $(BUILD_DIR)/iso
 GRUB_DIR     := $(ISO_DIR)/boot/grub
 TOOLS_DIR    := tools
 USER_DIR     := user
+UPDATE_DIR   := New_Update
+UPDATE_PUBLISHER := $(UPDATE_DIR)/serve_update_site.py
+DEPS_AUDIT := $(TOOLS_DIR)/check_host_deps.py
 MULTIBOOT_FLAGS := $(BUILD_KERNEL)/boot/multiboot.flags
 
 OS_NAME       ?= NumOS
@@ -146,15 +157,17 @@ else
     GRUB_GFX_ENABLED := 0
 endif
 ifeq ($(VBE_TAG),1)
-    ASFLAGS_MULTIBOOT := -f elf64 -D ENABLE_FRAMEBUFFER=1 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
+    ASFLAGS_MULTIBOOT := -f elf64 $(NUMOS_AS_DEBUG_FLAGS) -D ENABLE_FRAMEBUFFER=1 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
 else
-    ASFLAGS_MULTIBOOT := -f elf64 -D ENABLE_FRAMEBUFFER=0 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
+    ASFLAGS_MULTIBOOT := -f elf64 $(NUMOS_AS_DEBUG_FLAGS) -D ENABLE_FRAMEBUFFER=0 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
 endif
-ASFLAGS_MULTIBOOT_VESA := -f elf64 -D ENABLE_FRAMEBUFFER=1 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
+ASFLAGS_MULTIBOOT_VESA := -f elf64 $(NUMOS_AS_DEBUG_FLAGS) -D ENABLE_FRAMEBUFFER=1 -D FB_WIDTH=$(FB_WIDTH) -D FB_HEIGHT=$(FB_HEIGHT) -D FB_BPP=$(FB_BPP)
 
 KERNEL_CFLAGS := $(KERNEL_ARCH_CFLAGS) -ffreestanding -fstack-protector-strong \
                  -mstack-protector-guard=global -fno-pic \
                  -Wall -Wextra -c -IInclude $(NUMOS_COMMON_OPT_FLAGS) \
+                 $(NUMOS_DEBUG_CFLAGS) \
+                 -DNUMOS_VERSION_STRING=\"$(NUMOS_VERSION)\" \
                  -DNUMOS_ARCH_NAME=\"$(NUMOS_ARCH_NAME)\" \
                  -DNUMOS_CPU_MODE_NAME=\"$(NUMOS_CPU_MODE_NAME)\" \
                  -DNUMOS_BOOT_PROTOCOL_NAME=\"$(NUMOS_BOOT_PROTOCOL_NAME)\" \
@@ -208,6 +221,12 @@ INIT_ELF   := $(BUILD_USER)/$(INIT_ELF_NAME)
 ISO_KERNEL_DIR := $(BUILD_DIR)/iso-kernel-only
 GRUB_KERNEL_DIR := $(ISO_KERNEL_DIR)/boot/grub
 BOOT_SUPPORT_STAMP := $(BUILD_DIR)/stage/.boot-support.stamp
+GDB_SCRIPT := $(BUILD_DIR)/numos.gdb
+ifeq ($(NUMOS_ARCH),arm64)
+VMLINUX := $(ARM64_KERNEL)
+else
+VMLINUX := $(KERNEL)
+endif
 
 .PHONY: all
 ifeq ($(NUMOS_ARCH),arm64)
@@ -227,12 +246,40 @@ endif
 
 .PHONY: arch-status
 arch-status:
+	@echo "NUMOS_VERSION=$(NUMOS_VERSION)"
 	@echo "NUMOS_ARCH=$(NUMOS_ARCH)"
 	@echo "NUMOS_MACHINE=$(NUMOS_MACHINE)"
 	@echo "NUMOS_TARGET=$(NUMOS_TARGET)"
 	@echo "NUMOS_QEMU=$(NUMOS_QEMU)"
+	@echo "NUMOS_DEBUG=$(NUMOS_DEBUG)"
+	@echo "NUMOS_DEBUG_PORT=$(NUMOS_DEBUG_PORT)"
 	@echo "Boot protocol: $(NUMOS_BOOT_PROTOCOL_NAME)"
 	@echo "Status: $(ARCH_STATUS)"
+
+.PHONY: check-gcc-version
+check-gcc-version:
+	@compiler_name=$$(basename "$(NUMOS_CC)"); \
+	case "$$compiler_name" in \
+		*gcc*) \
+			gcc_version=$$($(NUMOS_CC) -dumpfullversion 2>/dev/null || $(NUMOS_CC) -dumpversion 2>/dev/null); \
+			gcc_major=$${gcc_version%%.*}; \
+			if [ -z "$$gcc_version" ]; then \
+				echo "[ERROR] Failed to read GCC version from $(NUMOS_CC)"; \
+				false; \
+			elif [ "$$gcc_major" -lt 13 ]; then \
+				echo "[ERROR] GCC 13.0.0 or newer is required, found $$gcc_version from $(NUMOS_CC)"; \
+				false; \
+			fi ;; \
+		*) true ;; \
+	esac
+
+.PHONY: check-gdb-tools
+check-gdb-tools:
+	@if ! command -v $(NUMOS_GDB) >/dev/null 2>&1; then \
+		echo "[ERROR] Missing debugger: $(NUMOS_GDB)"; \
+		echo "Install gdb or gdb-multiarch."; \
+		false; \
+	fi
 
 .PHONY: check-host-tools
 check-host-tools:
@@ -279,10 +326,22 @@ check-iso-tools:
 		false; \
 	fi
 
+.PHONY: update-site
+update-site:
+	@python3 $(UPDATE_PUBLISHER) --publish-only
+
+.PHONY: deps-check
+deps-check:
+	@python3 $(DEPS_AUDIT) --arch $(NUMOS_ARCH)
+
+.PHONY: toolchain-source
+toolchain-source:
+	@bash $(TOOLS_DIR)/build-cross-compiler.sh --fetch-only --source-dir $(abspath third_party/toolchains/source)
+
 # ---- Kernel ----------------------------------------------------------------
 .PHONY: kernel
 ifeq ($(NUMOS_ARCH),arm64)
-kernel: check-arch check-host-tools $(ARM64_KERNEL) $(ARM64_KERNEL_IMAGE)
+kernel: check-arch check-host-tools check-gcc-version $(ARM64_KERNEL) $(ARM64_KERNEL_IMAGE)
 
 $(BUILD_KERNEL)/boot/arm64/%.o: $(SRC_DIR)/boot/arm64/%.S
 	@echo "[CC]  $<"
@@ -304,15 +363,19 @@ $(ARM64_KERNEL_IMAGE): $(ARM64_KERNEL)
 	@echo "[OBJCOPY]  kernel-arm64.bin"
 	@$(NUMOS_OBJCOPY) -O binary $< $@
 	@echo "[OK]  $(ARM64_KERNEL_IMAGE)"
+	@$(MAKE) update-site
 
 .PHONY: user_space
-user_space: check-arch check-host-tools
+user_space: check-arch check-host-tools check-gcc-version
 	@$(MAKE) -C $(USER_DIR) install \
 		NUMOS_ARCH=$(NUMOS_ARCH) \
 		NUMOS_TARGET=$(NUMOS_TARGET) \
 		NUMOS_AS=$(NUMOS_AS) \
 		NUMOS_CC=$(NUMOS_CC) \
-		NUMOS_LD=$(NUMOS_LD)
+		NUMOS_LD=$(NUMOS_LD) \
+		NUMOS_VERSION=$(NUMOS_VERSION) \
+		NUMOS_DEBUG=$(NUMOS_DEBUG)
+	@$(MAKE) update-site
 
 .PHONY: boot-support
 boot-support:
@@ -401,9 +464,9 @@ debug: kernel disk
 		-nographic \
 		-kernel $(ARM64_KERNEL_IMAGE) \
 		-initrd $(DISK_IMAGE) \
-		-s -S
+		-gdb tcp::$(NUMOS_DEBUG_PORT) -S
 else
-kernel: check-arch check-host-tools $(KERNEL) $(KERNEL_VESA)
+kernel: check-arch check-host-tools check-gcc-version $(KERNEL) $(KERNEL_VESA)
 
 $(BUILD_KERNEL)/boot/%.o: $(SRC_DIR)/boot/%.asm
 	@echo "[AS]  $<"
@@ -451,11 +514,13 @@ $(KERNEL): $(COMMON_KERNEL_OBJECTS) $(MULTIBOOT_OBJECT)
 	@echo "[LD]  kernel"
 	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
 	@echo "[OK]  $(KERNEL)"
+	@$(MAKE) update-site
 
 $(KERNEL_VESA): $(COMMON_KERNEL_OBJECTS) $(MULTIBOOT_OBJECT_VESA)
 	@echo "[LD]  kernel-vesa"
 	@$(NUMOS_LD) $(LDFLAGS) -o $@ $^
 	@echo "[OK]  $(KERNEL_VESA)"
+	@$(MAKE) update-site
 
 $(KERNEL_ATA): $(ASM_OBJECTS) $(KERNEL_C_OBJECTS_ATA) $(TRAMPOLINE_OBJ) $(MULTIBOOT_OBJECT)
 	@echo "[LD]  kernel-ata"
@@ -463,13 +528,16 @@ $(KERNEL_ATA): $(ASM_OBJECTS) $(KERNEL_C_OBJECTS_ATA) $(TRAMPOLINE_OBJ) $(MULTIB
 	@echo "[OK]  $(KERNEL_ATA)"
 
 .PHONY: user_space
-user_space: check-arch check-host-tools
+user_space: check-arch check-host-tools check-gcc-version
 	@$(MAKE) -C $(USER_DIR) install \
 		NUMOS_ARCH=$(NUMOS_ARCH) \
 		NUMOS_TARGET=$(NUMOS_TARGET) \
 		NUMOS_AS=$(NUMOS_AS) \
 		NUMOS_CC=$(NUMOS_CC) \
-		NUMOS_LD=$(NUMOS_LD)
+		NUMOS_LD=$(NUMOS_LD) \
+		NUMOS_VERSION=$(NUMOS_VERSION) \
+		NUMOS_DEBUG=$(NUMOS_DEBUG)
+	@$(MAKE) update-site
 
 .PHONY: boot-support
 boot-support: check-arch $(BOOT_SUPPORT_STAMP)
@@ -745,8 +813,38 @@ debug: iso
 		-device e1000,netdev=net0 \
 		-drive file=$(DISK_IMAGE),format=raw,if=ide,index=0 \
 		-drive file=$(ISO_FILE),if=ide,media=cdrom,index=2 \
-		-serial stdio -s -S
+		-serial stdio -gdb tcp::$(NUMOS_DEBUG_PORT) -S
 endif
+
+.PHONY: gdb-script
+gdb-script: kernel
+	@mkdir -p $(BUILD_DIR)
+ifeq ($(NUMOS_ARCH),arm64)
+	@printf '%s\n' \
+		'set pagination off' \
+		'set confirm off' \
+		'set architecture aarch64' \
+		'file $(ARM64_KERNEL)' \
+		'target remote localhost:$(NUMOS_DEBUG_PORT)' \
+		> $(GDB_SCRIPT)
+else
+	@printf '%s\n' \
+		'set pagination off' \
+		'set confirm off' \
+		'set disassembly-flavor intel' \
+		'file $(KERNEL)' \
+		'target remote localhost:$(NUMOS_DEBUG_PORT)' \
+		> $(GDB_SCRIPT)
+endif
+	@echo "[OK]  $(GDB_SCRIPT)"
+
+.PHONY: gdb
+gdb: check-gdb-tools gdb-script
+	@$(NUMOS_GDB) -x $(GDB_SCRIPT)
+
+.PHONY: version
+version:
+	@echo "$(NUMOS_VERSION)"
 
 # ---- VirtualBox ------------------------------------------------------------
 # Attach NumOS.iso as optical drive only.  disk.img is embedded inside as
@@ -777,7 +875,13 @@ endif
 	@echo "  make partition PART_TARGET=build/disk.img PART_APPLY=1 PART_FORMAT=1"
 	@echo "    add PART_POPULATE=0 to keep filesystem empty"
 	@echo "  make pkg-download PKG_URL=https://example.com/OCLDEV.PKG"
+	@echo "  make deps-check - audit host build dependencies for $(NUMOS_ARCH)"
+	@echo "  make toolchain-source - fetch GCC and binutils source tarballs"
+	@echo "  make gdb-script - write $(GDB_SCRIPT) for the current architecture"
+	@echo "  make gdb - start GDB with the generated script"
+	@echo "  make update-site - refresh New_Update with kernel and file update payloads"
 	@echo "  make clean - remove build artefacts"
+	@echo "Version: $(NUMOS_VERSION)"
 	@echo "OS: $(OS_TYPE)"
 	@echo "Architecture: $(NUMOS_ARCH)"
 	@echo "Status: $(ARCH_STATUS)"

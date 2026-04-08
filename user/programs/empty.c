@@ -1,4 +1,5 @@
 #include "syscalls.h"
+#include "program_version.h"
 
 #define MAX_SCREEN_COLS    240
 #define MIN_SCREEN_COLS     20
@@ -185,6 +186,10 @@ int main(void) {
     const char *s = skip_spaces(cmdline);
     if (s[0] != '\0') {
         read_token(s, path, sizeof(path));
+        if (numos_is_version_flag(path)) {
+            numos_print_program_version("empty");
+            return 0;
+        }
         if (str_eq(path, "-h") || str_eq(path, "-help")) {
             print_help();
             return 0;

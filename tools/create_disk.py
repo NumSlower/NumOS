@@ -15,6 +15,7 @@ if TOOLS_DIR not in sys.path:
     sys.path.insert(0, TOOLS_DIR)
 
 import numloss_codec
+from numos_version import read_numos_version
 
 
 # FAT32 image geometry. The current boot flow depends on this fixed layout.
@@ -615,6 +616,10 @@ def load_init_record(init_elf_file, init_name_arg):
 
 def main():
     """Build the image and print a short layout summary."""
+    if len(sys.argv) == 2 and sys.argv[1] in ("-v", "--version"):
+        print(f"{os.path.basename(__file__)} {read_numos_version(__file__)}")
+        raise SystemExit(0)
+
     if len(sys.argv) < 2:
         print("Usage: python3 create_disk.py <output.img> [init_elf] [init_name]")
         raise SystemExit(1)

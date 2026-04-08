@@ -2,6 +2,10 @@
 
 NumOS is a small 64 bit operating system project written in C, assembly, and a small amount of Python for build tooling.
 
+Current repo version:
+
+- `v0.0.0`
+
 Current focus:
 
 - x86_64 PC boot through GRUB Multiboot2
@@ -49,6 +53,7 @@ Required for a full x86_64 build:
 - `mtools`
 - `qemu-system-x86_64` for local boot tests
 - `python3`
+- `gdb` or `gdb-multiarch` for source-level debug work
 
 Required for the ARM64 bring up path:
 
@@ -56,12 +61,26 @@ Required for the ARM64 bring up path:
 - `aarch64-none-elf-gcc` or another usable AArch64 freestanding compiler
 - `aarch64-none-elf-ld` or another usable AArch64 linker
 - `qemu-system-aarch64` for local boot tests
+- `gdb-multiarch` recommended for ARM64 debug sessions
+
+Check your host from the repo:
+
+```bash
+python3 tools/check_host_deps.py --arch x86_64
+python3 tools/check_host_deps.py --arch arm64
+```
+
+Platform notes:
+
+- Linux and other Unix hosts use the Makefiles directly.
+- macOS needs GNU Make, usually as `gmake`, plus the other host tools from Homebrew.
+- Windows builds are supported through WSL2. Run the Linux dependency commands inside WSL and build from the Linux path.
 
 Ubuntu or Debian example:
 
 ```bash
 sudo apt update
-sudo apt install nasm qemu-system-x86 grub-common grub-pc-bin xorriso mtools python3
+sudo apt install nasm qemu-system-x86 qemu-system-arm grub-common grub-pc-bin xorriso mtools parted dosfstools python3 gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu gdb gdb-multiarch texinfo curl
 ```
 
 You still need a usable cross or freestanding compiler setup. The helper script in `tools/build-cross-compiler.sh` exists for that path.
@@ -104,6 +123,12 @@ Run the unit tests that exist in this repo:
 python3 -m unittest discover -s tests -v
 ```
 
+Fetch the pinned GCC and binutils source archives used by the cross compiler helper:
+
+```bash
+make toolchain-source
+```
+
 ## Common Build Targets
 
 Use these targets most often:
@@ -112,8 +137,11 @@ Use these targets most often:
 - `make iso`, build the bootable ISO
 - `make run`, boot in QEMU
 - `make debug`, boot QEMU with a GDB stub
+- `make gdb-script`, generate `build/numos.gdb`
+- `make gdb`, start GDB with the generated script
 - `make clean`, remove build output
 - `make arch-status`, print current target settings
+- `make deps-check`, audit host dependencies for the active architecture
 
 The default supported target is:
 
@@ -133,11 +161,17 @@ make debug
 In another terminal:
 
 ```bash
-gdb build/kernel.bin
-target remote localhost:1234
-break kernel_main
-continue
+make gdb-script
+gdb -x build/numos.gdb
 ```
+
+Or let the Makefile open GDB for you:
+
+```bash
+make gdb
+```
+
+The default debug port is `1234`. Override it with `NUMOS_DEBUG_PORT=<port>`.
 
 ## Disk Image And Partition Flow
 
@@ -187,7 +221,7 @@ The image currently stages these user tools:
 - `tcp`, legacy IPv4 TCP connect checks and plain HTTP GET
 - `see`, file viewer
 - `usb`, USB controller and port inspection
-- `install`, native install helper
+- `install`, native ATA disk installer
 - staged non-init `.elf` files are packed with `numloss` by default when this makes them smaller
 
 Example flow after boot:
@@ -195,6 +229,7 @@ Example flow after boot:
 - `pkg list`, inspect staged packages in `/run`
 - `pkg install OCLDEV`, install the sample OCL development package
 - `pkg http://203.0.113.10/packages/OCLDEV.PKG`, download a remote package into `/run` and install it
+- `pkg kernel /run/KERN0002.BIN`, stage a new kernel with fallback boot metadata
 - `mk`, run the default target from `/home/BUILD.MK`
 
 Disable host-side ELF packing for a disk build:
@@ -218,17 +253,17 @@ Installed NumOS disks now stage immutable kernel artifacts in `/boot`:
 Inside NumOS you can stage a new kernel from a local file or a direct IPv4 HTTP or HTTPS URL:
 
 ```bash
-install kernel /run/KERN0002.BIN
-install kernel http://203.0.113.10/kern0002.bin reboot
+pkg kernel /run/KERN0002.BIN
+pkg kernel http://203.0.113.10/kern0002.bin reboot
 ```
 
-The installer never overwrites the running kernel in place. It copies the new kernel to a fresh `/boot/kernNNNN.bin`, updates `/boot/boot.cfg`, and marks `/boot/status.cfg` as `pending`. Early kernel init rewrites `/boot/status.cfg` to `success` after the filesystem mounts. If the pending kernel fails before then, the installed GRUB path retries once and then falls back to the previous kernel on the next boot.
+The kernel updater never overwrites the running kernel in place. It copies the new kernel to a fresh `/boot/kernNNNN.bin`, updates `/boot/boot.cfg`, and marks `/boot/status.cfg` as `pending`. Early kernel init rewrites `/boot/status.cfg` to `success` after the filesystem mounts. If the pending kernel fails before then, the installed GRUB path retries once and then falls back to the previous kernel on the next boot.
 
-For remote installs, bring networking up first:
+For remote kernel updates, bring networking up first:
 
 ```bash
 connect --dhcp
-install kernel http://203.0.113.10/kern0002.bin reboot
+pkg kernel http://203.0.113.10/kern0002.bin reboot
 ```
 
 Remote kernel URLs currently need an IPv4 literal host, like the package downloader.
@@ -275,6 +310,7 @@ Key directories:
 - `tests`, Python regression tests for tooling
 - `docs`, status notes and porting plans
 - `preboot`, GRUB configuration
+- `third_party`, vendored source bundles for the C library reference tree and GCC toolchain sources
 
 ## Verification
 

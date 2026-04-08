@@ -13,11 +13,18 @@ import argparse
 import os
 import pathlib
 import shutil
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+
+TOOLS_DIR = os.path.dirname(__file__)
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+from numos_version import read_numos_version
 
 
 @dataclass
@@ -201,6 +208,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description="Download a NumOS package manifest and stage it into /run payload files."
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"{pathlib.Path(__file__).name} {read_numos_version(__file__)}",
     )
     parser.add_argument("url", help="URL to a .PKG manifest on your website")
     parser.add_argument(

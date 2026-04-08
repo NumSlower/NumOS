@@ -1,8 +1,8 @@
 #include "codec.h"
+#include "program_version.h"
 
 #define NUMLOSS_CMDLINE_CAP 256
 #define NUMLOSS_ARG_CAP 4
-#define NUMLOSS_TOOL_VERSION "v0.9.0"
 
 static uint8_t g_input_buf[NUMLOSS_MAX_ARCHIVE_BYTES];
 static uint8_t g_output_buf[NUMLOSS_MAX_ARCHIVE_BYTES];
@@ -101,6 +101,7 @@ static const char *transform_name(uint8_t transform) {
     if (transform == NUMLOSS_TRANSFORM_DELTA8_DELTA8)    return "delta8+delta8";
     if (transform == NUMLOSS_TRANSFORM_TEXT_PROSE)       return "text-prose";
     if (transform == NUMLOSS_TRANSFORM_TEXT_CODE)        return "text-code";
+    if (transform == NUMLOSS_TRANSFORM_DELTA32LE)        return "delta32le";
     return "unknown";
 }
 
@@ -213,6 +214,7 @@ static void print_usage(void) {
     write_str("numloss c <input> <output>\n");
     write_str("numloss d <input> <output>\n");
     write_str("numloss i <archive>\n");
+    write_str("numloss -v\n");
     write_str("numloss --version\n");
     write_str("one input writes <name>.nls\n");
     write_str("compressed ELF files still run through the kernel loader\n");
@@ -220,8 +222,7 @@ static void print_usage(void) {
 }
 
 static void print_version(void) {
-    write_str(NUMLOSS_TOOL_VERSION);
-    write_ch('\n');
+    numos_print_program_version("numloss");
 }
 
 static int write_all_fd(int fd, const uint8_t *buf, uint32_t size) {
@@ -913,7 +914,7 @@ int main(void) {
         return 0;
     }
 
-    if (argc == 1 && strcmp(argv[0], "--version") == 0) {
+    if (argc == 1 && numos_is_version_flag(argv[0])) {
         print_version();
         return 0;
     }

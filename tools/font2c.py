@@ -41,6 +41,12 @@ import os
 import gzip
 import struct
 
+TOOLS_DIR = os.path.dirname(__file__)
+if TOOLS_DIR not in sys.path:
+    sys.path.insert(0, TOOLS_DIR)
+
+from numos_version import read_numos_version
+
 # ---------------------------------------------------------------------------
 # PSF constants
 # ---------------------------------------------------------------------------
@@ -151,6 +157,10 @@ def emit_c_header(data: bytes, info: dict, source_path: str) -> None:
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] in ('-v', '--version'):
+        print(f"{os.path.basename(__file__)} {read_numos_version(__file__)}")
+        sys.exit(0)
+
     if len(sys.argv) != 2 or sys.argv[1] in ('-h', '--help'):
         print(__doc__)
         sys.exit(0 if len(sys.argv) == 1 else 1)

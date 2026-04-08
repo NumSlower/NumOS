@@ -3,6 +3,11 @@
 ################################################################################
 
 NUMOS_ARCH ?= x86_64
+NUMOS_VERSION_FILE ?= ../VERSION
+NUMOS_VERSION ?= $(shell tr -d '\r\n' < $(NUMOS_VERSION_FILE) 2>/dev/null || echo v0.0.0)
+NUMOS_DEBUG ?= 1
+NUMOS_DEBUG_CFLAGS := $(if $(filter 1,$(NUMOS_DEBUG)),-g3 -ggdb -fno-omit-frame-pointer,)
+NUMOS_AS_DEBUG_FLAGS = $(if $(filter 1,$(NUMOS_DEBUG)),$(if $(filter yasm,$(notdir $(NUMOS_AS))),-g dwarf2,-g -F dwarf),)
 HOST_CPU_COUNT := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 NUMOS_BUILD_JOBS ?= $(HOST_CPU_COUNT)
 NUMOS_OPT_LEVEL ?= 3
@@ -64,7 +69,8 @@ USER_CFLAGS := $(USER_CFLAGS_ARCH) -ffreestanding -fstack-protector-strong \
                -ftls-model=local-exec \
                 -fno-builtin -nostdlib -nostartfiles -nodefaultlibs \
                 -U__linux__ \
-               -Wall -Wextra $(NUMOS_COMMON_OPT_FLAGS) -Iinclude
+               -Wall -Wextra $(NUMOS_COMMON_OPT_FLAGS) $(NUMOS_DEBUG_CFLAGS) \
+               -DNUMOS_VERSION_STRING=\"$(NUMOS_VERSION)\" -Iinclude -Iprogram_support
 
 USER_LDFLAGS := $(USER_LDFLAGS_ARCH) -nostdlib $(USER_LDFLAGS_MODE) \
                 --entry=_start --build-id=none -z noexecstack
@@ -85,14 +91,15 @@ PREINSTALLED_BINS := $(strip $(foreach bin,$(PREINSTALLED_BIN_CANDIDATES),$(if $
 PREINSTALLED_ELFS := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .elf,$(PREINSTALLED_BINS)))
 USER_ELFS    := $(addprefix $(OUTPUT_DIR)/,$(addsuffix .elf,$(DIRECT_PROGS) $(PROGRAM_BUNDLES)))
 COMMON_OBJS   := $(addprefix build/,$(COMMON_SRCS:.c=.o))
+PROGRAM_pkg_EXTRA_OBJS := build/program_support/pkg_kernel.o
 
 define DIRECT_PROGRAM_template
 PROGRAM_$(1)_SRC := $(2)
 PROGRAM_$(1)_OBJ := build/$(2:.c=.o)
 
-$(OUTPUT_DIR)/$(1).elf: build/enteryusr.o $(COMMON_OBJS) $$(PROGRAM_$(1)_OBJ) | $(OUTPUT_DIR)
+$(OUTPUT_DIR)/$(1).elf: build/enteryusr.o $(COMMON_OBJS) $$(PROGRAM_$(1)_OBJ) $$(PROGRAM_$(1)_EXTRA_OBJS) | $(OUTPUT_DIR)
 	@echo "[LD user] $$@"
-	@$(NUMOS_LD) $(USER_LDFLAGS) -o $$@ build/enteryusr.o $(COMMON_OBJS) $$(PROGRAM_$(1)_OBJ)
+	@$(NUMOS_LD) $(USER_LDFLAGS) -o $$@ build/enteryusr.o $(COMMON_OBJS) $$(PROGRAM_$(1)_OBJ) $$(PROGRAM_$(1)_EXTRA_OBJS)
 	@echo "[INFO] $$@: $$(wc -c < $$@) bytes, entry=0x60000000"
 endef
 
@@ -138,6 +145,23 @@ else
 	@false
 endif
 
+.PHONY: check-gcc-version
+check-gcc-version:
+	@compiler_name=$$(basename "$(NUMOS_CC)"); \
+	case "$$compiler_name" in \
+		*gcc*) \
+			gcc_version=$$($(NUMOS_CC) -dumpfullversion 2>/dev/null || $(NUMOS_CC) -dumpversion 2>/dev/null); \
+			gcc_major=$${gcc_version%%.*}; \
+			if [ -z "$$gcc_version" ]; then \
+				echo "[ERROR] Failed to read GCC version from $(NUMOS_CC)"; \
+				false; \
+			elif [ "$$gcc_major" -lt 13 ]; then \
+				echo "[ERROR] GCC 13.0.0 or newer is required, found $$gcc_version from $(NUMOS_CC)"; \
+				false; \
+			fi ;; \
+		*) true ;; \
+	esac
+
 $(OUTPUT_DIR):
 	@mkdir -p $(OUTPUT_DIR)
 
@@ -150,7 +174,7 @@ build/enteryusr.o: $(USER_ENTRY_SOURCE)
 ifeq ($(NUMOS_ARCH),x86_64)
 	@echo "[AS user] runtime/entry.asm"
 	@mkdir -p build
-	@$(NUMOS_AS) -f $(USER_ASFORMAT) runtime/entry.asm -o build/enteryusr.o
+	@$(NUMOS_AS) -f $(USER_ASFORMAT) $(NUMOS_AS_DEBUG_FLAGS) runtime/entry.asm -o build/enteryusr.o
 else
 	@echo "[CC user] $(USER_ENTRY_SOURCE)"
 	@mkdir -p build
@@ -167,7 +191,7 @@ build/%.o: %.c include/syscalls.h
 # ---- Install ----------------------------------------------------------------
 
 .PHONY: stage-bin
-stage-bin: check-arch sanitize-preinstalled-elfs $(PREINSTALLED_ELFS) | $(STAGED_BIN_DIR)
+stage-bin: check-arch check-gcc-version sanitize-preinstalled-elfs $(PREINSTALLED_ELFS) | $(STAGED_BIN_DIR)
 
 .PHONY: sanitize-preinstalled-elfs
 sanitize-preinstalled-elfs:
@@ -191,7 +215,7 @@ stage-bin:
 	done
 
 .PHONY: install
-install: check-arch stage-bin
+install: check-arch check-gcc-version stage-bin
 
 # ---- Clean ------------------------------------------------------------------
 

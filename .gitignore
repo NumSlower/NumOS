@@ -30,4 +30,5 @@ Thumbs.db
 tools/__pycache__
 tests/__pycache__
 
-/New_Update
+/New_Update/*
+!/New_Update/serve_update_site.py

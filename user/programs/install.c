@@ -6,6 +6,7 @@
  */
 
 #include "libc.h"
+#include "program_version.h"
 #include "syscalls.h"
 
 /* Fixed image layout shared with the host-side disk builder. */
@@ -108,6 +109,8 @@ static uint8_t zero_buffer[BYTES_PER_CLUSTER];
 static uint8_t transfer_buffer[ATA_MAX_TRANSFER_SECTORS * BYTES_PER_SECTOR];
 static uint8_t http_stream_recv_buffer[HTTP_STREAM_RECV_BYTES];
 static char http_stream_header_buffer[HTTP_STREAM_HEADER_BYTES + 1u];
+static struct fat32_dirent install_dir_entries[64];
+static struct fat32_dirent install_include_entries[16];
 
 static int append_char(char *buf, size_t cap, size_t *pos, char c);
 static int append_text(char *buf, size_t cap, size_t *pos, const char *text);
@@ -1227,13 +1230,13 @@ static int stage_named_file(const char *dir, const char *name, uint32_t size,
 }
 
 static int stage_directory(const char *dir, struct staged_file *files, int *count) {
-    struct fat32_dirent entries[64];
-    int64_t n = sys_listdir(dir, entries, 64);
+    int64_t n = sys_listdir(dir, install_dir_entries, 64);
     if (n < 0) return -1;
 
     for (int i = 0; i < n; i++) {
-        if (entries[i].attr & FAT32_ATTR_DIRECTORY) continue;
-        if (stage_named_file(dir, entries[i].name, entries[i].size, files, count) != 0) {
+        if (install_dir_entries[i].attr & FAT32_ATTR_DIRECTORY) continue;
+        if (stage_named_file(dir, install_dir_entries[i].name,
+                             install_dir_entries[i].size, files, count) != 0) {
             return -1;
         }
     }
@@ -1481,21 +1484,20 @@ static int build_kernel_path(unsigned version, char *out, size_t cap) {
 }
 
 static int select_kernel_install_path(char *out, size_t cap, int *reused_empty_slot) {
-    struct fat32_dirent entries[64];
     int reusable_version = 0;
     int highest_version = 0;
-    int64_t count = sys_listdir("/boot", entries, 64);
+    int64_t count = sys_listdir("/boot", install_dir_entries, 64);
 
     if (count < 0) return -1;
 
     for (int i = 0; i < count; i++) {
         int version;
 
-        if (entries[i].attr & FAT32_ATTR_DIRECTORY) continue;
-        version = parse_kernel_version(entries[i].name);
+        if (install_dir_entries[i].attr & FAT32_ATTR_DIRECTORY) continue;
+        version = parse_kernel_version(install_dir_entries[i].name);
         if (version <= 0) continue;
 
-        if (entries[i].size == 0) {
+        if (install_dir_entries[i].size == 0) {
             if (reusable_version == 0 || version < reusable_version) {
                 reusable_version = version;
             }
@@ -1802,8 +1804,8 @@ static void create_mbr(uint8_t *sector, const struct staged_file *grub_boot) {
     sector[511] = 0xAAu;
 }
 
-static int install_kernel_image(const char *src_path, int reboot_after) {
-    struct fat32_dirent entries[64];
+static int __attribute__((unused))
+install_kernel_image(const char *src_path, int reboot_after) {
     char boot_cfg[512];
     char current_default[64];
     char current_fallback[64];
@@ -1820,11 +1822,11 @@ static int install_kernel_image(const char *src_path, int reboot_after) {
         return 1;
     }
 
-    if (sys_listdir("/boot", entries, 64) < 0) {
+    if (sys_listdir("/boot", install_dir_entries, 64) < 0) {
         write_str("install: missing /boot directory\n");
         return 1;
     }
-    if (sys_listdir("/boot/grub", entries, 64) < 0) {
+    if (sys_listdir("/boot/grub", install_dir_entries, 64) < 0) {
         write_str("install: missing /boot/grub directory\n");
         return 1;
     }
@@ -1929,7 +1931,6 @@ static int install_to_primary_disk(void) {
     uint8_t sector[BYTES_PER_SECTOR];
     uint32_t next_cluster = FIRST_FILE_CLUSTER;
     uint64_t partition_lba = PARTITION_START_LBA;
-    struct fat32_dirent include_entries[16];
     int64_t include_dir_count = 0;
     int boot_idx = -1;
     int core_idx = -1;
@@ -1952,14 +1953,15 @@ static int install_to_primary_disk(void) {
     write_size_pretty(info.sector_count * (uint64_t)info.sector_size);
     write_str("\n");
 
-    include_dir_count = sys_listdir("/include", include_entries, 16);
+    include_dir_count = sys_listdir("/include", install_include_entries, 16);
     if (include_dir_count < 0) {
         write_str("install: failed to scan /include\n");
         return 1;
     }
     for (int i = 0; i < include_dir_count; i++) {
-        if (ascii_casecmp(include_entries[i].name, "SYSCALLS.H") != 0) continue;
-        if (stage_named_file("/include", include_entries[i].name, include_entries[i].size,
+        if (ascii_casecmp(install_include_entries[i].name, "SYSCALLS.H") != 0) continue;
+        if (stage_named_file("/include", install_include_entries[i].name,
+                             install_include_entries[i].size,
                              include_files, &include_count) != 0) {
             write_str("install: failed to stage /include/SYSCALLS.H\n");
             return 1;
@@ -2164,13 +2166,9 @@ static int install_to_primary_disk(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc >= 3 && strcmp(argv[1], "kernel") == 0) {
-        int reboot_after = 0;
-        if (argc >= 4 &&
-            (strcmp(argv[3], "reboot") == 0 || strcmp(argv[3], "now") == 0)) {
-            reboot_after = 1;
-        }
-        return install_kernel_image(argv[2], reboot_after);
+    if (argc >= 2 && numos_is_version_flag(argv[1])) {
+        numos_print_program_version("install");
+        return 0;
     }
 
     if (argc >= 2 && (strcmp(argv[1], "ata") == 0 || strcmp(argv[1], "disk") == 0)) {
@@ -2179,10 +2177,7 @@ int main(int argc, char **argv) {
 
     {
         write_str("usage: install ata\n");
-        write_str("       install kernel <path|URL>\n");
-        write_str("       install kernel <path|URL> reboot\n");
         write_str("writes a bootable 30 MB NumOS system partition to the primary ATA disk\n");
-        write_str("or stages a new immutable kernel in /boot and marks the next boot pending\n");
     }
     return 1;
 }
