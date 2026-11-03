@@ -1,0 +1,15 @@
+# Build outputs
+obj/
+iso/
+numos.bin
+numos.iso
+build/
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
