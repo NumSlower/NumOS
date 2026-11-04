@@ -2,7 +2,8 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x100000;
+    . = 0x10000;
+    _kernel_start = .;
 
     .boot :
     {
@@ -12,28 +13,31 @@ SECTIONS
 
     .text : ALIGN(4K)
     {
-        *(.text)
+        *(.text .text.*)
     }
 
     .rodata : ALIGN(4K)
     {
-        *(.rodata)
+        *(.rodata .rodata.*)
     }
 
     .data : ALIGN(4K)
     {
-        *(.data)
+        *(.data .data.*)
     }
 
     .bss : ALIGN(4K)
     {
         *(COMMON)
-        *(.bss)
+        *(.bss .bss.*)
     }
+
+    . = ALIGN(4K);
+    _kernel_end = .;
 
     /DISCARD/ : {
         *(.comment)
-        *(.note)
+        *(.note*)
         *(.eh_frame)
         *(.eh_frame_hdr)
     }

@@ -23,61 +23,52 @@ static inline bool test_bit(uint64_t bit) {
     return (bitmap[bit / 8] & (1 << (bit % 8))) != 0;
 }
 
-void pmm_init(struct mb2_tag_mmap* mmap) {
+void pmm_init(struct mb2_tag_mmap* mmap, uint64_t mb2_addr) {
     if (!mmap) return;
-    
-    uint64_t highest_addr = 0;
-    
-    struct mb2_mmap_entry* entry = mmap->entries;
+
     uint32_t num_entries = (mmap->size - sizeof(struct mb2_tag_mmap)) / mmap->entry_size;
-    
+    #define MMAP_ENTRY(i) ((struct mb2_mmap_entry*)((uint8_t*)mmap->entries + (i) * mmap->entry_size))
+
+    /* 1. Highest address of *usable* RAM only */
+    uint64_t highest_addr = 0;
     for (uint32_t i = 0; i < num_entries; i++) {
-        uint64_t end_addr = entry[i].base_addr + entry[i].length;
-        if (end_addr > highest_addr) {
-            highest_addr = end_addr;
-        }
+        struct mb2_mmap_entry* e = MMAP_ENTRY(i);
+        if (e->type == 1 && e->base_addr + e->length > highest_addr)
+            highest_addr = e->base_addr + e->length;
     }
-    
+
     total_frames = highest_addr / PAGE_SIZE;
-    uint64_t bitmap_size = total_frames / 8;
-    
-    bitmap = (uint8_t*)ALIGN_UP((uint64_t)_kernel_end, PAGE_SIZE);
-    
+    uint64_t bitmap_size = (total_frames + 7) / 8;
+
+    /* 2. Place bitmap after kernel AND after the multiboot2 info block */
+    uint64_t mb2_end  = mb2_addr + *(uint32_t*)mb2_addr;
+    uint64_t place    = (uint64_t)_kernel_end;
+    if (mb2_end > place) place = mb2_end;
+    bitmap = (uint8_t*)ALIGN_UP(place, PAGE_SIZE);
+
     memset(bitmap, 0xFF, bitmap_size);
     used_frames = total_frames;
-    
+
+    /* 3. Free usable regions */
     for (uint32_t i = 0; i < num_entries; i++) {
-        if (entry[i].type == 1) { // Available
-            uint64_t start_frame = entry[i].base_addr / PAGE_SIZE;
-            uint64_t end_frame = (entry[i].base_addr + entry[i].length) / PAGE_SIZE;
-            
-            for (uint64_t f = start_frame; f < end_frame; f++) {
-                if (f < total_frames) {
-                    clear_bit(f);
-                    used_frames--;
-                }
-            }
+        struct mb2_mmap_entry* e = MMAP_ENTRY(i);
+        if (e->type != 1) continue;
+        uint64_t start = ALIGN_UP(e->base_addr, PAGE_SIZE) / PAGE_SIZE;
+        uint64_t end   = (e->base_addr + e->length) / PAGE_SIZE;
+        for (uint64_t f = start; f < end && f < total_frames; f++) {
+            clear_bit(f);
+            used_frames--;
         }
     }
-    
-    // Mark first 1MB as used
-    for (uint64_t f = 0; f < 0x100000 / PAGE_SIZE; f++) {
-        if (!test_bit(f)) {
-            set_bit(f);
-            used_frames++;
-        }
+
+    /* 4. Reserve: low 1 MiB, kernel, mb2 info, bitmap */
+    uint64_t reserve_end = ALIGN_UP((uint64_t)bitmap + bitmap_size, PAGE_SIZE) / PAGE_SIZE;
+    for (uint64_t f = 0; f < reserve_end && f < total_frames; f++) {
+        if (f >= 0x100000 / PAGE_SIZE && f < (uint64_t)_kernel_start / PAGE_SIZE)
+            continue;                /* gap between 1 MiB and kernel stays free */
+        if (!test_bit(f)) { set_bit(f); used_frames++; }
     }
-    
-    // Mark kernel as used
-    uint64_t kernel_start_frame = (uint64_t)_kernel_start / PAGE_SIZE;
-    uint64_t kernel_end_frame = ALIGN_UP((uint64_t)bitmap + bitmap_size, PAGE_SIZE) / PAGE_SIZE;
-    
-    for (uint64_t f = kernel_start_frame; f < kernel_end_frame; f++) {
-        if (!test_bit(f)) {
-            set_bit(f);
-            used_frames++;
-        }
-    }
+    #undef MMAP_ENTRY
 }
 
 uint64_t pmm_alloc_frame(void) {

@@ -5,7 +5,7 @@ ASM = nasm
 QEMU = qemu-system-x86_64
 
 CFLAGS = -m64 -nostdlib -nostdinc -fno-builtin -fno-stack-protector -nostartfiles -nodefaultlibs -Wall -Wextra -Werror -c -ffreestanding -mno-red-zone -mno-mmx -mno-sse -mno-sse2
-LDFLAGS = -T linker.ld -nostdlib -lgcc
+LDFLAGS = -T linker.ld -nostdlib
 ASMFLAGS = -f elf64
 
 SRCDIR := src
@@ -38,7 +38,10 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.asm
 	$(ASM) $(ASMFLAGS) -o $@ $<
 
 run: numos.iso
-	$(QEMU) -cdrom numos.iso -m 512M
+	$(QEMU) -cdrom numos.iso -m 512M -serial stdio
+
+run-headless: numos.iso
+	$(QEMU) -cdrom numos.iso -m 512M -nographic
 
 clean:
 	rm -rf $(OBJDIR) numos.bin numos.iso iso

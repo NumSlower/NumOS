@@ -87,7 +87,7 @@ void kernel_main(uint32_t magic, uint64_t mb2_info_addr) {
     kdebug("Multiboot2 info at 0x%lx", mb2_info_addr);
     {
         uint64_t total_mem = mb2_get_total_memory();
-        kdebug("Total usable RAM: %lu MB (%lu KB)", total_mem / (1024*1024), total_mem / 1024);
+        kprintf("Total memory: %lu MB\n", total_mem / (1024 * 1024));
     }
     print_ok("Serial");
     kdebug("COM1 @ 0x3F8, 115200 baud, 8N1");
@@ -157,6 +157,8 @@ void kernel_main(uint32_t magic, uint64_t mb2_info_addr) {
         {
             uint8_t iso_count = 0;
             struct acpi_iso* isos = acpi_get_isos(&iso_count);
+            for (uint32_t i = 0; i < iso_count; i++)
+                kprintf("ISO: IRQ %u -> GSI %u\n", isos[i].source, isos[i].gsi);
             kdebug("Interrupt source overrides: %u", iso_count);
             for (uint8_t i = 0; i < iso_count; i++) {
                 kdebug("  ISO[%u]: bus=%u src=%u -> GSI %u (flags 0x%x)",
@@ -186,11 +188,12 @@ void kernel_main(uint32_t magic, uint64_t mb2_info_addr) {
     kdebug("PIT: channel 0, rate generator mode, 1000 Hz");
     kdebug("PIT: divisor=%u (base 1193182 Hz)", 1193182 / 1000);
     
-    pmm_init(mb2_get_mmap());
+    pmm_init(mb2_get_mmap(), mb2_info_addr);
     print_ok("PMM");
     {
-        uint64_t free_frames = pmm_get_free_count();
+        uint64_t free_frames  = pmm_get_free_count();
         uint64_t total_frames = pmm_get_total_count();
+        kprintf("PMM: %llu / %llu frames free\n", free_frames, total_frames);
         kdebug("PMM: %lu / %lu frames free (%lu MB / %lu MB)",
                free_frames, total_frames,
                (free_frames * 4096) / (1024*1024),

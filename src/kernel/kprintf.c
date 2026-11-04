@@ -114,6 +114,13 @@ int kvsnprintf(char* buf, size_t size, const char* fmt, va_list args) {
         if (*fmt == 'l') {
             is_long = true;
             fmt++;
+            if (*fmt == 'l') fmt++;   /* accept %ll (long long) */
+        } else if (*fmt == 'z') {     /* size_t */
+            is_long = true;
+            fmt++;
+        } else if (*fmt == 'h') {     /* short / char — promoted to int anyway */
+            fmt++;
+            if (*fmt == 'h') fmt++;
         }
 
         switch (*fmt) {
