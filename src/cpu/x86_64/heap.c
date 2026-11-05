@@ -1,10 +1,10 @@
 /* NumOS — heap.c — Kernel Heap */
-#include "kernel/heap.h"
+#include "cpu/heap.h"
 #include "kernel/vmm.h"
 #include "kernel/pmm.h"
-#include "kernel/string.h"
+#include "libs/string.h"
 #include "kernel/spinlock.h"
-#include "kernel/kdebug.h"
+#include "libs/kdebug.h"
 #include "drivers/vga.h"
 
 struct heap_block {

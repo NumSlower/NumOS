@@ -2,7 +2,7 @@
 #ifndef NUMOS_PMM_H
 #define NUMOS_PMM_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 #include "kernel/multiboot2.h"
 
 void pmm_init(struct mb2_tag_mmap* mmap, uint64_t mb2_addr);

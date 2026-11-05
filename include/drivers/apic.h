@@ -2,7 +2,7 @@
 #ifndef NUMOS_APIC_H
 #define NUMOS_APIC_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 #define APIC_ID 0x20
 #define APIC_VER 0x30

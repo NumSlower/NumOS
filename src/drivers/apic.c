@@ -2,8 +2,8 @@
 #include "drivers/apic.h"
 #include "drivers/acpi.h"
 #include "cpu/cpuid.h"
-#include "kernel/types.h"
-#include "kernel/io.h"
+#include "libs/types.h"
+#include "libs/io.h"
 
 static uint64_t apic_base = 0;
 

@@ -1,7 +1,7 @@
 /* NumOS — vmm.c — Virtual Memory Manager */
 #include "kernel/vmm.h"
 #include "kernel/pmm.h"
-#include "kernel/string.h"
+#include "libs/string.h"
 
 #define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
 

@@ -1,8 +1,8 @@
 /* NumOS — pit.c — Programmable Interval Timer (PIT) */
 #include "drivers/pit.h"
-#include "kernel/io.h"
-#include "kernel/irq.h"
-#include "kernel/kprintf.h"
+#include "libs/io.h"
+#include "cpu/irq.h"
+#include "libs/kprintf.h"
 
 #define PIT_CHANNEL0 0x40
 #define PIT_CMD      0x43

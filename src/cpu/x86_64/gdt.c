@@ -1,5 +1,5 @@
 /* NumOS — src/kernel/gdt.c — GDT and TSS initialization */
-#include "kernel/gdt.h"
+#include "cpu/gdt.h"
 
 static struct gdt_entry gdt[7];
 static struct tss_entry tss;

@@ -1,6 +1,6 @@
 /* NumOS — src/kernel/pic.c — 8259 PIC initialization and control */
 #include "kernel/pic.h"
-#include "kernel/io.h"
+#include "libs/io.h"
 
 #define PIC1_CMD 0x20
 #define PIC1_DATA 0x21

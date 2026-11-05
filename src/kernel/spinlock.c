@@ -1,6 +1,6 @@
 /* NumOS — spinlock.c — Basic spinlock implementation */
 #include "kernel/spinlock.h"
-#include "kernel/io.h"
+#include "libs/io.h"
 
 void spin_lock(spinlock_t* lock) {
     uint64_t flags;

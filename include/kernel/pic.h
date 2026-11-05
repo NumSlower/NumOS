@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_PIC_H
 #define NUMOS_KERNEL_PIC_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 void pic_init(void);
 void pic_send_eoi(uint8_t irq);

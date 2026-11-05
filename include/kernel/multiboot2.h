@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_MULTIBOOT2_H
 #define NUMOS_KERNEL_MULTIBOOT2_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 #define MB2_TAG_END 0
 #define MB2_TAG_CMDLINE 1

@@ -1,7 +1,7 @@
 #ifndef NUMOS_KERNEL_STRING_H
 #define NUMOS_KERNEL_STRING_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 void* memset(void* dest, int val, size_t n);
 void* memcpy(void* dest, const void* src, size_t n);

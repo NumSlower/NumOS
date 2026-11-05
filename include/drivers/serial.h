@@ -2,7 +2,7 @@
 #ifndef NUMOS_DRIVERS_SERIAL_H
 #define NUMOS_DRIVERS_SERIAL_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 bool serial_init(void);
 void serial_putchar(char c);

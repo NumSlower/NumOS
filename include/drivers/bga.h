@@ -2,7 +2,7 @@
 #ifndef NUMOS_BGA_H
 #define NUMOS_BGA_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 bool bga_is_available(void);
 bool bga_init(void);

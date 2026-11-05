@@ -1,6 +1,6 @@
 /* NumOS — src/drivers/serial.c — UART 16550 serial driver implementation */
 #include "drivers/serial.h"
-#include "kernel/io.h"
+#include "libs/io.h"
 
 #define COM1 0x3F8
 

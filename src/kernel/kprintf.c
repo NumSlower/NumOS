@@ -1,7 +1,7 @@
 /* NumOS — kprintf.c — Kernel formatted printing */
-#include "kernel/kprintf.h"
-#include "kernel/string.h"
-#include "kernel/io.h"
+#include "libs/kprintf.h"
+#include "libs/string.h"
+#include "libs/io.h"
 
 #define MAX_BACKENDS 4
 static kprintf_putchar_t backends[MAX_BACKENDS];

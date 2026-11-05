@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_IDT_H
 #define NUMOS_KERNEL_IDT_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 struct idt_entry {
     uint16_t offset_low;

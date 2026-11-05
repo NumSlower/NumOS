@@ -2,7 +2,7 @@
 #ifndef NUMOS_IOAPIC_H
 #define NUMOS_IOAPIC_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 bool ioapic_init(void);
 void ioapic_set_entry(uint8_t index, uint64_t entry);
