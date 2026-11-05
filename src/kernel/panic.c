@@ -1,7 +1,7 @@
 /* NumOS — panic.c — Kernel panic handler */
 #include "kernel/panic.h"
-#include "kernel/kprintf.h"
-#include "kernel/io.h"
+#include "libs/kprintf.h"
+#include "libs/io.h"
 
 void dump_registers(void* regs_ptr) {
     if (!regs_ptr) return;

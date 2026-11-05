@@ -1,6 +1,6 @@
 /* NumOS — src/kernel/irq.c — IRQ dispatch implementation */
-#include "kernel/irq.h"
-#include "kernel/idt.h"
+#include "cpu/irq.h"
+#include "cpu/idt.h"
 #include "kernel/pic.h"
 
 extern void irq0(void);

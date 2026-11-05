@@ -1,7 +1,7 @@
 /* NumOS — vga.c — VGA Text Mode */
 #include "drivers/vga.h"
-#include "kernel/io.h"
-#include "kernel/string.h"
+#include "libs/io.h"
+#include "libs/string.h"
 
 static uint16_t* vga_buffer = (uint16_t*)0xB8000;
 static uint8_t vga_col = 0;

@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_ISR_H
 #define NUMOS_KERNEL_ISR_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 typedef struct registers {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;

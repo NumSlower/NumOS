@@ -1,7 +1,7 @@
 #ifndef NUMOS_KERNEL_KPRINTF_H
 #define NUMOS_KERNEL_KPRINTF_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 typedef void (*kprintf_putchar_t)(char c);
 void kprintf_register_putchar(kprintf_putchar_t fn);

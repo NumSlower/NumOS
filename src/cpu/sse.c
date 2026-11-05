@@ -1,6 +1,6 @@
 /* NumOS — sse.c — FPU/SSE init */
 #include "cpu/sse.h"
-#include "kernel/types.h"
+#include "libs/types.h"
 
 void sse_init(void) {
     uint64_t cr0, cr4;

@@ -1,5 +1,5 @@
 /* NumOS — src/kernel/idt.c — IDT initialization */
-#include "kernel/idt.h"
+#include "cpu/idt.h"
 
 static struct idt_entry idt[256];
 static struct idt_ptr idtp;

@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_KDEBUG_H
 #define NUMOS_KERNEL_KDEBUG_H
 
-#include "kernel/kprintf.h"
+#include "libs/kprintf.h"
 #include "drivers/vga.h"
 
 #ifdef KDEBUG

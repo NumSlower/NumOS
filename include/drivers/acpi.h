@@ -2,7 +2,7 @@
 #ifndef NUMOS_ACPI_H
 #define NUMOS_ACPI_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 struct acpi_rsdp {
     char signature[8];

@@ -1,5 +1,5 @@
 /* NumOS — string.c — Freestanding memory/string library */
-#include "kernel/string.h"
+#include "libs/string.h"
 
 void* memset(void* dest, int val, size_t n) {
     uint8_t* p = (uint8_t*)dest;

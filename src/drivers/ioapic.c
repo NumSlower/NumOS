@@ -1,7 +1,7 @@
 /* NumOS — ioapic.c — I/O APIC */
 #include "drivers/ioapic.h"
 #include "drivers/acpi.h"
-#include "kernel/types.h"
+#include "libs/types.h"
 
 static uint64_t ioapic_base = 0;
 

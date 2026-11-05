@@ -2,7 +2,7 @@
 #ifndef NUMOS_KEYBOARD_H
 #define NUMOS_KEYBOARD_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 void keyboard_init(void);
 char keyboard_getchar(void);

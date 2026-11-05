@@ -2,7 +2,7 @@
 #ifndef NUMOS_VGA_H
 #define NUMOS_VGA_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25

@@ -1,7 +1,7 @@
 #ifndef NUMOS_KERNEL_SPINLOCK_H
 #define NUMOS_KERNEL_SPINLOCK_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 typedef struct { 
     volatile uint32_t lock; 

@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_GDT_H
 #define NUMOS_KERNEL_GDT_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 struct gdt_entry {
     uint16_t limit_low;

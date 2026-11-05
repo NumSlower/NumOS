@@ -2,7 +2,7 @@
 #ifndef NUMOS_CPUID_H
 #define NUMOS_CPUID_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 struct cpuid_result {
     uint32_t eax, ebx, ecx, edx;

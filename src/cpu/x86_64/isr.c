@@ -1,8 +1,8 @@
 /* NumOS — src/kernel/isr.c — Exception handling */
-#include "kernel/isr.h"
-#include "kernel/idt.h"
-#include "kernel/kprintf.h"
-#include "kernel/io.h"
+#include "cpu/isr.h"
+#include "cpu/idt.h"
+#include "libs/kprintf.h"
+#include "libs/io.h"
 
 extern void isr0(void);
 extern void isr1(void);

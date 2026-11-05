@@ -1,6 +1,6 @@
 /* NumOS — bga.c — Bochs Graphics Adapter */
 #include "drivers/bga.h"
-#include "kernel/io.h"
+#include "libs/io.h"
 
 #define VBE_INDEX 0x01CE
 #define VBE_DATA  0x01CF

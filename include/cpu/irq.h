@@ -2,8 +2,8 @@
 #ifndef NUMOS_KERNEL_IRQ_H
 #define NUMOS_KERNEL_IRQ_H
 
-#include "kernel/types.h"
-#include "kernel/isr.h"
+#include "libs/types.h"
+#include "cpu/isr.h"
 
 typedef void (*irq_handler_t)(registers_t* regs);
 

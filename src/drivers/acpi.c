@@ -1,6 +1,6 @@
 /* NumOS — acpi.c — ACPI table parser */
 #include "drivers/acpi.h"
-#include "kernel/types.h"
+#include "libs/types.h"
 
 static struct acpi_rsdp* rsdp;
 static struct acpi_sdt_header* rsdt_xsdt;

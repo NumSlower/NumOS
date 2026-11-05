@@ -2,7 +2,7 @@
 #ifndef NUMOS_KERNEL_PAGING_H
 #define NUMOS_KERNEL_PAGING_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 #define PAGE_PRESENT      (1ULL << 0)
 #define PAGE_WRITE        (1ULL << 1)

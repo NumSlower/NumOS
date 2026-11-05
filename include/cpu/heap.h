@@ -2,7 +2,7 @@
 #ifndef NUMOS_HEAP_H
 #define NUMOS_HEAP_H
 
-#include "kernel/types.h"
+#include "libs/types.h"
 
 void heap_init(uint64_t start, size_t size);
 void* kmalloc(size_t size);

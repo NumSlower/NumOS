@@ -2,8 +2,8 @@
 #ifndef NUMOS_VMM_H
 #define NUMOS_VMM_H
 
-#include "kernel/types.h"
-#include "kernel/paging.h"
+#include "libs/types.h"
+#include "cpu/paging.h"
 
 void vmm_init(void);
 void vmm_map(uint64_t virt, uint64_t phys, uint64_t flags);

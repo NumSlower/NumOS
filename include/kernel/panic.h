@@ -1,8 +1,8 @@
 #ifndef NUMOS_KERNEL_PANIC_H
 #define NUMOS_KERNEL_PANIC_H
 
-#include "kernel/types.h"
-#include "kernel/isr.h"
+#include "libs/types.h"
+#include "cpu/isr.h"
 
 NORETURN void kpanic(const char* fmt, ...);
 NORETURN void kpanic_at(const char* file, int line, const char* fmt, ...);

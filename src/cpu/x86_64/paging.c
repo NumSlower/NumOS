@@ -1,6 +1,6 @@
 /* NumOS — src/kernel/paging.c — Paging initialization and control */
-#include "kernel/paging.h"
-#include "kernel/io.h"
+#include "cpu/paging.h"
+#include "libs/io.h"
 
 #define MSR_EFER 0xC0000080
 #define EFER_NXE (1ULL << 11)

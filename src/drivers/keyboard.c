@@ -1,7 +1,7 @@
 /* NumOS — keyboard.c — PS/2 Keyboard */
 #include "drivers/keyboard.h"
-#include "kernel/io.h"
-#include "kernel/irq.h"
+#include "libs/io.h"
+#include "cpu/irq.h"
 
 static volatile char key_buffer[256];
 static volatile uint8_t head = 0;

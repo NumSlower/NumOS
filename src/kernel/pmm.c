@@ -1,6 +1,6 @@
 /* NumOS — pmm.c — Physical Memory Manager */
 #include "kernel/pmm.h"
-#include "kernel/string.h"
+#include "libs/string.h"
 #include "kernel/spinlock.h"
 
 extern uint8_t _kernel_start[];
