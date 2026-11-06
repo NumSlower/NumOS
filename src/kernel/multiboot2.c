@@ -5,6 +5,7 @@ static struct mb2_tag_mmap* mmap_tag = NULL;
 static void* rsdp_ptr = NULL;
 static const char* cmdline = NULL;
 static struct mb2_tag_basic_meminfo* meminfo_tag = NULL;
+static struct mb2_tag_framebuffer* framebuffer_tag = NULL;
 
 void mb2_parse(uint64_t mb2_info_addr) {
     if (!mb2_info_addr) return;
@@ -36,6 +37,9 @@ void mb2_parse(uint64_t mb2_info_addr) {
             case MB2_TAG_ACPI_NEW:
                 rsdp_ptr = ((struct mb2_tag_new_acpi*)tag)->rsdp;
                 break;
+            case MB2_TAG_FRAMEBUFFER:
+                framebuffer_tag = (struct mb2_tag_framebuffer*)tag;
+                break;
         }
         
         offset += (tag->size + 7) & ~7;
@@ -56,16 +60,20 @@ const char* mb2_get_cmdline(void) {
 
 uint64_t mb2_get_total_memory(void) {
     if (!mmap_tag) return 0;
-    
+
     uint64_t total = 0;
     uint32_t num_entries = (mmap_tag->size - sizeof(struct mb2_tag_mmap)) / mmap_tag->entry_size;
-    
+
     for (uint32_t i = 0; i < num_entries; i++) {
         struct mb2_mmap_entry* entry = (struct mb2_mmap_entry*)((uint8_t*)mmap_tag->entries + i * mmap_tag->entry_size);
         if (entry->type == MB2_MMAP_AVAILABLE) {
             total += entry->length;
         }
     }
-    
+
     return total;
+}
+
+struct mb2_tag_framebuffer* mb2_get_framebuffer(void) {
+    return framebuffer_tag;
 }

@@ -110,3 +110,25 @@ void vga_disable_cursor(void) {
 void vga_putchar_backend(char c) {
     vga_putchar(c);
 }
+
+void vga_save_screen(uint16_t* dest) {
+    for (uint32_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
+        dest[i] = vga_buffer[i];
+    }
+}
+
+void vga_restore_screen(const uint16_t* src) {
+    for (uint32_t i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
+        vga_buffer[i] = src[i];
+    }
+}
+
+void vga_get_cursor(uint8_t* col, uint8_t* row) {
+    if (col) *col = vga_col;
+    if (row) *row = vga_row;
+}
+
+void vga_get_color(uint8_t* fg, uint8_t* bg) {
+    if (fg) *fg = vga_fg;
+    if (bg) *bg = vga_bg;
+}

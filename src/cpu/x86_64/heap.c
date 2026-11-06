@@ -11,7 +11,10 @@ struct heap_block {
     uint64_t size;
     bool is_free;
     struct heap_block* next;
-} __attribute__((packed));
+};
+
+/* Header is naturally 24 bytes, keeping returned data 8-byte aligned. */
+#define HEAP_HEADER_SIZE sizeof(struct heap_block)
 
 static struct heap_block* heap_head = NULL;
 static spinlock_t heap_lock = {0};
@@ -54,7 +57,7 @@ void* kmalloc(size_t size) {
     while (current) {
         if (current->is_free && current->size >= size) {
             if (current->size > size + sizeof(struct heap_block) + 16) {
-                struct heap_block* new_block = (struct heap_block*)((uint8_t*)current + sizeof(struct heap_block) + size);
+                struct heap_block* new_block = (struct heap_block*)((uint8_t*)current + HEAP_HEADER_SIZE + size);
                 new_block->size = current->size - size - sizeof(struct heap_block);
                 new_block->is_free = true;
                 new_block->next = current->next;
@@ -65,7 +68,7 @@ void* kmalloc(size_t size) {
             
             current->is_free = false;
             spin_unlock(&heap_lock);
-            return (void*)((uint8_t*)current + sizeof(struct heap_block));
+            return (void*)((uint8_t*)current + HEAP_HEADER_SIZE);
         }
         current = current->next;
     }
@@ -78,7 +81,7 @@ void kfree(void* ptr) {
     if (!ptr) return;
     
     spin_lock(&heap_lock);
-    struct heap_block* block = (struct heap_block*)((uint8_t*)ptr - sizeof(struct heap_block));
+    struct heap_block* block = (struct heap_block*)((uint8_t*)ptr - HEAP_HEADER_SIZE);
     block->is_free = true;
     
     struct heap_block* current = heap_head;
@@ -107,7 +110,7 @@ void* krealloc(void* ptr, size_t new_size) {
         return NULL;
     }
     
-    struct heap_block* block = (struct heap_block*)((uint8_t*)ptr - sizeof(struct heap_block));
+    struct heap_block* block = (struct heap_block*)((uint8_t*)ptr - HEAP_HEADER_SIZE);
     if (block->size >= new_size) {
         return ptr;
     }

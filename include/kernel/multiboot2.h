@@ -19,6 +19,10 @@
 #define MB2_MMAP_NVS 4
 #define MB2_MMAP_BAD 5
 
+#define MB2_FBTYPE_INDEXED 1
+#define MB2_FBTYPE_RGB     2
+#define MB2_FBTYPE_EGA     3
+
 struct mb2_tag {
     uint32_t type;
     uint32_t size;
@@ -64,10 +68,28 @@ struct mb2_tag_new_acpi {
     uint8_t rsdp[0];
 } __attribute__((packed));
 
+struct mb2_tag_framebuffer {
+    uint32_t type;
+    uint32_t size;
+    uint64_t framebuffer_addr;
+    uint32_t framebuffer_pitch;
+    uint32_t framebuffer_width;
+    uint32_t framebuffer_height;
+    uint8_t framebuffer_bpp;
+    uint8_t framebuffer_type;
+    uint8_t color_red_field_position;
+    uint8_t color_red_mask_size;
+    uint8_t color_green_field_position;
+    uint8_t color_green_mask_size;
+    uint8_t color_blue_field_position;
+    uint8_t color_blue_mask_size;
+} __attribute__((packed));
+
 void mb2_parse(uint64_t mb2_info_addr);
 struct mb2_tag_mmap* mb2_get_mmap(void);
 void* mb2_get_rsdp(void);
 const char* mb2_get_cmdline(void);
 uint64_t mb2_get_total_memory(void);
+struct mb2_tag_framebuffer* mb2_get_framebuffer(void);
 
 #endif

@@ -68,3 +68,7 @@ void gdt_init(void) {
 void tss_set_rsp0(uint64_t rsp0) {
     tss.rsp0 = rsp0;
 }
+
+void* tss_get_rsp0(void) {
+    return (void*)tss.rsp0;
+}

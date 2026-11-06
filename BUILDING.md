@@ -116,6 +116,16 @@ All commands should print version info without errors.
 
 ## Building NumOS
 
+### Provisioned toolchain
+
+The WSL2 Ubuntu environment on this machine already has the cross toolchain
+installed at `/opt/cross` (x86_64-elf-gcc 14.2.0, x86_64-elf-ld 2.43.1). Add
+it to your PATH before building:
+
+```bash
+export PATH=/opt/cross/bin:$PATH
+```
+
 ### Navigate to the Project
 
 If your project is on the Windows filesystem:
