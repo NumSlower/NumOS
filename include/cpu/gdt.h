@@ -49,6 +49,7 @@ struct gdt_ptr {
 
 void gdt_init(void);
 void tss_set_rsp0(uint64_t rsp0);
+void* tss_get_rsp0(void);
 extern void gdt_load(void* ptr);
 extern void tss_load(uint16_t sel);
 

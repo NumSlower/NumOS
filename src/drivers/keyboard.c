@@ -56,6 +56,11 @@ static void keyboard_handler(registers_t* regs) {
                 c = shift_pressed ? scancode_shift[scancode] : scancode_std[scancode];
             }
         }
+        if (c && ctrl_pressed && c >= '1' && c <= '9') {
+            /* Ctrl-N requests terminal session N (Phase 12.1): delivered as
+             * a control char the tty layer interprets. */
+            c = (char)(0x01 + (c - '1'));
+        }
         if (c) {
             uint8_t next_head = (head + 1) % 256;
             if (next_head != tail) {

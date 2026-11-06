@@ -67,9 +67,13 @@ void irq_handler(registers_t* regs) {
         }
     }
 
+    /* EOI before dispatch: handlers may context-switch away (timer
+     * preemption switches to another process and never returns through
+     * this frame), so the EOI must not wait for the handler's return. */
     if (irq < 16 && irq_handlers[irq]) {
+        pic_send_eoi(irq);
         irq_handlers[irq](regs);
+    } else {
+        pic_send_eoi(irq);
     }
-
-    pic_send_eoi(irq);
 }

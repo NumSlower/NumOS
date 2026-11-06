@@ -84,8 +84,12 @@ void exceptions_init(void) {
 }
 
 void isr_handler(registers_t* regs) {
+    extern void* tss_get_rsp0(void);
+    uint64_t cr2 = read_cr2();
     kprintf("\n!!! CPU EXCEPTION: %s (vector %lu, error 0x%lx)\n",
             exception_names[regs->int_no], regs->int_no, regs->err_code);
+    kprintf("  CR2: 0x%016lx  RSP0: 0x%016lx  frame@rsp 0x%016lx\n",
+            cr2, (uint64_t)tss_get_rsp0(), (uint64_t)regs);
     kprintf("  RIP: 0x%016lx  CS:  0x%04lx  RFLAGS: 0x%016lx\n",
             regs->rip, regs->cs, regs->rflags);
     kprintf("  RSP: 0x%016lx  SS:  0x%04lx\n", regs->rsp, regs->ss);

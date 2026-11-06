@@ -24,3 +24,7 @@ void vga_disable_cursor(void);
 void vga_putchar_backend(char c);
 
 #endif
+void vga_save_screen(uint16_t* dest);
+void vga_restore_screen(const uint16_t* src);
+void vga_get_cursor(uint8_t* col, uint8_t* row);
+void vga_get_color(uint8_t* fg, uint8_t* bg);

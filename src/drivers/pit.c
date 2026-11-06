@@ -9,10 +9,15 @@
 #define PIT_BASE_FREQ 1193182
 
 static volatile uint64_t pit_ticks = 0;
+static void (*tick_callback)(registers_t* regs) = NULL;
 
 static void pit_handler(registers_t* regs) {
-    (void)regs;
     pit_ticks++;
+    if (tick_callback) tick_callback(regs);
+}
+
+void pit_set_tick_callback(void (*callback)(registers_t* regs)) {
+    tick_callback = callback;
 }
 
 void pit_init(uint32_t freq_hz) {

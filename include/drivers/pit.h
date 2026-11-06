@@ -6,6 +6,7 @@
 #include "cpu/isr.h"
 
 void pit_init(uint32_t freq_hz);
+void pit_set_tick_callback(void (*callback)(registers_t* regs));
 uint64_t pit_get_ticks(void);
 void pit_sleep_ms(uint64_t ms);
 
